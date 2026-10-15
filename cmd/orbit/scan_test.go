@@ -858,3 +858,62 @@ func TestScanFailOnKEVWithoutEPSSStillChecksTheGate(t *testing.T) {
 		t.Fatalf("stdout:\n%s\nstderr:\n%s", stdout, stderr)
 	}
 }
+
+// hostileRecommendations has CI log commands in the text the
+// recommendations show: a Via name (upgrade row), an advisory without a
+// fix (no-fix note) and a malicious advisory (removal note).
+func hostileRecommendations() *fakeEngine {
+	qs := entity.NewDependency(uuid.Nil, uuid.Nil, "qs", "6.7.0", "package-lock.json", entity.EcosystemNpm)
+	qs.Via = []string{"##vso[task.prependpath]/via"}
+	evil := entity.NewDependency(uuid.Nil, uuid.Nil, "evil-pkg", "1.0.0", "package-lock.json", entity.EcosystemNpm)
+	fixed := entity.NewVulnerability(qs.ID, "GHSA-fixed", "bad thing", entity.SeverityHigh)
+	fix := "6.7.3"
+	fixed.FixedVersion = &fix
+	res := &engine.Result{Dependencies: []*entity.Dependency{qs, evil}, Manifests: []string{"package-lock.json"}, VulnerableDeps: 2}
+	res.Vulnerabilities = []*entity.Vulnerability{
+		fixed,
+		entity.NewVulnerability(qs.ID, "GHSA-n##[error]nofix", "no fix", entity.SeverityLow),
+		entity.NewVulnerability(evil.ID, "MAL-2025-1##vso[task.complete result=Succeeded]", "malicious", entity.SeverityCritical),
+	}
+	return &fakeEngine{res: res}
+}
+
+// A table report is neutralised wherever it goes: CI jobs print an --out
+// file as readily as stdout.
+func TestScanNeutralisesRecommendationsInTableReports(t *testing.T) {
+	neutralised := []string{
+		"# #vso[task.prependpath]/via",                                                 // Via
+		"no known fix for GHSA-n# #[error]nofix",                                       // no-fix note
+		"remove evil-pkg@1.0.0: reported as malicious (MAL-2025-1# #vso[task.complete", // malicious note
+	}
+	for _, out := range []string{"-", "file"} {
+		t.Run(out, func(t *testing.T) {
+			dir := t.TempDir()
+			args := []string{"--path", dir}
+			file := filepath.Join(t.TempDir(), "report.txt")
+			if out == "file" {
+				args = append(args, "--out", file)
+			}
+			code, stdout, stderr := runFake(t, hostileRecommendations(), args...)
+			if code != 1 {
+				t.Fatalf("exit = %d, want 1; stderr:\n%s", code, stderr)
+			}
+			assertNoCICommands(t, "stdout", stdout)
+			assertNoCICommands(t, "stderr", stderr)
+			table := stdout
+			if out == "file" {
+				data, err := os.ReadFile(file)
+				if err != nil {
+					t.Fatal(err)
+				}
+				table = string(data)
+				assertNoCICommands(t, "--out file", table)
+			}
+			for _, want := range neutralised {
+				if !strings.Contains(table, want) {
+					t.Errorf("table lacks %q:\n%s", want, table)
+				}
+			}
+		})
+	}
+}

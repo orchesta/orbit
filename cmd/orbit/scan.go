@@ -161,8 +161,9 @@ func parseScanFlags(args []string, stderr io.Writer) (scanConfig, error) {
 
 // runScan implements orbit scan and returns its exit code. stdout receives
 // only the report, and only when the scan succeeded; everything else goes
-// to stderr. Everything on stderr, and a table report on stdout, passes
-// through a ciLogWriter, so repository text cannot run CI log commands.
+// to stderr. Everything on stderr, and a table report on stdout or in the
+// --out file, passes through a ciLogWriter, so repository text cannot run
+// CI log commands.
 func runScan(ctx context.Context, args []string, stdout, stderr io.Writer, deps scanDeps) int {
 	safeErr := newCILogWriter(stderr)
 	code := runScanSafe(ctx, args, stdout, safeErr, deps)
@@ -262,7 +263,7 @@ func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, 
 		}
 	} else {
 		var buf bytes.Buffer
-		if err := writeReport(&buf, cfg.format, findings, summary, false, sarifOptions(root)); err != nil {
+		if err := writeSafeReport(&buf, cfg.format, findings, summary, false, sarifOptions(root)); err != nil {
 			return false, fmt.Errorf("render %s report: %w", cfg.format, err)
 		}
 		if err := replaceFile(cfg.out, buf.Bytes()); err != nil {
@@ -414,18 +415,24 @@ func readRegularFile(path string, maxBytes int64) ([]byte, error) {
 	return data, nil
 }
 
-// writeStdout writes the report to stdout. A table goes through a
-// ciLogWriter, colored if stdout itself is a terminal; JSON, SARIF and JUnit
-// already escape log commands inside their strings.
+// writeStdout writes the report to stdout, a table colored if stdout itself
+// is a terminal (see writeSafeReport).
 func writeStdout(stdout io.Writer, format string, f []report.Finding, s report.Summary, so report.SARIFOptions) error {
+	return writeSafeReport(stdout, format, f, s, format == "table" && report.UseColor(stdout), so)
+}
+
+// writeSafeReport is writeReport with a table passed through a ciLogWriter,
+// on stdout or in an --out file alike: a CI job may print either. JSON,
+// SARIF and JUnit already escape log commands inside their strings.
+func writeSafeReport(w io.Writer, format string, f []report.Finding, s report.Summary, color bool, so report.SARIFOptions) error {
 	if format != "table" {
-		return writeReport(stdout, format, f, s, false, so)
+		return writeReport(w, format, f, s, color, so)
 	}
-	w := newCILogWriter(stdout)
-	if err := writeReport(w, format, f, s, report.UseColor(stdout), so); err != nil {
+	cw := newCILogWriter(w)
+	if err := writeReport(cw, format, f, s, color, so); err != nil {
 		return err
 	}
-	return w.Flush()
+	return cw.Flush()
 }
 
 // sarifOptions makes SARIF URIs relative to the working directory when root
