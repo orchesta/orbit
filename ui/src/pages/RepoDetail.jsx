@@ -435,7 +435,7 @@ function Recommendations({ query }) {
           </li>
         ))}
       </ul>
-      <p className="mt-2 text-xs text-gray-500">Each upgrade is the lowest version at or above every known fix. It can still break your build; check the release notes.</p>
+      <p className="mt-2 text-xs text-gray-500">Each upgrade is the lowest version at or above every known fix. It can still break your build; check the release notes. Orbit does not check that the version exists or that no other advisory affects it.</p>
     </section>
   );
 }

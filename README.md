@@ -148,7 +148,7 @@ MEDIUM    -    1.9%   CVE-2025-13465  lodash@4.17.15  4.18.0   package-lock.json
 
 PACKAGE         UPGRADE TO  FIXES  VIA  MANIFEST
 lodash@4.17.15  4.18.0      4      -    package-lock.json
-Each upgrade is the lowest version at or above every known fix for that package. It can still break your build; check the release notes.
+Each upgrade is the lowest version at or above every known fix for that package. It can still break your build; check the release notes. Orbit does not check that the version exists or that no other advisory affects it.
 
 1 dependencies, 1 vulnerable (2 high, 2 medium)
 threshold high: FAILED

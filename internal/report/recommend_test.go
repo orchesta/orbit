@@ -185,7 +185,7 @@ func TestTableRecommendationsShowViaAndMalicious(t *testing.T) {
 	for _, want := range []string{
 		"qs@6.7.0  6.7.3       1      body-parser, express, mocha and 1 more  package-lock.json\n",
 		"remove evil-pkg@1.0.0: reported as malicious (MAL-2025-1234)\n",
-		"It can still break your build; check the release notes.\n",
+		"It can still break your build; check the release notes. Orbit does not check that the version exists or that no other advisory affects it.\n",
 		"VIA is the direct dependency that pulls the package in",
 	} {
 		if !strings.Contains(out, want) {

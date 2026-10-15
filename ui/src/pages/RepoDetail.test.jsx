@@ -225,7 +225,7 @@ describe('RepoDetail', () => {
       expect(items[2]).toHaveTextContent('evil-pkg 1.0.0 — reported as malicious; remove it');
       expect(items[3]).toHaveTextContent('debug 4.4.2 — reported as malicious; remove it (a non-malicious advisory names 4.4.3 as fixed)');
       expect(items[3]).not.toHaveTextContent('→');
-      expect(panel).toHaveTextContent('It can still break your build; check the release notes.');
+      expect(panel).toHaveTextContent('It can still break your build; check the release notes. Orbit does not check that the version exists or that no other advisory affects it.');
       expect(screen.getByText('Command injection')).toBeInTheDocument();
     });
 

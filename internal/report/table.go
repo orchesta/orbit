@@ -235,7 +235,7 @@ func recommendationLines(recs []Recommendation) []string {
 	}
 	lines = append(lines, notes...)
 	if len(rows) > 1 {
-		lines = append(lines, "Each upgrade is the lowest version at or above every known fix for that package. It can still break your build; check the release notes.")
+		lines = append(lines, "Each upgrade is the lowest version at or above every known fix for that package. It can still break your build; check the release notes. Orbit does not check that the version exists or that no other advisory affects it.")
 		if anyVia {
 			lines = append(lines, "VIA is the direct dependency that pulls the package in: a newer release of it, or an override in your package manager, may be needed.")
 		}
