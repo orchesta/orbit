@@ -47,6 +47,9 @@ func ParseIgnoreFile(r io.Reader) (*IgnoreList, error) {
 		}
 		e := IgnoreEntry{ID: fields[0]}
 		if prefix, rest, ok := strings.Cut(fields[0], ":"); ok && strings.EqualFold(prefix, "license") {
+			if hint, ok := spdx.ExceptionHint(rest); ok {
+				return nil, fmt.Errorf(".orbitignore line %d: license identifier %q %s", n, clip(rest), hint)
+			}
 			id, known := spdx.CanonicalID(rest)
 			if !known || strings.HasSuffix(id, "+") {
 				return nil, fmt.Errorf(".orbitignore line %d: unknown SPDX license identifier %q", n, clip(rest))

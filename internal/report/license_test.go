@@ -153,6 +153,19 @@ func TestParseLicenseIgnoreErrors(t *testing.T) {
 			t.Errorf("%q: err = %v, want a line 1 error", line, err)
 		}
 	}
+	// A deprecated GPL-with-exception identifier is on the SPDX list: the
+	// error says what it means and what to name instead, not that it is
+	// unknown.
+	for line, want := range map[string]string{
+		"license:GPL-2.0-with-classpath-exception package=a  x": "name GPL-2.0-only",
+		"license:gpl-3.0-with-gcc-exception+ package=a  x":      "name GPL-3.0-or-later",
+		"license:GPL-2.0-with-autoconf-exception package=a  x":  "GPL-2.0-only WITH Autoconf-exception-2.0",
+	} {
+		_, err := ParseIgnoreFile(strings.NewReader(line + "\n"))
+		if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "unknown") {
+			t.Errorf("%q: err = %v, want one naming %q", line, err, want)
+		}
+	}
 	l, err := ParseIgnoreFile(strings.NewReader("LICENSE:gpl-2.0+ package=a expires=2027-01-01 ok\n"))
 	if err != nil {
 		t.Fatal(err)

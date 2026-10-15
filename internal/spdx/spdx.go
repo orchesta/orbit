@@ -97,6 +97,19 @@ func withException(tok string) (id, exception string, ok bool) {
 	return id, w.exception, true
 }
 
+// ExceptionHint explains a deprecated "GPL-x.y-with-<name>-exception"
+// identifier, which CanonicalID rejects although it is on the SPDX list: what
+// it means and which identifier to name instead. ok is false for any other
+// token. The hint does not repeat tok.
+func ExceptionHint(tok string) (hint string, ok bool) {
+	lic, exc, ok := withException(tok)
+	if !ok {
+		return "", false
+	}
+	return "is deprecated and means " + lic + " WITH " + exc + ": name " + lic +
+		" (an exception is not part of the identifier)", true
+}
+
 // CanonicalID returns the canonical spelling of one license identifier:
 // the SPDX list's case, the current form of a deprecated GNU identifier
 // ("GPL-2.0" is "GPL-2.0-only", "GPL-2.0+" is "GPL-2.0-or-later"), a
@@ -409,8 +422,8 @@ func ParseIDs(list string) ([]string, error) {
 		if item == "" {
 			continue
 		}
-		if lic, exc, ok := withException(item); ok {
-			return nil, fmt.Errorf("license identifier %q is deprecated and means %s WITH %s: name %s (an exception is not part of the identifier)", item, lic, exc, lic)
+		if hint, ok := ExceptionHint(item); ok {
+			return nil, fmt.Errorf("license identifier %q %s", item, hint)
 		}
 		id, ok := CanonicalID(item)
 		if !ok || strings.ContainsFunc(item, unicode.IsSpace) {
