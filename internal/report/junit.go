@@ -34,9 +34,9 @@ type junitSuite struct {
 }
 
 // WriteJUnit writes one testsuite "orbit". Each finding is a testcase: a
-// failure when it fails the threshold (see failsGate; a malicious package
-// fails every threshold and has the failure type "malicious"), skipped when
-// ignored.
+// failure when it trips the gate (see failsGate: the threshold, a malicious
+// package, or KEV with FailOnKEV), skipped when ignored. A malicious package
+// has the failure type "malicious".
 func WriteJUnit(w io.Writer, f []Finding, s Summary) error {
 	suite := junitSuite{Name: "orbit"}
 	for _, x := range f {
@@ -48,6 +48,9 @@ func WriteJUnit(w io.Writer, f []Finding, s Summary) error {
 			suite.Skipped++
 		case failsGate(x, s):
 			msg := fmt.Sprintf("%s: %s", v.Severity, v.Summary)
+			if v.KEV {
+				msg = "[KEV] " + msg
+			}
 			typ := string(v.Severity)
 			if x.Malicious {
 				typ = "malicious"
@@ -56,6 +59,7 @@ func WriteJUnit(w io.Writer, f []Finding, s Summary) error {
 			if fv := fixedIn(v); fv != "" {
 				body += " (fixed in " + fv + ")"
 			}
+			body += exploitLines(v)
 			c.Failure = &junitFailure{Message: msg, Type: typ, Body: body}
 			suite.Failures++
 		}

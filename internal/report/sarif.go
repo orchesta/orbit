@@ -45,6 +45,7 @@ type sarifResult struct {
 	Locations           []sarifLocation    `json:"locations"`
 	PartialFingerprints map[string]string  `json:"partialFingerprints"`
 	Suppressions        []sarifSuppression `json:"suppressions,omitempty"`
+	Properties          map[string]any     `json:"properties,omitempty"`
 }
 
 // sarifRootID is the uriBaseId of artifact URIs relative to RootURI.
@@ -123,7 +124,8 @@ type SARIFOptions struct {
 }
 
 // WriteSARIF writes a SARIF 2.1.0 log with one rule per distinct advisory. A
-// rule with a malicious finding is tagged "malicious" and rated 10.0.
+// rule with a malicious finding is tagged "malicious" and rated 10.0. A rule listed in CISA KEV is also tagged "known-exploited";
+// its security-severity is not raised.
 func WriteSARIF(w io.Writer, f []Finding, _ Summary, tool ToolInfo, opts SARIFOptions) error {
 	rules := []sarifRule{}
 	ruleIdx := map[string]int{}
@@ -149,7 +151,10 @@ func WriteSARIF(w io.Writer, f []Finding, _ Summary, tool ToolInfo, opts SARIFOp
 			rules[i].Properties["security-severity"] = score
 		}
 		if x.Malicious {
-			rules[i].Properties["tags"] = []string{"security", "malicious"}
+			addRuleTag(rules[i].Properties, "malicious")
+		}
+		if v.KEV {
+			addRuleTag(rules[i].Properties, "known-exploited")
 		}
 		// The first non-empty text in finding order wins.
 		if rules[i].ShortDescription.Text == "" {
@@ -170,8 +175,10 @@ func WriteSARIF(w io.Writer, f []Finding, _ Summary, tool ToolInfo, opts SARIFOp
 		default:
 			msg += " (no fix available)"
 		}
+		msg += exploitSuffix(v)
 		var r sarifResult
 		r.RuleID, r.Level, r.Message = v.OSVID, level, sarifText{msg}
+		r.Properties = exploitProperties(v)
 		r.Locations = make([]sarifLocation, 1)
 		r.Locations[0].PhysicalLocation.ArtifactLocation = opts.artifactLocation(d.ManifestFile)
 		sum := sha256.Sum256([]byte(strings.Join([]string{v.OSVID, string(d.Ecosystem), d.Name, d.CurrentVersion, d.ManifestFile}, "|")))

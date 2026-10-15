@@ -63,17 +63,31 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 		}
 	}
 	if len(f) > 0 {
-		rows := [][]string{{"SEVERITY", "ID", "PACKAGE", "FIXED", "MANIFEST"}}
+		exploitCols := showExploit(s)
+		header := []string{"SEVERITY", "ID", "PACKAGE", "FIXED", "MANIFEST"}
+		if exploitCols {
+			header = []string{"SEVERITY", "KEV", "EPSS", "ID", "PACKAGE", "FIXED", "MANIFEST"}
+		}
+		rows := [][]string{header}
 		for _, x := range f {
 			fixed := fixedIn(x.Vulnerability)
 			if fixed == "" {
 				fixed = "-"
 			}
-			rows = append(rows, []string{severityCell(x), singleLine(x.Vulnerability.OSVID),
-				singleLine(x.Dependency.Name + "@" + x.Dependency.CurrentVersion), singleLine(fixed),
-				singleLine(x.Dependency.ManifestFile)})
+			row := []string{severityCell(x)}
+			if exploitCols {
+				kev := "-"
+				if x.Vulnerability.KEV {
+					kev = "yes"
+				}
+				row = append(row, kev, formatEPSS(x.Vulnerability.EPSS))
+			}
+			row = append(row, singleLine(x.Vulnerability.OSVID),
+				singleLine(x.Dependency.Name+"@"+x.Dependency.CurrentVersion), singleLine(fixed),
+				singleLine(x.Dependency.ManifestFile))
+			rows = append(rows, row)
 		}
-		widths := make([]int, 5)
+		widths := make([]int, len(header))
 		for _, r := range rows {
 			for i, c := range r {
 				if n := utf8.RuneCountInString(c); n > widths[i] {
@@ -85,12 +99,17 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 			var line strings.Builder
 			for i, c := range r {
 				cell := c
-				if i == 0 && ri > 0 && color && !f[ri-1].Ignored {
-					sev := f[ri-1].Vulnerability.Severity
-					if f[ri-1].Malicious {
-						sev = entity.SeverityCritical
+				if ri > 0 && color && !f[ri-1].Ignored {
+					switch {
+					case i == 0:
+						sev := f[ri-1].Vulnerability.Severity
+						if f[ri-1].Malicious {
+							sev = entity.SeverityCritical
+						}
+						cell = colorize(c, sev)
+					case exploitCols && i == 1 && f[ri-1].Vulnerability.KEV:
+						cell = colorize(c, entity.SeverityCritical)
 					}
-					cell = colorize(c, sev)
 				}
 				line.WriteString(cell)
 				if i < len(r)-1 {
@@ -115,12 +134,22 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 		printf(", %d malicious", s.Malicious)
 	}
 	printf("\n")
+	if s.KEVFindings > 0 {
+		printf("%d known exploited (CISA KEV)\n", s.KEVFindings)
+	}
 	if s.Threshold != "" {
 		status := "passed"
 		if s.Failed {
 			status = "FAILED"
 		}
 		printf("threshold %s: %s\n", s.Threshold, status)
+	}
+	if s.FailOnKEV {
+		status := "passed"
+		if s.KEVFailed {
+			status = "FAILED"
+		}
+		printf("fail on KEV: %s\n", status)
 	}
 	for _, msg := range s.Warnings {
 		printf("warning: %s\n", singleLine(msg))
