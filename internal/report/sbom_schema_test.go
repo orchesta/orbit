@@ -80,3 +80,12 @@ func TestSchemaValidationCatchesErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestCycloneDXMatchesSchema(t *testing.T) {
+	f, s := buildSBOMFixture(t)
+	var b bytes.Buffer
+	if err := WriteCycloneDX(&b, f, s, testTool, sbomOpts); err != nil {
+		t.Fatal(err)
+	}
+	validateSchema(t, "bom-1.6.schema.json", b.Bytes())
+}

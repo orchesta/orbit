@@ -1,6 +1,7 @@
 package report
 
 import (
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -81,4 +82,28 @@ func sbomPackages(deps []*entity.Dependency) ([]*sbomPackage, map[uuid.UUID]*sbo
 	}
 	slices.SortFunc(pkgs, func(a, b *sbomPackage) int { return strings.Compare(a.Ref, b.Ref) })
 	return pkgs, byDep
+}
+
+// webURL reports whether s is an absolute http(s) URL without spaces, the
+// only references written as CycloneDX advisories.
+func webURL(s string) bool {
+	if strings.ContainsAny(s, " \t\r\n") {
+		return false
+	}
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != ""
+}
+
+// sbomTime formats t as the second-precision UTC timestamp both formats use.
+func sbomTime(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05Z")
+}
+
+// rootName is the project name, or "unnamed" when none was given: both
+// formats require a name.
+func rootName(opts SBOMOptions) string {
+	if opts.Name == "" {
+		return "unnamed"
+	}
+	return opts.Name
 }
