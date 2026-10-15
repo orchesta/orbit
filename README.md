@@ -507,6 +507,7 @@ Paginated responses carry `data`, `total`, `page`, `per_page` and `total_pages` 
 | `GET` | `/scans/{id}` | Scan result |
 | `GET` | `/scans/{id}/dependencies` | Dependencies found by a scan, each with its license (SPDX expression, "" when unknown) |
 | `GET` | `/scans/{id}/recommendations` | Smallest upgrade per vulnerable package of a completed scan (`via` is always empty on the server); 409 while the scan is not completed or after it failed |
+| `GET` | `/scans/{id}/sbom?format=cyclonedx\|spdx` | SBOM of a completed scan as a file download: CycloneDX 1.6 (default, with vulnerabilities) or SPDX 2.3; 409 while the scan is not completed or after it failed |
 
 **Vulnerabilities**
 

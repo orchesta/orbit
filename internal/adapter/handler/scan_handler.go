@@ -1,8 +1,14 @@
 package handler
 
 import (
+	"bytes"
 	"errors"
+	"io"
+	"mime"
 	"net/http"
+	"regexp"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -13,11 +19,13 @@ import (
 // ScanHandler handles HTTP requests for scanning operations.
 type ScanHandler struct {
 	useCase *scan.UseCase
+	now     func() time.Time // SBOM timestamps
+	newUUID func() uuid.UUID // SBOM serial numbers
 }
 
 // NewScanHandler creates a new ScanHandler.
 func NewScanHandler(useCase *scan.UseCase) *ScanHandler {
-	return &ScanHandler{useCase: useCase}
+	return &ScanHandler{useCase: useCase, now: time.Now, newUUID: uuid.New}
 }
 
 // RegisterRoutes registers scan routes on the given router.
@@ -27,6 +35,7 @@ func (h *ScanHandler) RegisterRoutes(r chi.Router) {
 	r.Get("/scans/{id}", h.GetScanResult)
 	r.Get("/scans/{id}/dependencies", h.GetScanDependencies)
 	r.Get("/scans/{id}/recommendations", h.GetRecommendations)
+	r.Get("/scans/{id}/sbom", h.GetScanSBOM)
 }
 
 // TriggerScan handles POST /api/v1/repositories/{id}/scan
@@ -140,4 +149,75 @@ func respondScanLoadError(w http.ResponseWriter, r *http.Request, err error) {
 	default:
 		RespondServerError(w, r, err)
 	}
+}
+
+// sbomFormat is one downloadable SBOM format.
+type sbomFormat struct {
+	contentType, extension string
+	write                  func(io.Writer, []report.Finding, report.Summary, report.ToolInfo, report.SBOMOptions) error
+}
+
+var sbomFormats = map[string]sbomFormat{
+	"cyclonedx": {"application/vnd.cyclonedx+json; version=1.6", ".cdx.json", report.WriteCycloneDX},
+	"spdx":      {"application/spdx+json", ".spdx.json", report.WriteSPDX},
+}
+
+// unsafeFileChars matches what a download file name should not contain.
+var unsafeFileChars = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+
+// GetScanSBOM handles GET /api/v1/scans/{id}/sbom?format=cyclonedx|spdx
+// (default cyclonedx). It renders the stored dependencies and
+// vulnerabilities of a completed scan; the server has no .orbitignore, so
+// no finding is marked ignored. Each download is a new document: it is
+// stamped with the request time and a new serial number.
+func (h *ScanHandler) GetScanSBOM(w http.ResponseWriter, r *http.Request) {
+	scanID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "invalid scan id")
+		return
+	}
+	name := strings.ToLower(r.URL.Query().Get("format")) // as the CLI's --format
+	if name == "" {
+		name = "cyclonedx"
+	}
+	format, ok := sbomFormats[name]
+	if !ok {
+		RespondError(w, http.StatusBadRequest, "invalid format: want cyclonedx or spdx")
+		return
+	}
+
+	src, err := h.useCase.SBOMSource(r.Context(), scanID)
+	if err != nil {
+		respondScanLoadError(w, r, err)
+		return
+	}
+
+	project := "unnamed"
+	if src.Repository != nil && src.Repository.Name != "" {
+		project = src.Repository.Name
+	}
+	now := h.now()
+	findings, summary := report.Build(src.Result, nil, "", now)
+	var buf bytes.Buffer
+	opts := report.SBOMOptions{Name: project, Now: now, Serial: h.newUUID()}
+	if err := format.write(&buf, findings, summary, report.OrbitTool(), opts); err != nil {
+		RespondServerError(w, r, err)
+		return
+	}
+
+	file := sbomFileStem(project) + "-" + scanID.String()[:8] + format.extension
+	w.Header().Set("Content-Type", format.contentType)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": file}))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(buf.Bytes())
+}
+
+// sbomFileStem turns a repository name, which is user data, into a file
+// name stem of [A-Za-z0-9._-] that does not start with a dot or a dash.
+func sbomFileStem(project string) string {
+	stem := strings.TrimLeft(unsafeFileChars.ReplaceAllString(project, "-"), ".-")
+	if stem == "" {
+		return "unnamed"
+	}
+	return stem
 }
