@@ -6,20 +6,35 @@ import Spinner from '../components/Spinner';
 import ErrorState from '../components/ErrorState';
 import Pagination from '../components/Pagination';
 import MaliciousBadge from '../components/MaliciousBadge';
+import ExploitSignals from '../components/ExploitSignals';
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'unknown'];
+
+const EPSS_FLOORS = [
+  { value: '', label: 'Any EPSS' },
+  { value: '0.01', label: 'EPSS ≥ 1%' },
+  { value: '0.1', label: 'EPSS ≥ 10%' },
+  { value: '0.5', label: 'EPSS ≥ 50%' },
+];
 
 export default function Vulnerabilities() {
   // URL-based filter & pagination
   const [searchParams, setSearchParams] = useSearchParams();
   const filter = searchParams.get('severity') || 'all';
   const currentPage = parseInt(searchParams.get('page') || '1', 10);
+  const kevOnly = searchParams.get('kev') === 'true';
+  const minEpss = searchParams.get('min_epss') || '';
+  const sort = searchParams.get('sort') === 'epss' ? 'epss' : 'severity';
 
-  function setFilter(v) {
+  // setParam changes one filter and goes back to the first page.
+  function setParam(key, value) {
     const p = new URLSearchParams(searchParams);
-    if (v === 'all') p.delete('severity'); else p.set('severity', v);
+    if (value === '' || value == null) p.delete(key); else p.set(key, value);
     p.delete('page');
     setSearchParams(p, { replace: true });
+  }
+  function setFilter(v) {
+    setParam('severity', v === 'all' ? '' : v);
   }
   function setCurrentPage(pg) {
     const p = new URLSearchParams(searchParams);
@@ -29,8 +44,11 @@ export default function Vulnerabilities() {
   }
 
   const query = useQuery({
-    queryKey: ['vulnerabilities', { page: currentPage, severity: filter }],
-    queryFn: () => vulnerabilityApi.list({ page: currentPage, per_page: 25, severity: filter === 'all' ? undefined : filter }),
+    queryKey: ['vulnerabilities', { page: currentPage, severity: filter, kev: kevOnly, minEpss, sort }],
+    queryFn: () => vulnerabilityApi.list({
+      page: currentPage, per_page: 25, severity: filter === 'all' ? undefined : filter,
+      kev: kevOnly, min_epss: minEpss || undefined, sort,
+    }),
     placeholderData: keepPreviousData,
   });
 
@@ -50,11 +68,14 @@ export default function Vulnerabilities() {
   const allCount = counts.critical + counts.high + counts.medium + counts.low + counts.unknown;
   // "Great job" only when nothing at all was found and every repository was checked.
   const allClear = allCount === 0 && unverified === 0;
-  const emptyMessage = filter !== 'all' && allCount > 0
-    ? `No ${capitalize(filter)} vulnerabilities in the latest scans.`
-    : unverified > 0
-      ? 'No vulnerabilities in checked repositories'
-      : 'No vulnerabilities on this page';
+  const exploitFilter = kevOnly || minEpss !== '';
+  const emptyMessage = exploitFilter && allCount > 0
+    ? 'No findings match the exploit filters.'
+    : filter !== 'all' && allCount > 0
+      ? `No ${capitalize(filter)} vulnerabilities in the latest scans.`
+      : unverified > 0
+        ? 'No vulnerabilities in checked repositories'
+        : 'No vulnerabilities on this page';
 
   return (
     <div>
@@ -102,6 +123,31 @@ export default function Vulnerabilities() {
         ))}
       </div>
 
+      <div className="flex flex-wrap items-center gap-3 mb-6">
+        <FilterButton
+          active={kevOnly}
+          onClick={() => setParam('kev', kevOnly ? '' : 'true')}
+          label={`Known exploited (${counts.kev ?? 0})`}
+        />
+        <select
+          aria-label="Minimum EPSS"
+          value={minEpss}
+          onChange={e => setParam('min_epss', e.target.value)}
+          className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-sm text-gray-700"
+        >
+          {EPSS_FLOORS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <select
+          aria-label="Sort by"
+          value={sort}
+          onChange={e => setParam('sort', e.target.value === 'severity' ? '' : e.target.value)}
+          className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-sm text-gray-700"
+        >
+          <option value="severity">Sort: severity</option>
+          <option value="epss">Sort: EPSS</option>
+        </select>
+      </div>
+
       <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
         {findings.length === 0 ? (
           <div className="p-12 text-center text-gray-400">
@@ -126,6 +172,7 @@ export default function Vulnerabilities() {
                   <th className="px-6 py-3 font-medium">Package</th>
                   <th className="px-6 py-3 font-medium">Repository</th>
                   <th className="px-6 py-3 font-medium text-center">Severity</th>
+                  <th className="px-6 py-3 font-medium">Exploit</th>
                   <th className="px-6 py-3 font-medium text-right">Fixed In</th>
                 </tr>
               </thead>
@@ -162,6 +209,9 @@ export default function Vulnerabilities() {
                           'bg-gray-100 text-gray-700'}`}>
                         {vuln.severity}
                       </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <ExploitSignals vuln={vuln} />
                     </td>
                     <td className="px-6 py-4 text-gray-600 font-mono text-xs text-right">
                       {vuln.fixed_version || '-'}
@@ -206,7 +256,9 @@ function StatCard({ title, value, textColor, onClick, active }) {
 
 function FilterButton({ active, onClick, label }) {
   return (
-    <button 
+    <button
+      type="button"
+      aria-pressed={active}
       onClick={onClick}
       className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors whitespace-nowrap
         ${active ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}

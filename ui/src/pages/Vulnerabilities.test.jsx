@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import Vulnerabilities from './Vulnerabilities';
 import { renderWithProviders } from '../test/render';
@@ -109,5 +109,31 @@ describe('Vulnerabilities', () => {
     await screen.findByText('Prototype pollution');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.queryByText('Malicious')).not.toBeInTheDocument();
+  });
+
+  it('shows the KEV badge and the EPSS score of a finding', async () => {
+    mockFetch({ 'GET /vulnerabilities': { body: { data: page({ data: [finding({ kev: true, kev_date_added: '2025-01-23T00:00:00Z', epss: 0.84887, epss_percentile: 0.9971 })], total: 1 }) } } });
+    renderWithProviders(<Vulnerabilities />);
+    expect(await screen.findByText('KEV')).toHaveAttribute('title', expect.stringContaining('Known Exploited Vulnerabilities'));
+    expect(screen.getByText('84.9%')).toBeInTheDocument();
+  });
+
+  it('filters known exploited findings, sets a minimum EPSS and sorts by EPSS on the server', async () => {
+    const { calls } = mockFetch({ 'GET /vulnerabilities': { body: { data: page({ counts: { critical: 0, high: 1, medium: 0, low: 0, unknown: 0, kev: 1 } }) } } });
+    renderWithProviders(<Vulnerabilities />, { route: '/vulnerabilities', path: '/vulnerabilities' });
+    await userEvent.click(await screen.findByRole('button', { name: 'Known exploited (1)' }));
+    await waitFor(() => expect(calls.at(-1).path).toContain('kev=true'));
+    await userEvent.selectOptions(screen.getByLabelText('Sort by'), 'epss');
+    await waitFor(() => expect(calls.at(-1).path).toContain('sort=epss'));
+    await userEvent.selectOptions(screen.getByLabelText('Minimum EPSS'), '0.1');
+    await waitFor(() => expect(calls.at(-1).path).toMatch(/min_epss=0\.1(&|$)/));
+    expect(calls.at(-1).path).toContain('kev=true');
+  });
+
+  it('says when no finding matches the exploit filters', async () => {
+    mockFetch({ 'GET /vulnerabilities': { body: { data: page({ counts: { critical: 0, high: 2, medium: 0, low: 0, unknown: 0, kev: 0 } }) } } });
+    renderWithProviders(<Vulnerabilities />, { route: '/vulnerabilities?kev=true', path: '/vulnerabilities' });
+    expect(await screen.findByText('No findings match the exploit filters.')).toBeInTheDocument();
+    expect(screen.queryByText(/Great job/)).not.toBeInTheDocument();
   });
 });

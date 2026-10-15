@@ -6,6 +6,7 @@ import { useScanTracker } from '../hooks/useScanTracker';
 import Spinner from '../components/Spinner';
 import ErrorState from '../components/ErrorState';
 import MaliciousBadge from '../components/MaliciousBadge';
+import ExploitSignals from '../components/ExploitSignals';
 
 const isActive = (scan) => scan?.status === 'pending' || scan?.status === 'running';
 
@@ -261,6 +262,7 @@ export default function RepoDetail() {
                     <th className="px-6 py-3 font-medium">Vulnerability</th>
                     <th className="px-6 py-3 font-medium">Package</th>
                     <th className="px-6 py-3 font-medium text-center">Severity</th>
+                    <th className="px-6 py-3 font-medium">Exploit</th>
                     <th className="px-6 py-3 font-medium text-right">Fixed In</th>
                   </tr>
                 </thead>
@@ -292,6 +294,7 @@ export default function RepoDetail() {
                             {vuln.severity}
                           </span>
                         </td>
+                        <td className="px-6 py-4"><ExploitSignals vuln={vuln} /></td>
                         <td className="px-6 py-4 text-gray-500 font-mono text-xs text-right">{vuln.fixed_version || '-'}</td>
                       </tr>
                     );

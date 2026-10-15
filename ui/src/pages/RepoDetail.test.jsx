@@ -195,4 +195,17 @@ describe('RepoDetail', () => {
       expect(screen.getByRole('button', { name: 'Dependencies (3)' })).toBeInTheDocument();
     });
   });
+
+  it('marks known exploited vulnerabilities of the scan', async () => {
+    mockFetch({
+      'GET /repositories/r1': { body: { data: repo } },
+      'GET /repositories/r1/scans': { body: { data: [done] } },
+      'GET /scans/s1/dependencies': { body: { data: [{ id: 'd1', name: 'jquery', current_version: '3.4.1', ecosystem: 'npm' }] } },
+      'GET /scans/s1/vulnerabilities': { body: { data: [{ id: 'v1', dependency_id: 'd1', osv_id: 'CVE-2020-11023', summary: 'XSS in jQuery', severity: 'medium', kev: true, kev_date_added: '2025-01-23T00:00:00Z', epss: 0.84887, epss_percentile: 0.9971 }] } },
+    });
+    renderWithProviders(<RepoDetail />, at);
+    await userEvent.click(await screen.findByRole('button', { name: /^Vulnerabilities/ }));
+    expect(await screen.findByText('KEV')).toHaveAttribute('title', expect.stringContaining('2025'));
+    expect(screen.getByText('84.9%')).toBeInTheDocument();
+  });
 });

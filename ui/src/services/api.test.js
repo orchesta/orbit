@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { request, ApiError, UNAUTHORIZED_EVENT } from './api';
+import { request, ApiError, UNAUTHORIZED_EVENT, vulnerabilityApi } from './api';
 import { mockFetch } from '../test/fetch';
 
 describe('request', () => {
@@ -66,5 +66,19 @@ describe('request', () => {
     const { fn } = mockFetch({ 'GET /x': { body: { data: 1 } } });
     await request('/x');
     expect(fn.mock.calls[0][1].headers.Authorization).toBe('Bearer abc');
+  });
+});
+
+describe('vulnerabilityApi.list', () => {
+  it('sends the exploit filters and the sort', async () => {
+    const { calls } = mockFetch({ 'GET /vulnerabilities': { body: { success: true, data: { data: [] } } } });
+    await vulnerabilityApi.list({ page: 2, kev: true, min_epss: '0.1', sort: 'epss' });
+    expect(calls[0].path).toBe('/vulnerabilities?page=2&per_page=25&kev=true&min_epss=0.1&sort=epss');
+  });
+
+  it('leaves the defaults out of the URL', async () => {
+    const { calls } = mockFetch({ 'GET /vulnerabilities': { body: { success: true, data: { data: [] } } } });
+    await vulnerabilityApi.list({ kev: false, sort: 'severity' });
+    expect(calls[0].path).toBe('/vulnerabilities?page=1&per_page=25');
   });
 });

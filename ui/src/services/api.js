@@ -111,9 +111,12 @@ export const dashboardApi = {
 
 // Vulnerability API
 export const vulnerabilityApi = {
-  list: ({ page = 1, per_page = 25, severity } = {}) => {
+  list: ({ page = 1, per_page = 25, severity, kev, min_epss, sort } = {}) => {
     const qs = new URLSearchParams({ page: String(page), per_page: String(per_page) });
     if (severity) qs.set('severity', severity);
+    if (kev) qs.set('kev', 'true');
+    if (min_epss != null && min_epss !== '') qs.set('min_epss', String(min_epss));
+    if (sort && sort !== 'severity') qs.set('sort', sort);
     return request(`/vulnerabilities?${qs}`);
   },
 };
