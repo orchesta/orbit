@@ -29,12 +29,14 @@ import (
 
 // Exit codes of orbit scan.
 const (
-	exitOK = 0 // no finding trips the gate
-	// exitFailed: a non-ignored finding trips the gate (report.failsGate:
-	// threshold, malicious package, or KEV with --fail-on-kev).
+	exitOK = 0 // no finding gates (see exitFailed)
+	// exitFailed: a non-ignored finding gates (report.gates: it trips
+	// report.failsGate, that is the threshold, a malicious package, or KEV
+	// with --fail-on-kev, and with --baseline it is new or malicious).
 	exitFailed = 1
 	// exitError: the scan could not be completed or the flags are wrong, or
-	// --fail-on-kev without the KEV catalog.
+	// --fail-on-kev without the KEV catalog, or a missing or invalid
+	// --baseline.
 	exitError = 2
 )
 
@@ -102,7 +104,8 @@ type scanConfig struct {
 	format     string
 	out        string
 	ignoreFile string
-	ignoreSet  bool // --ignore-file was given explicitly
+	ignoreSet  bool   // --ignore-file was given explicitly
+	baseline   string // --baseline: earlier JSON report; "" compares with nothing
 	outdated   bool
 	timeout    time.Duration
 	quiet      bool
@@ -126,6 +129,7 @@ func parseScanFlags(args []string, stderr io.Writer) (scanConfig, error) {
 	flags.StringVar(&c.format, "format", "table", "report format: "+strings.Join(scanFormats, "|"))
 	flags.StringVar(&c.out, "out", "-", `report file, or "-" for stdout`)
 	flags.StringVar(&c.ignoreFile, "ignore-file", "", "ignore file (default <path>/"+ignoreFileName+" if it exists)")
+	flags.StringVar(&c.baseline, "baseline", "", "earlier orbit JSON report; only findings not in it fail the scan (malicious packages always do)")
 	flags.BoolVar(&c.outdated, "outdated", false, "also ask the package registries for the latest versions")
 	flags.BoolVar(&c.failOnKEV, "fail-on-kev", false, "also exit 1 on any finding in the CISA KEV catalog, whatever its severity")
 	flags.BoolVar(&c.noExploitData, "no-exploit-data", false, "do not download the CISA KEV catalog or send CVE IDs to api.first.org for EPSS scores")
@@ -159,6 +163,11 @@ func parseScanFlags(args []string, stderr io.Writer) (scanConfig, error) {
 	if c.out == "" {
 		return c, usageError{`--out needs a file path or "-"`}
 	}
+	// A failed run removes --out (removeStaleReport), which would delete
+	// the baseline itself.
+	if c.baseline != "" && c.out != "-" && sameFile(c.baseline, c.out) {
+		return c, usageError{"--out and --baseline name the same file; write the new report to another path"}
+	}
 	if c.failOnKEV && c.noExploitData {
 		return c, usageError{"--fail-on-kev needs exploit data; it cannot be combined with --no-exploit-data"}
 	}
@@ -178,9 +187,10 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer, deps 
 }
 
 // runScanSafe is runScan with stderr already neutralised. It exits 1 when
-// a finding trips the gate (threshold, malicious package, or KEV with
-// --fail-on-kev) and 2 when the scan fails after the flags were accepted,
-// including --fail-on-kev without the KEV catalog; then any --out file is
+// a finding gates (threshold, malicious package, or KEV with --fail-on-kev;
+// with --baseline only new findings, and malicious ones, count) and 2 when
+// the scan fails after the flags were accepted, including --fail-on-kev
+// without the KEV catalog and a bad --baseline; then any --out file is
 // removed so no stale report survives.
 func runScanSafe(ctx context.Context, args []string, stdout, stderr io.Writer, deps scanDeps) int {
 	cfg, err := parseScanFlags(args, stderr)
@@ -232,6 +242,10 @@ func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, 
 	if err != nil {
 		return false, err
 	}
+	baseline, err := loadBaseline(cfg.baseline)
+	if err != nil {
+		return false, err
+	}
 
 	level := slog.LevelWarn
 	if cfg.verbose {
@@ -240,6 +254,13 @@ func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, 
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
 	if !cfg.quiet {
 		fmt.Fprintf(stderr, "orbit: scanning %s\n", cfg.path)
+		if baseline != nil {
+			from := ""
+			if baseline.ToolVersion != "" {
+				from = ", written by orbit " + baseline.ToolVersion
+			}
+			fmt.Fprintf(stderr, "orbit: comparing with baseline %s (%d findings%s)\n", cfg.baseline, baseline.Len(), from)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, cfg.timeout)
@@ -262,6 +283,7 @@ func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, 
 
 	findings, summary := report.BuildWithOptions(res, ignores,
 		report.BuildOptions{Threshold: cfg.threshold, FailOnKEV: cfg.failOnKEV}, deps.now())
+	report.ApplyBaseline(findings, &summary, baseline)
 
 	if cfg.out == "-" {
 		if err := writeStdout(stdout, cfg.format, findings, summary, sarifOptions(root)); err != nil {
@@ -386,6 +408,61 @@ func loadIgnores(cfg scanConfig, root string) (*report.IgnoreList, error) {
 		return nil, fmt.Errorf("ignore file %s: %w", name, err)
 	}
 	return list, nil
+}
+
+// maxBaselineBytes caps the size of a baseline report.
+const maxBaselineBytes = 64 << 20
+
+// loadBaseline reads and parses --baseline before the scan starts, so a bad
+// baseline fails fast (exit 2) without a network round trip. "" means no
+// baseline. A missing file is an error, like a missing --ignore-file: the CI
+// templates check for the file themselves and leave the flag out on a first
+// run. Like an explicit --ignore-file, it may be a symlink but must lead to a
+// regular file, so a directory or a FIFO is refused without blocking.
+func loadBaseline(path string) (*report.Baseline, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := readRegularFile(path, maxBaselineBytes)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("baseline %s does not exist; on a first run there is no baseline yet, so leave out --baseline", path)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("baseline: %w", err)
+	}
+	b, err := report.ParseBaseline(data)
+	if err != nil {
+		return nil, fmt.Errorf("baseline %s: %w", path, err)
+	}
+	return b, nil
+}
+
+// sameFile reports whether a and b name the same file: the same existing
+// file, whatever the spelling (relative or absolute, through a symlinked
+// directory or a symlink to the file), or, when one does not exist yet, the
+// same path once made absolute with its directory's symlinks resolved. It
+// only stats the paths, so a FIFO is not opened.
+func sameFile(a, b string) bool {
+	if ia, err := os.Stat(a); err == nil {
+		if ib, err := os.Stat(b); err == nil {
+			return os.SameFile(ia, ib)
+		}
+	}
+	ra, rb := resolvePath(a), resolvePath(b)
+	return ra != "" && ra == rb
+}
+
+// resolvePath makes p absolute and resolves the symlinks of its directory;
+// "" if p cannot be made absolute.
+func resolvePath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return ""
+	}
+	if dir, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		return filepath.Join(dir, filepath.Base(abs))
+	}
+	return abs
 }
 
 // readRegularFile reads path, following symlinks, if it is a regular file of

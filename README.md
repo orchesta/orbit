@@ -163,6 +163,7 @@ After the findings, the table recommends one upgrade per installed package: the 
 | `--format` | `table` | `table`, `json`, `sarif` or `junit` |
 | `--out` | `-` (stdout) | Report file |
 | `--ignore-file` | `<path>/.orbitignore` if it exists | Accepted findings; `""` disables it |
+| `--baseline` | none | Earlier `orbit scan --format json` report; only findings that are not in it fail the scan (see [below](#only-new-findings---baseline)) |
 | `--outdated` | off | Also ask the registries for the latest versions |
 | `--fail-on-kev` | off | Also exit 1 on any finding in the CISA KEV catalog, whatever its severity |
 | `--no-exploit-data` | off | Do not download the KEV catalog or ask api.first.org for EPSS scores |
@@ -173,9 +174,9 @@ After the findings, the table recommends one upgrade per installed package: the 
 
 | Code | Meaning |
 | --- | --- |
-| 0 | No finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV |
-| 1 | At least one finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV |
-| 2 | The scan could not complete: osv.dev unreachable, timeout, bad flag, missing or invalid ignore file, or `--fail-on-kev` without the KEV catalog |
+| 0 | No finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV. With `--baseline`, only findings that are not in the baseline count, except malicious packages, which always count |
+| 1 | At least one finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV. With `--baseline`, only findings that are not in the baseline count, except malicious packages, which always count |
+| 2 | The scan could not complete: osv.dev unreachable, timeout, bad flag, missing or invalid ignore file or baseline, or `--fail-on-kev` without the KEV catalog |
 
 On exit 2 nothing is written to stdout and an existing `--out` file is deleted, so a stale report is never uploaded. An osv.dev failure never counts as "no vulnerabilities".
 
@@ -209,6 +210,21 @@ CVE-2024-1234        package=lodash      Accepted until the upgrade, see JIRA-12
 - Entries do not apply to malicious packages (see below). A matching entry produces a `not applied` warning instead.
 - A malformed line is an error (exit 2) that names the line. Entries that never matched produce an `unused ignore entry` warning.
 - Ignored findings still appear in the reports, marked as ignored.
+
+### Only new findings: `--baseline`
+
+On a project that already has known vulnerabilities, `--baseline` lets a pull request fail only on the findings it introduces, while every finding is still reported. The baseline is an earlier JSON report, usually from the default branch:
+
+```bash
+orbit scan --format json --fail-on none --out orbit-baseline.json   # on the default branch
+orbit scan --baseline orbit-baseline.json                           # on a pull request
+```
+
+- A finding is **existing** when the baseline has a finding on the same ecosystem and package that shares an advisory ID or alias with it. Package names are compared the way `.orbitignore` compares them (PEP 503 for PyPI, case-insensitive for NuGet, exact otherwise). Versions and manifests are not compared: upgrading a package that stays vulnerable does not make its finding new, and neither does the same advisory on the same package in another manifest of the repository.
+- Only new findings that are not ignored and reach `--fail-on` (or, with `--fail-on-kev`, are in CISA KEV) cause exit 1. Malicious packages are the exception: they fail the scan even when the baseline lists them. Every format shows which findings are new: `(new)` on new rows of the table and `N new` in its summary, `"new"` in JSON (without `--baseline` every finding is new), `baselineState` `new` or `unchanged` in SARIF, and in JUnit a skipped test case instead of a failure for an existing finding.
+- An advisory published after the baseline was written is new, even on a package the pull request did not touch. Refresh the baseline regularly, for example with a scheduled run on the default branch.
+- The baseline is any JSON report with `schema_version` 1, from any Orbit version; the version that wrote it is shown on stderr. A missing, empty or malformed file is an error (exit 2). On a first run, when there is no baseline yet, leave the flag out. `--out` cannot name the baseline file.
+- Whatever the baseline lists does not fail the build, so treat it as trusted input and take it only from runs of your protected default branch.
 
 ### Malicious packages
 
