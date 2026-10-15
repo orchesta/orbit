@@ -45,7 +45,7 @@ The backend is Go, the UI is React, and the database is PostgreSQL. Orbit is an 
 | Interface | Web UI on port 8080, REST API under `/api/v1` | Report on stdout or in a file, exit code 0/1/2 |
 | Triggers | Cron schedule per repository, or **Scan Now** in the UI | Every pipeline run |
 | Outdated versions | Always checked | Only with `--outdated` |
-| Distribution | `ghcr.io/orchesta/orbit` image, Docker Compose, Kubernetes manifest | `ghcr.io/orchesta/orbit-cli` image, release binaries, CI templates |
+| Distribution | `orchesta/orbit` image on Docker Hub, Docker Compose, Kubernetes manifest | `orchesta/orbit-cli` image on Docker Hub, release binaries, CI templates |
 
 Both are the same binary. `orbit` with no arguments, or `orbit serve`, starts the server. `orbit scan` runs the CLI. `orbit version` prints the version and `orbit help` lists the subcommands.
 
@@ -110,7 +110,7 @@ To replace the default database password (`orbit_secret`), add `ORBIT_DATABASE_P
 
 | Option | How |
 | --- | --- |
-| Docker | `docker run --rm -v "$PWD":/src:ro ghcr.io/orchesta/orbit-cli:<tag>` (runs `scan --path /src` by default) |
+| Docker | `docker run --rm -v "$PWD":/src:ro orchesta/orbit-cli:<tag>` ([Docker Hub](https://hub.docker.com/r/orchesta/orbit-cli); runs `scan --path /src` by default) |
 | Release binary | `orbit_<tag>_<os>_<arch>` from the [GitHub releases](https://github.com/orchesta/orbit/releases) for Linux amd64/arm64, macOS arm64 and Windows amd64, verified against `checksums.txt` (see below) |
 | From source | `go install github.com/orchesta/orbit/cmd/orbit@latest` with Go 1.27+ (reports version `dev`), `go build -o orbit ./cmd/orbit` in a clone, or `docker build -f deploy/docker/Dockerfile.cli -t orbit-cli .` |
 
@@ -206,7 +206,9 @@ steps:
       sarif_file: orbit.sarif
 ```
 
-`v1.0.0` is a placeholder for a real release tag. Pin it in both places: `version` is the tag of the `ghcr.io/orchesta/orbit-cli` image the action runs, and a major ref such as `@v1` has no image tag. The action writes `orbit.sarif` by default. A complete workflow is in [`.github/examples/orbit-scan.yml`](.github/examples/orbit-scan.yml), and the action's inputs are in [`action.yml`](action.yml).
+`v1.0.0` is a placeholder for a real release tag. Pin it in both places: `version` is the tag of the `orchesta/orbit-cli` image the action runs, and a major ref such as `@v1` has no image tag. The action writes `orbit.sarif` by default. A complete workflow is in [`.github/examples/orbit-scan.yml`](.github/examples/orbit-scan.yml), and the action's inputs are in [`action.yml`](action.yml).
+
+The templates pull `orchesta/orbit-cli` from Docker Hub, which limits pulls by anonymous users. If many pipelines share one IP address, log in to Docker Hub in the job (`docker login`) or mirror the image to your own registry (`imageName` in the Azure template, the `image` of the GitLab job).
 
 ### GitLab CI and Azure Pipelines
 
@@ -404,7 +406,7 @@ bash run.sh
 
 - fill in `jwt-secret` and `encryption-key` in the `orbit-secrets` Secret (or create the Secret separately) and change `database-password`,
 - add a `setup-token` key to the Secret; it is optional in the manifest but recommended before the first setup,
-- replace `image: orbit:latest` with a published image such as `ghcr.io/orchesta/orbit:<tag>`,
+- replace `image: orbit:latest` with a published image such as `orchesta/orbit:<tag>`,
 - provide PostgreSQL yourself: the manifest expects a service named `postgres-service` and connects with `sslmode=require`.
 
 ```bash
@@ -418,10 +420,10 @@ The manifest runs one replica. Login rate limits are kept in memory, so with mor
 Pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which publishes:
 
 - a GitHub release with `orbit_<tag>_<os>_<arch>` binaries for Linux amd64 and arm64, macOS arm64 and Windows amd64 (`.exe`), plus `checksums.txt` (SHA-256),
-- `ghcr.io/orchesta/orbit:<tag>`, the server image with the UI,
-- `ghcr.io/orchesta/orbit-cli:<tag>`, the CLI-only image (no `git`, entrypoint `orbit`, default command `scan --path /src`).
+- [`orchesta/orbit:<tag>`](https://hub.docker.com/r/orchesta/orbit) on Docker Hub, the server image with the UI,
+- [`orchesta/orbit-cli:<tag>`](https://hub.docker.com/r/orchesta/orbit-cli) on Docker Hub, the CLI-only image (no `git`, entrypoint `orbit`, default command `scan --path /src`).
 
-Both images are built for `linux/amd64` and `linux/arm64`. Release tags also update `latest`; prerelease tags (containing `-`, such as `v1.2.0-rc1`) only get their own tag.
+Both images are built for `linux/amd64` and `linux/arm64`. Release tags also update `latest`; prerelease tags (containing `-`, such as `v1.2.0-rc1`) only get their own tag. Publishing needs the repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
 
 The release binaries are mainly for the CLI. The server serves the UI from `./ui/dist` on disk, so use the server image to run the server.
 

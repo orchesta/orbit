@@ -38,7 +38,7 @@ parameters:
     default: true
   - name: imageName
     type: string
-    default: ghcr.io/orchesta/orbit-cli
+    default: orchesta/orbit-cli
   - name: binaryBaseUrl
     type: string
     default: https://github.com/orchesta/orbit/releases/download

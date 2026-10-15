@@ -92,14 +92,26 @@ jobs:
           fi
 
   images:
-    name: Images (ghcr.io)
+    name: Images (Docker Hub)
     runs-on: ubuntu-latest
     # Publish images only after the binaries and the release succeeded.
     needs: [release]
     permissions:
       contents: read
-      packages: write
     steps:
+      # Docker Hub credentials: repository secrets DOCKERHUB_USERNAME and
+      # DOCKERHUB_TOKEN (an access token with write access to orchesta/orbit
+      # and orchesta/orbit-cli).
+      - name: Check Docker Hub credentials
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::error::set the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets"
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -111,9 +123,8 @@ jobs:
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # Prereleases (tag contains '-') get only their own tag, never 'latest'.
       - name: Compute image tags
@@ -124,11 +135,11 @@ jobs:
           case "$TAG" in
             *+*) echo "::error::tag '$TAG' contains '+'; not allowed"; exit 1 ;;
           esac
-          server="ghcr.io/orchesta/orbit:${TAG}"
-          cli="ghcr.io/orchesta/orbit-cli:${TAG}"
+          server="docker.io/orchesta/orbit:${TAG}"
+          cli="docker.io/orchesta/orbit-cli:${TAG}"
           case "$TAG" in
             *-*) ;;
-            *) server="${server},ghcr.io/orchesta/orbit:latest"; cli="${cli},ghcr.io/orchesta/orbit-cli:latest" ;;
+            *) server="${server},docker.io/orchesta/orbit:latest"; cli="${cli},docker.io/orchesta/orbit-cli:latest" ;;
           esac
           echo "server=${server}" >> "$GITHUB_OUTPUT"
           echo "cli=${cli}" >> "$GITHUB_OUTPUT"
