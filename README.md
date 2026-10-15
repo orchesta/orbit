@@ -167,7 +167,7 @@ threshold high: FAILED
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Clean; or every finding is below `--fail-on` or ignored, none is a malicious package and, with `--fail-on-kev`, none is in CISA KEV; or `--fail-on none` without `--fail-on-kev` |
+| 0 | No finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV |
 | 1 | At least one finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV |
 | 2 | The scan could not complete: osv.dev unreachable, timeout, bad flag, missing or invalid ignore file, or `--fail-on-kev` without the KEV catalog |
 
@@ -180,9 +180,9 @@ For every finding with a CVE ID (as its ID or an alias), Orbit adds:
 - **KEV**: the CVE is in CISA's [Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) catalog, which means exploitation in the wild has been reported, and the date CISA listed it.
 - **EPSS**: FIRST's [Exploit Prediction Scoring System](https://www.first.org/epss/) estimate of the probability of exploitation activity in the next 30 days, with its percentile.
 
-Severity and `--fail-on` do not change. Within one severity, findings in KEV come first, then higher EPSS. `--fail-on-kev` adds a second gate: any finding in KEV that is not ignored fails the build, even a low one.
+Severity and `--fail-on` do not change. Within one severity, findings in KEV come first, then higher EPSS. `--fail-on-kev` adds a second gate: any finding in KEV that is not ignored fails the build, even a low one. The table reports the two gates on separate lines, `threshold <level>` for `--fail-on` and malicious packages and `fail on KEV` for `--fail-on-kev`; the build fails if either says `FAILED`.
 
-If cisa.gov or api.first.org cannot be reached, the scan still completes and prints a warning, and the findings lack that signal; `summary.exploit_data` in the JSON report says which source answered. The exception is `--fail-on-kev`: without the catalog that gate cannot be checked, so the scan exits 2.
+If cisa.gov or api.first.org cannot be reached, the scan still completes and prints a warning, and the findings lack that signal; `summary.exploit_data` in the JSON report says which source answered, and without the catalog the table's KEV column shows `?`. The exception is `--fail-on-kev`: without the catalog that gate cannot be checked, so the scan exits 2.
 
 Advisories without a CVE ID (some GHSA-only advisories, all `MAL-` records) have no exploit signals. EPSS is a probability, not a verdict; a low score does not mean a vulnerability is safe to ignore.
 
@@ -317,7 +317,7 @@ Compose-only variables, set in `deploy/docker/.env`: `ORBIT_DATABASE_PASSWORD` (
 
 `orbit.yaml` also contains `log.level`, `log.format` and `scanner.default_schedule`. The current server does not apply them: it always logs JSON at `info` level, and new repositories get the schedule `0 */6 * * *` unless one is given when they are added.
 
-The CLI reads no configuration file and is configured with flags; it always uses the public KEV and EPSS services unless --no-exploit-data is given. It honours `NO_COLOR`, and its HTTP client uses Go's default transport, so the standard `HTTPS_PROXY`/`NO_PROXY` variables apply.
+The CLI reads no configuration file and is configured with flags; it always uses the public KEV and EPSS services unless `--no-exploit-data` is given. It honours `NO_COLOR`, and its HTTP client uses Go's default transport, so the standard `HTTPS_PROXY`/`NO_PROXY` variables apply.
 
 ## REST API
 
