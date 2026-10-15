@@ -46,7 +46,7 @@ The backend is Go, the UI is React, and the database is PostgreSQL. Orbit is an 
 | Interface | Web UI on port 8080, REST API under `/api/v1` | Report on stdout or in a file, exit code 0/1/2 |
 | Triggers | Cron schedule per repository, or **Scan Now** in the UI | Every pipeline run |
 | Outdated versions | Always checked | Only with `--outdated` |
-| Distribution | `ghcr.io/aligoren/orbit` image, Docker Compose, Kubernetes manifest | `ghcr.io/aligoren/orbit-cli` image, release binaries, CI templates |
+| Distribution | `ghcr.io/orchesta/orbit` image, Docker Compose, Kubernetes manifest | `ghcr.io/orchesta/orbit-cli` image, release binaries, CI templates |
 
 Both are the same binary. `orbit` with no arguments, or `orbit serve`, starts the server. `orbit scan` runs the CLI. `orbit version` prints the version and `orbit help` lists the subcommands.
 
@@ -55,7 +55,7 @@ Both are the same binary. `orbit` with no arguments, or `orbit serve`, starts th
 Prerequisites: Docker with Docker Compose, `git`, `bash` and `openssl`.
 
 ```bash
-git clone https://github.com/aligoren/orbit.git
+git clone https://github.com/orchesta/orbit.git
 cd orbit
 bash run.sh
 ```
@@ -111,8 +111,8 @@ To replace the default database password (`orbit_secret`), add `ORBIT_DATABASE_P
 
 | Option | How |
 | --- | --- |
-| Docker | `docker run --rm -v "$PWD":/src:ro ghcr.io/aligoren/orbit-cli:<tag>` (runs `scan --path /src` by default) |
-| Release binary | `orbit_<tag>_<os>_<arch>` from the [GitHub releases](https://github.com/aligoren/orbit/releases) for Linux amd64/arm64, macOS arm64 and Windows amd64, verified against `checksums.txt` ([commands](docs/cli/README.md#release-binary)) |
+| Docker | `docker run --rm -v "$PWD":/src:ro ghcr.io/orchesta/orbit-cli:<tag>` (runs `scan --path /src` by default) |
+| Release binary | `orbit_<tag>_<os>_<arch>` from the [GitHub releases](https://github.com/orchesta/orbit/releases) for Linux amd64/arm64, macOS arm64 and Windows amd64, verified against `checksums.txt` ([commands](docs/cli/README.md#release-binary)) |
 | From source | `go build -o orbit ./cmd/orbit` with Go 1.27+, or `docker build -f deploy/docker/Dockerfile.cli -t orbit-cli .` |
 
 Images and binaries are published when a `v*` tag is pushed (see [Releases and images](#releases-and-images)).
@@ -183,7 +183,7 @@ permissions:
   security-events: write   # for the SARIF upload
 steps:
   - uses: actions/checkout@<full commit SHA> # vX.Y.Z
-  - uses: aligoren/orbit@v1.0.0
+  - uses: orchesta/orbit@v1.0.0
     with:
       fail-on: high
       version: v1.0.0
@@ -193,7 +193,7 @@ steps:
       sarif_file: orbit.sarif
 ```
 
-`v1.0.0` is a placeholder for a real release tag. Pin it in both places: `version` is the tag of the `ghcr.io/aligoren/orbit-cli` image the action runs, and a major ref such as `@v1` has no image tag. The action writes `orbit.sarif` by default. A complete workflow is in [`.github/examples/orbit-scan.yml`](.github/examples/orbit-scan.yml), and the action's inputs are in [`action.yml`](action.yml).
+`v1.0.0` is a placeholder for a real release tag. Pin it in both places: `version` is the tag of the `ghcr.io/orchesta/orbit-cli` image the action runs, and a major ref such as `@v1` has no image tag. The action writes `orbit.sarif` by default. A complete workflow is in [`.github/examples/orbit-scan.yml`](.github/examples/orbit-scan.yml), and the action's inputs are in [`action.yml`](action.yml).
 
 ### GitLab CI and Azure Pipelines
 
@@ -389,7 +389,7 @@ bash run.sh
 
 - fill in `jwt-secret` and `encryption-key` in the `orbit-secrets` Secret (or create the Secret separately) and change `database-password`,
 - add a `setup-token` key to the Secret; it is optional in the manifest but recommended before the first setup,
-- replace `image: orbit:latest` with a published image such as `ghcr.io/aligoren/orbit:<tag>`,
+- replace `image: orbit:latest` with a published image such as `ghcr.io/orchesta/orbit:<tag>`,
 - provide PostgreSQL yourself: the manifest expects a service named `postgres-service` and connects with `sslmode=require`.
 
 ```bash
@@ -403,8 +403,8 @@ The manifest runs one replica. Login rate limits are kept in memory, so with mor
 Pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which publishes:
 
 - a GitHub release with `orbit_<tag>_<os>_<arch>` binaries for Linux amd64 and arm64, macOS arm64 and Windows amd64 (`.exe`), plus `checksums.txt` (SHA-256),
-- `ghcr.io/aligoren/orbit:<tag>`, the server image with the UI,
-- `ghcr.io/aligoren/orbit-cli:<tag>`, the CLI-only image (no `git`, entrypoint `orbit`, default command `scan --path /src`).
+- `ghcr.io/orchesta/orbit:<tag>`, the server image with the UI,
+- `ghcr.io/orchesta/orbit-cli:<tag>`, the CLI-only image (no `git`, entrypoint `orbit`, default command `scan --path /src`).
 
 Both images are built for `linux/amd64` and `linux/arm64`. Release tags also update `latest`; prerelease tags (containing `-`, such as `v1.2.0-rc1`) only get their own tag.
 
