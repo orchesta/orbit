@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"path"
 	"slices"
@@ -20,7 +21,9 @@ import (
 // formats records directness for every entry, so Resolve derives it from the
 // package.json files the lockfile covers (which also handles workspaces).
 // Workspace packages and other linked folders are reported as Internal
-// entries, with their directories.
+// entries, with their directories. package-lock.json v2 and v3 entries also
+// carry Via, the direct dependencies that pull them in (see lockVia); the
+// other formats leave it nil.
 
 func isLockfile(p string) bool {
 	switch path.Base(p) {
@@ -89,7 +92,11 @@ type depSet struct {
 	deps  []analyzer.ParsedDependency
 }
 
-func (s *depSet) add(name, version string, dev bool) {
+func (s *depSet) add(name, version string, dev bool) { s.addVia(name, version, dev, nil) }
+
+// addVia is add with the direct dependencies that pull the entry in. A
+// repeated name/version pair keeps the union of them.
+func (s *depSet) addVia(name, version string, dev bool, via []string) {
 	if name == "" || !isRegistryVersion(version) {
 		return
 	}
@@ -99,10 +106,13 @@ func (s *depSet) add(name, version string, dev bool) {
 	key := [2]string{name, version}
 	if i, ok := s.index[key]; ok {
 		s.deps[i].Dev = s.deps[i].Dev && dev
+		s.deps[i].Via = analyzer.MergeNames(s.deps[i].Via, via)
 		return
 	}
 	s.index[key] = len(s.deps)
-	s.deps = append(s.deps, analyzer.ParsedDependency{Name: name, CurrentVersion: version, Resolved: true, Dev: dev})
+	s.deps = append(s.deps, analyzer.ParsedDependency{
+		Name: name, CurrentVersion: version, Resolved: true, Dev: dev, Via: analyzer.MergeNames(nil, via),
+	})
 }
 
 // addInternal records a package of the project itself (a workspace or a
@@ -165,6 +175,154 @@ type lockPackage struct {
 	Link        bool   `json:"link"`
 	Dev         bool   `json:"dev"`
 	DevOptional bool   `json:"devOptional"`
+	// Dependency maps, kept raw: only their keys are used, and a value of
+	// an unexpected shape must not fail the whole lockfile.
+	Dependencies         json.RawMessage `json:"dependencies"`
+	DevDependencies      json.RawMessage `json:"devDependencies"`
+	OptionalDependencies json.RawMessage `json:"optionalDependencies"`
+	PeerDependencies     json.RawMessage `json:"peerDependencies"`
+}
+
+// requiredNames returns the names a packages entry depends on: its
+// dependencies, optionalDependencies and peerDependencies, and for a
+// project folder its devDependencies. A map that is not a JSON object is
+// ignored.
+func (p lockPackage) requiredNames(projectFolder bool) []string {
+	fields := []json.RawMessage{p.Dependencies, p.OptionalDependencies, p.PeerDependencies}
+	if projectFolder {
+		fields = append(fields, p.DevDependencies)
+	}
+	var names []string
+	for _, raw := range fields {
+		if len(raw) == 0 {
+			continue
+		}
+		var m map[string]json.RawMessage
+		if json.Unmarshal(raw, &m) != nil {
+			continue
+		}
+		for n := range m {
+			names = append(names, n)
+		}
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
+// isProjectFolder reports whether a packages key is the root ("") or a
+// workspace folder, rather than an installed package under node_modules.
+func isProjectFolder(key string) bool {
+	return key == "" || !(strings.HasPrefix(key, "node_modules/") || strings.Contains(key, "/node_modules/"))
+}
+
+// resolveLockDep finds the packages key that name resolves to when required
+// from the entry at from, as Node does: from's own node_modules first, then
+// each parent folder's, up to the root.
+func resolveLockDep(pkgs map[string]lockPackage, from, name string) (string, bool) {
+	dir := from
+	if dir == "" {
+		dir = "."
+	}
+	for {
+		if path.Base(dir) != "node_modules" {
+			key := path.Join(dir, "node_modules", name)
+			if _, ok := pkgs[key]; ok {
+				return key, true
+			}
+		}
+		parent := path.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+// lockVia returns, for each packages key of a lockfile v2 or v3, the
+// sorted names of the direct dependencies that pull it in. Direct
+// dependencies are the names the root and the workspace folders declare;
+// the walk follows the dependency maps of each entry (see requiredNames)
+// and resolves names with resolveLockDep. An entry a project folder
+// declares gets no names, since it is direct; links (workspaces) are not
+// followed, since their folders are project folders themselves. Entries
+// nothing reaches are left out.
+//
+// Each edge is resolved once. The walk runs once per distinct direct
+// dependency name, starting from every entry that name resolves to (the
+// root and a workspace may each have their own copy), so the work is
+// O(names x reachable edges): a shared transitive dependency is visited
+// once per name that reaches it, which is also the size of its Via. The
+// walks share one visit stamp per entry instead of a set per walk.
+func lockVia(pkgs map[string]lockPackage) map[string][]string {
+	keys := make([]string, 0, len(pkgs))
+	for key := range pkgs {
+		keys = append(keys, key)
+	}
+	index := make(map[string]int, len(keys))
+	for i, key := range keys {
+		index[key] = i
+	}
+
+	edges := make([][]int, len(keys))
+	direct := make([]bool, len(keys))
+	starts := make(map[string][]int) // direct dependency name -> entries it resolves to
+	for i, key := range keys {
+		pkg := pkgs[key]
+		if pkg.Link {
+			continue
+		}
+		project := isProjectFolder(key)
+		for _, name := range pkg.requiredNames(project) {
+			target, ok := resolveLockDep(pkgs, key, name)
+			if !ok || pkgs[target].Link {
+				continue
+			}
+			t := index[target]
+			if project {
+				starts[name] = append(starts[name], t)
+				direct[t] = true
+			} else {
+				edges[i] = append(edges[i], t)
+			}
+		}
+	}
+
+	// Names are walked in order and each walk reaches an entry at most
+	// once, so every via list comes out sorted and without repeats.
+	via := make([][]string, len(keys))
+	stamp := make([]int, len(keys)) // the last walk (1-based) that reached each entry
+	var stack []int
+	for i, name := range slices.Sorted(maps.Keys(starts)) {
+		walk := i + 1
+		stack = stack[:0]
+		for _, s := range starts[name] {
+			if stamp[s] != walk {
+				stamp[s] = walk
+				stack = append(stack, s)
+			}
+		}
+		for len(stack) > 0 {
+			k := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			for _, t := range edges[k] {
+				if stamp[t] == walk {
+					continue
+				}
+				stamp[t] = walk
+				stack = append(stack, t)
+				if !direct[t] {
+					via[t] = append(via[t], name)
+				}
+			}
+		}
+	}
+	out := make(map[string][]string)
+	for i, names := range via {
+		if names != nil {
+			out[keys[i]] = names
+		}
+	}
+	return out
 }
 
 type lockV1Dep struct {
@@ -182,6 +340,7 @@ func parsePackageLock(content []byte) ([]analyzer.ParsedDependency, error) {
 	var set depSet
 	if len(lock.Packages) > 0 {
 		// lockfileVersion 2 and 3.
+		via := lockVia(lock.Packages)
 		const marker = "node_modules/"
 		for key, pkg := range lock.Packages {
 			i := strings.LastIndex(key, marker)
@@ -201,7 +360,7 @@ func parsePackageLock(content []byte) ([]analyzer.ParsedDependency, error) {
 			if pkg.Name != "" {
 				name = pkg.Name // an aliased install: the real package
 			}
-			set.add(name, pkg.Version, pkg.Dev || pkg.DevOptional)
+			set.addVia(name, pkg.Version, pkg.Dev || pkg.DevOptional, via[key])
 		}
 		return set.sorted(), nil
 	}

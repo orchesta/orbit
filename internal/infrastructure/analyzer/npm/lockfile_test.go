@@ -305,3 +305,81 @@ func TestBerryRootWorkspaceIsNotInternal(t *testing.T) {
 		t.Errorf("got %s, want %s", strings.Join(lines, ", "), want)
 	}
 }
+
+func TestPackageLockVia(t *testing.T) {
+	deps, err := NewAnalyzer().ParseDependencies(readFixture(t, "lock-v3-graph/package-lock.json"), "package-lock.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string][]string{}
+	for _, d := range deps {
+		got[d.Name+"@"+d.CurrentVersion] = d.Via
+	}
+	want := map[string][]string{
+		"body-parser@1.19.0": {"express"},
+		"debug@2.6.9":        {"express"},
+		"debug@4.3.4":        {"mocha"},
+		"express@4.17.1":     nil, // declared by the project
+		"left-over@1.0.0":    nil, // nothing requires it
+		"mocha@10.0.0":       nil,
+		"ms@2.0.0":           {"express"},
+		"ms@2.1.2":           {"mocha"},
+		"qs@6.7.0":           {"express"}, // two copies, both under express
+		"qs@6.11.0":          nil,
+		"safe-buffer@5.1.2":  {"express", "mocha"},
+		"side-channel@1.0.4": {"qs"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("via:\n got %v\nwant %v", got, want)
+	}
+}
+
+// Peer dependencies can form cycles, an optional peer may not be installed,
+// and a field npm never writes as a list must not break parsing (these
+// fields were ignored before Via read them).
+func TestPackageLockViaSurvivesCyclesAndOddFields(t *testing.T) {
+	lock := `{"lockfileVersion": 3, "packages": {
+	  "": {"name": "app", "dependencies": {"a": "^1.0.0"}},
+	  "node_modules/a": {"version": "1.0.0", "dependencies": {"b": "^1.0.0"}},
+	  "node_modules/b": {"version": "1.0.0", "dependencies": {"a": "^1.0.0"}, "peerDependencies": {"c": "*", "missing-peer": "*"}},
+	  "node_modules/c": {"version": "1.0.0", "dependencies": ["not", "an", "object"]}
+	}}`
+	deps, err := NewAnalyzer().ParseDependencies([]byte(lock), "package-lock.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []analyzer.ParsedDependency{
+		locked("a", "1.0.0", false),
+		{Name: "b", CurrentVersion: "1.0.0", Resolved: true, Via: []string{"a"}},
+		{Name: "c", CurrentVersion: "1.0.0", Resolved: true, Via: []string{"a"}},
+	}
+	if !reflect.DeepEqual(deps, want) {
+		t.Fatalf("got %+v\nwant %+v", deps, want)
+	}
+}
+
+// Workspace folders declare dependencies of their own; links to workspaces
+// are not followed, since the workspace folder is a root itself.
+func TestPackageLockViaStartsAtWorkspaceFolders(t *testing.T) {
+	lock := `{"lockfileVersion": 3, "packages": {
+	  "": {"name": "mono", "workspaces": ["packages/*"], "dependencies": {"@mono/web": "*"}},
+	  "node_modules/@mono/web": {"resolved": "packages/web", "link": true},
+	  "node_modules/react": {"version": "18.2.0", "dependencies": {"loose-envify": "^1.1.0"}},
+	  "node_modules/loose-envify": {"version": "1.4.0", "dependencies": {"js-tokens": "^3.0.0 || ^4.0.0"}},
+	  "node_modules/js-tokens": {"version": "4.0.0"},
+	  "packages/web": {"name": "@mono/web", "dependencies": {"react": "^18.2.0"}}
+	}}`
+	deps, err := NewAnalyzer().ParseDependencies([]byte(lock), "package-lock.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []analyzer.ParsedDependency{
+		internal("@mono/web", "packages/web"),
+		{Name: "js-tokens", CurrentVersion: "4.0.0", Resolved: true, Via: []string{"react"}},
+		{Name: "loose-envify", CurrentVersion: "1.4.0", Resolved: true, Via: []string{"react"}},
+		locked("react", "18.2.0", false),
+	}
+	if !reflect.DeepEqual(deps, want) {
+		t.Fatalf("got %+v\nwant %+v", deps, want)
+	}
+}
