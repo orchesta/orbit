@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +37,14 @@ type ExploitEnricher interface {
 	Enrich(ctx context.Context, vulns []*entity.Vulnerability) exploit.Result
 }
 
+// LicenseFetcher looks up the license of one package version, for example
+// on deps.dev; depsdev.Client implements it. It returns a normalised SPDX
+// expression, or "" with no error when the source has no SPDX license for
+// the version or does not know it. An error means the lookup itself failed.
+type LicenseFetcher interface {
+	License(ctx context.Context, eco entity.Ecosystem, name, version string) (string, error)
+}
+
 // Options tunes an Engine.
 type Options struct {
 	CheckLatest bool         // query registries for the latest version (outdated info)
@@ -49,6 +58,13 @@ type Options struct {
 	// SkipVia leaves Dependency.Via unset, so lockfiles' dependency graphs
 	// are not walked. The server sets it, since it does not store Via.
 	SkipVia bool
+	// Licenses, if set, is asked for the license of every dependency with
+	// an exact version whose lockfile records none. nil keeps the lockfile
+	// licenses only.
+	Licenses LicenseFetcher
+	// LicenseConcurrency is the number of license lookups in flight;
+	// default 10.
+	LicenseConcurrency int
 }
 
 // defaultConcurrency is the number of registry lookups in flight when
@@ -58,6 +74,10 @@ const defaultConcurrency = 5
 // defaultExploitTimeout bounds the exploit data step when
 // Options.ExploitTimeout is not set.
 const defaultExploitTimeout = 60 * time.Second
+
+// defaultLicenseConcurrency is the number of license lookups in flight when
+// Options.LicenseConcurrency is not set.
+const defaultLicenseConcurrency = 10
 
 // Engine analyzes source trees. It is safe for concurrent use.
 type Engine struct {
@@ -78,6 +98,9 @@ func New(registry *analyzer.Registry, lookup VulnLookup, opts Options) *Engine {
 	}
 	if opts.ExploitTimeout <= 0 {
 		opts.ExploitTimeout = defaultExploitTimeout
+	}
+	if opts.LicenseConcurrency <= 0 {
+		opts.LicenseConcurrency = defaultLicenseConcurrency
 	}
 	logger := opts.Logger
 	if logger == nil {
@@ -106,10 +129,14 @@ type Result struct {
 	VulnerableDeps  int
 	OutdatedDeps    int
 	Manifests       []string // files that were parsed, relative to root
-	Warnings        []string // unreadable/unparseable files, parse warnings, unresolved-version notice, exploit data failures
+	Warnings        []string // unreadable/unparseable files, parse warnings, unresolved-version notice, license lookup and exploit data failures
 	// Exploit says which exploit data sources answered; nil when
 	// Options.Exploit is nil or the vulnerability check failed.
 	Exploit *exploit.Result
+	// LicenseLookupFailed counts the packages whose license lookup failed
+	// (see Options.Licenses); their License stays "". A warning names the
+	// first error.
+	LicenseLookupFailed int
 }
 
 // ErrVulnerabilityCheck marks a failed advisory lookup: the error Analyze
@@ -178,6 +205,9 @@ func (e *Engine) Analyze(ctx context.Context, root string) (*Result, error) {
 
 	if e.opts.CheckLatest {
 		res.OutdatedDeps = e.checkLatestVersions(ctx, res.Dependencies)
+	}
+	if e.opts.Licenses != nil {
+		e.fetchLicenses(ctx, res)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -367,4 +397,111 @@ func (e *Engine) checkLatestVersions(ctx context.Context, deps []*entity.Depende
 	}
 	wg.Wait()
 	return outdatedCount
+}
+
+// exactVersion reports whether d's version names one release, so a license
+// lookup for it is meaningful: lockfile entries and exact pins (Resolved),
+// go.mod versions, and NuGet project references with a plain version, which
+// NuGet resolves to exactly that version when it exists. Manifest ranges
+// such as "^1.2.0" are not looked up.
+func exactVersion(d *entity.Dependency) bool {
+	switch {
+	case d.CurrentVersion == "":
+		return false
+	case d.IsResolved, d.Ecosystem == entity.EcosystemGo:
+		return true
+	case d.Ecosystem == entity.EcosystemNuGet:
+		return !strings.ContainsAny(d.CurrentVersion, "[]()*, ")
+	}
+	return false
+}
+
+// fetchLicenses asks e.opts.Licenses for the license of every dependency
+// with an exact version and no lockfile license, once per (ecosystem, name,
+// version), and records it on every such row of that version; a lockfile
+// license is never overwritten. At most e.opts.LicenseConcurrency lookups
+// run at once. Failed lookups are counted in res.LicenseLookupFailed and
+// summarised in one warning; a panicking fetcher counts as a failure. Once
+// ctx ends no new lookup starts and failures are not counted: Analyze then
+// returns ctx.Err().
+func (e *Engine) fetchLicenses(ctx context.Context, res *Result) {
+	type versionKey struct {
+		eco           entity.Ecosystem
+		name, version string
+	}
+	rows := make(map[versionKey][]*entity.Dependency)
+	var keys []versionKey
+	for _, d := range res.Dependencies {
+		if d.License != "" || !exactVersion(d) {
+			continue
+		}
+		k := versionKey{d.Ecosystem, d.Name, d.CurrentVersion}
+		if _, seen := rows[k]; !seen {
+			keys = append(keys, k)
+		}
+		rows[k] = append(rows[k], d)
+	}
+	if len(keys) == 0 {
+		return
+	}
+
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		failed   int
+		firstErr error
+	)
+	sem := make(chan struct{}, e.opts.LicenseConcurrency)
+	for _, k := range keys {
+		wg.Add(1)
+		go func(k versionKey) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}: // Acquire
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-sem }() // Release
+			license, err := e.safeLicense(ctx, k.eco, k.name, k.version)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				if ctx.Err() == nil {
+					failed++
+					if firstErr == nil {
+						firstErr = err
+					}
+				}
+				return
+			}
+			for _, d := range rows[k] {
+				d.License = license
+			}
+		}(k)
+	}
+	wg.Wait()
+	e.logger.Info("looked up licenses", slog.Int("versions", len(keys)), slog.Int("failed", failed))
+	if failed > 0 {
+		res.LicenseLookupFailed = failed
+		noun := "packages"
+		if failed == 1 {
+			noun = "package"
+		}
+		res.Warnings = append(res.Warnings, fmt.Sprintf("license lookup failed for %d %s: %v", failed, noun, firstErr))
+	}
+}
+
+// safeLicense calls the fetcher, turning a panic into an error.
+func (e *Engine) safeLicense(ctx context.Context, eco entity.Ecosystem, name, version string) (license string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			e.logger.Error("panic while looking up a license",
+				slog.String("package", name),
+				slog.Any("panic", r),
+				slog.String("stack", string(debug.Stack())),
+			)
+			license, err = "", fmt.Errorf("license lookup for %s panicked", name)
+		}
+	}()
+	return e.opts.Licenses.License(ctx, eco, name, version)
 }
