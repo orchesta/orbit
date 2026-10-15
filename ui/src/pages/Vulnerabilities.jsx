@@ -17,6 +17,15 @@ const EPSS_FLOORS = [
   { value: '0.5', label: 'EPSS ≥ 50%' },
 ];
 
+// epssFloors is EPSS_FLOORS plus the floor from the URL when it is not one
+// of them, so the select shows the filter that is applied.
+function epssFloors(minEpss) {
+  if (EPSS_FLOORS.some(o => o.value === minEpss)) return EPSS_FLOORS;
+  const n = Number(minEpss);
+  const pct = Number.isFinite(n) ? `${parseFloat((n * 100).toFixed(4))}%` : minEpss;
+  return [...EPSS_FLOORS, { value: minEpss, label: `EPSS ≥ ${pct}` }];
+}
+
 export default function Vulnerabilities() {
   // URL-based filter & pagination
   const [searchParams, setSearchParams] = useSearchParams();
@@ -135,7 +144,7 @@ export default function Vulnerabilities() {
           onChange={e => setParam('min_epss', e.target.value)}
           className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-sm text-gray-700"
         >
-          {EPSS_FLOORS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          {epssFloors(minEpss).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
         <select
           aria-label="Sort by"

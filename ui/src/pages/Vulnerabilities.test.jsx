@@ -130,6 +130,16 @@ describe('Vulnerabilities', () => {
     expect(calls.at(-1).path).toContain('kev=true');
   });
 
+  it('shows a minimum EPSS from the URL that is not one of the preset floors', async () => {
+    const { calls } = mockFetch({ 'GET /vulnerabilities': { body: { data: page() } } });
+    renderWithProviders(<Vulnerabilities />, { route: '/vulnerabilities?min_epss=0.07', path: '/vulnerabilities' });
+    await waitFor(() => expect(screen.getByLabelText('Minimum EPSS')).toHaveDisplayValue('EPSS ≥ 7%'));
+    expect(calls.at(-1).path).toMatch(/min_epss=0\.07(&|$)/);
+    await userEvent.selectOptions(screen.getByLabelText('Minimum EPSS'), '0.5');
+    await waitFor(() => expect(calls.at(-1).path).toMatch(/min_epss=0\.5(&|$)/));
+    expect(screen.queryByRole('option', { name: 'EPSS ≥ 7%' })).not.toBeInTheDocument();
+  });
+
   it('says when no finding matches the exploit filters', async () => {
     mockFetch({ 'GET /vulnerabilities': { body: { data: page({ counts: { critical: 0, high: 2, medium: 0, low: 0, unknown: 0, kev: 0 } }) } } });
     renderWithProviders(<Vulnerabilities />, { route: '/vulnerabilities?kev=true', path: '/vulnerabilities' });
