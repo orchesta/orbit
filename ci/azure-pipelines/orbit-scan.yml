@@ -149,7 +149,8 @@ steps:
               || echo "warning: could not write orbit.sarif" >&2
             # A failed recording scan fails the build and publishes nothing, so the
             # download keeps taking the previous good build's baseline.
-            if [ "$record" = true ] && ! orbit_run --fail-on none --format json --out /out/orbit-baseline.json --quiet; then
+            if [ "$record" = true ] \
+              && ! orbit_run --fail-on none --format json --out /out/orbit-baseline.json --quiet; then
               echo "##vso[task.logissue type=error]Orbit: could not write orbit-baseline.json;" \
                 "failing the build so the previous good build keeps serving its baseline."
               rm -f "$reports/orbit-baseline.json"
@@ -261,7 +262,8 @@ steps:
               || echo "warning: could not write orbit.sarif" >&2
             # A failed recording scan fails the build and publishes nothing, so the
             # download keeps taking the previous good build's baseline.
-            if [ "$record" = true ] && ! orbit_run --fail-on none --format json --out "$reports/orbit-baseline.json" --quiet; then
+            if [ "$record" = true ] \
+              && ! orbit_run --fail-on none --format json --out "$reports/orbit-baseline.json" --quiet; then
               echo "##vso[task.logissue type=error]Orbit: could not write orbit-baseline.json;" \
                 "failing the build so the previous good build keeps serving its baseline."
               rm -f "$reports/orbit-baseline.json"
