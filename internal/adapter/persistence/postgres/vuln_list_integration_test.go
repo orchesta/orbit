@@ -152,3 +152,49 @@ func TestNewestScanStatusLateralReportsNewestScanOrNull(t *testing.T) {
 		t.Errorf("running status = %v, want running (newest scan wins over the older completed one)", s)
 	}
 }
+
+// addVuln stores one vulnerability on a new dependency of scanID.
+func addVuln(t *testing.T, ctx context.Context, deps *DependencyPostgresRepo, vulns *VulnerabilityPostgresRepo,
+	repoID, scanID uuid.UUID, pkg, osvID string, aliases []string, sev entity.Severity) {
+	t.Helper()
+	d := entity.NewDependency(repoID, scanID, pkg, "1.0.0", "package-lock.json", entity.EcosystemNpm)
+	if err := deps.CreateBatch(ctx, []*entity.Dependency{d}); err != nil {
+		t.Fatal(err)
+	}
+	v := entity.NewVulnerability(d.ID, osvID, "summary", sev)
+	v.Aliases = aliases
+	if err := vulns.CreateBatch(ctx, []*entity.Vulnerability{v}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLatestSummaryCountsMaliciousFindings(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	scans, deps, vulns := NewScanResultPostgresRepo(pool), NewDependencyPostgresRepo(pool), NewVulnerabilityPostgresRepo(pool)
+	repoID := newQueueRepo(t, ctx, pool, "web")
+
+	old := seedScanWithVulns(t, ctx, repoID, time.Now().Add(-2*time.Hour), scans, deps, vulns)
+	addVuln(t, ctx, deps, vulns, repoID, old.ID, "superseded", "MAL-2025-00001", nil, entity.SeverityCritical)
+
+	latest := seedScanWithVulns(t, ctx, repoID, time.Now().Add(-time.Hour), scans, deps, vulns, entity.SeverityHigh)
+	addVuln(t, ctx, deps, vulns, repoID, latest.ID, "debug", "CVE-2025-59144",
+		[]string{"MAL-2025-46974", "GHSA-4x49-vf9v-38px"}, entity.SeverityCritical)
+	// Stored before Lookup rated MAL- advisories critical, ID in lower case.
+	addVuln(t, ctx, deps, vulns, repoID, latest.ID, "chalk", "mal-2025-46969",
+		[]string{"GHSA-2v46-p5h4-248w"}, entity.SeverityUnknown)
+	addVuln(t, ctx, deps, vulns, repoID, latest.ID, "lodash", "CVE-2021-23337",
+		[]string{"GHSA-35jh-r3h4-6jhm"}, entity.SeverityHigh)
+
+	counts, _, err := vulns.LatestSummary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Malicious != 2 || counts.Critical != 1 || counts.High != 2 || counts.Unknown != 1 {
+		t.Fatalf("counts = %+v, want 2 malicious (1 critical, 1 unknown) and 2 high", counts)
+	}
+	n, err := LatestMaliciousCount(ctx, pool)
+	if err != nil || n != 2 {
+		t.Fatalf("LatestMaliciousCount = %d, %v; want 2 (the superseded scan does not count)", n, err)
+	}
+}

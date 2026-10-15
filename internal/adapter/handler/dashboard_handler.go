@@ -31,6 +31,9 @@ type DashboardStats struct {
 	ActiveRepos    int `json:"active_repos"`
 	VulnerableDeps int `json:"vulnerable_deps"`
 	TotalVulns     int `json:"total_vulns"`
+	// MaliciousVulns counts findings of known malicious packages in the
+	// latest completed scans; they are part of TotalVulns.
+	MaliciousVulns int `json:"malicious_vulns"`
 	// UnverifiedRepos counts repositories with no successful vulnerability
 	// check (same definition as the Vulnerabilities page).
 	UnverifiedRepos int `json:"unverified_repos"`
@@ -52,6 +55,10 @@ func (h *DashboardHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stats.VulnerableDeps, stats.TotalVulns = vulnerable, total
+	if stats.MaliciousVulns, err = postgres.LatestMaliciousCount(ctx, h.pool); err != nil {
+		RespondServerError(w, r, err)
+		return
+	}
 	if stats.UnverifiedRepos, err = postgres.UnverifiedRepoCount(ctx, h.pool); err != nil {
 		RespondServerError(w, r, err)
 		return

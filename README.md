@@ -371,7 +371,7 @@ Paginated responses carry `data`, `total`, `page`, `per_page` and `total_pages` 
 
 `GET /vulnerabilities` takes `page` (max 1,000,000), `per_page` (default 25, max 100) and `severity` (`critical`, `high`, `medium`, `low`, `unknown`). Besides the pagination fields it returns `counts` (findings per severity, ignoring the `severity` filter) and `unverified_repositories` (repositories without a successful vulnerability check).
 
-Every vulnerability these endpoints return also has `malicious`: true when its ID or one of its aliases starts with `MAL-` (OpenSSF Malicious Packages). The flag is derived from the stored IDs, so it also covers scans stored before Orbit rated such advisories `critical`.
+Every vulnerability these endpoints return also has `malicious`: true when its ID or one of its aliases starts with `MAL-` (OpenSSF Malicious Packages). The flag is derived from the stored IDs, so it also covers scans stored before Orbit rated such advisories `critical`. `counts.malicious` counts such findings across all severities; they are also counted under their severity.
 
 **Access tokens**
 
@@ -393,7 +393,7 @@ Every vulnerability these endpoints return also has `malicious`: true when its I
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
-| `GET` | `/dashboard/stats` | Aggregate counts (repositories, scans, vulnerabilities) |
+| `GET` | `/dashboard/stats` | Aggregate counts (repositories, scans, vulnerabilities, `malicious_vulns`) |
 
 </details>
 

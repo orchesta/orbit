@@ -43,3 +43,16 @@ const NewestScanStatusJoin = `
 		LEFT JOIN LATERAL (
 			SELECT status FROM scan_results WHERE repository_id = r.id ORDER BY started_at DESC, id DESC LIMIT 1
 		) ns ON true`
+
+// LatestMaliciousCount counts the findings of known malicious packages in
+// each repository's latest completed scan (see maliciousVuln).
+func LatestMaliciousCount(ctx context.Context, pool *pgxpool.Pool) (int, error) {
+	var n int
+	err := pool.QueryRow(ctx, `
+		WITH latest AS (`+latestCompletedScans+`)
+		SELECT COUNT(*) FROM vulnerabilities v
+		JOIN dependencies d ON d.id = v.dependency_id
+		JOIN latest l ON l.id = d.scan_result_id
+		WHERE `+maliciousVuln).Scan(&n)
+	return n, err
+}
