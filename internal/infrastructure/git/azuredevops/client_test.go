@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	gitprovider "github.com/aligoren/orbit/internal/infrastructure/git"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	gitprovider "github.com/orchesta/orbit/internal/infrastructure/git"
 )
 
 func TestMain(m *testing.M) {

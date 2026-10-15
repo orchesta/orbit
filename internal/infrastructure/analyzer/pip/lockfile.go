@@ -8,7 +8,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/aligoren/orbit/internal/infrastructure/analyzer"
+	"github.com/orchesta/orbit/internal/infrastructure/analyzer"
 )
 
 // Lockfile parsers report every entry with IsDirect false: poetry.lock,

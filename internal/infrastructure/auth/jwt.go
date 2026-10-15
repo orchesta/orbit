@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/domain/repository"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/repository"
 )
 
 type contextKey string

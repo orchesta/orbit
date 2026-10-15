@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"unicode/utf8"
 
-	"github.com/aligoren/orbit/internal/adapter/persistence/postgres"
-	"github.com/aligoren/orbit/internal/domain/entity"
-	domainrepo "github.com/aligoren/orbit/internal/domain/repository"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/adapter/persistence/postgres"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	domainrepo "github.com/orchesta/orbit/internal/domain/repository"
 )
 
 // tokenStore is the access token persistence TokenHandler uses;

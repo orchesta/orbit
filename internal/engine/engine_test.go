@@ -15,15 +15,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/engine"
-	"github.com/aligoren/orbit/internal/infrastructure/analyzer"
-	"github.com/aligoren/orbit/internal/infrastructure/analyzer/golang"
-	"github.com/aligoren/orbit/internal/infrastructure/analyzer/npm"
-	"github.com/aligoren/orbit/internal/infrastructure/analyzer/nuget"
-	"github.com/aligoren/orbit/internal/infrastructure/analyzer/pip"
-	"github.com/aligoren/orbit/internal/usecase/vulnerability"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/engine"
+	"github.com/orchesta/orbit/internal/infrastructure/analyzer"
+	"github.com/orchesta/orbit/internal/infrastructure/analyzer/golang"
+	"github.com/orchesta/orbit/internal/infrastructure/analyzer/npm"
+	"github.com/orchesta/orbit/internal/infrastructure/analyzer/nuget"
+	"github.com/orchesta/orbit/internal/infrastructure/analyzer/pip"
+	"github.com/orchesta/orbit/internal/usecase/vulnerability"
 )
 
 // The advisory lookup the server and CLI use fits the engine.

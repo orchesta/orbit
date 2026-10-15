@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	gitprovider "github.com/aligoren/orbit/internal/infrastructure/git"
-	"github.com/aligoren/orbit/internal/infrastructure/httpclient"
+	gitprovider "github.com/orchesta/orbit/internal/infrastructure/git"
+	"github.com/orchesta/orbit/internal/infrastructure/httpclient"
 )
 
 // Ensure interface compliance at compile time.

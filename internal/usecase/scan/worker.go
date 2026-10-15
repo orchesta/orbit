@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/domain/repository"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/repository"
 )
 
 // ScanQueue is the part of scan persistence the worker pool needs.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aligoren/orbit/internal/infrastructure/analyzer"
+	"github.com/orchesta/orbit/internal/infrastructure/analyzer"
 )
 
 // syntheticPnpmLock returns a pnpm v9 lockfile with n packages (n even):

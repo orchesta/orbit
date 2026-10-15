@@ -49,7 +49,7 @@ jobs:
           if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
           mkdir -p dist
           go build -trimpath \
-            -ldflags "-s -w -X github.com/aligoren/orbit/internal/buildinfo.Version=${TAG}" \
+            -ldflags "-s -w -X github.com/orchesta/orbit/internal/buildinfo.Version=${TAG}" \
             -o "dist/orbit_${TAG}_${GOOS}_${GOARCH}${ext}" ./cmd/orbit
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -124,11 +124,11 @@ jobs:
           case "$TAG" in
             *+*) echo "::error::tag '$TAG' contains '+'; not allowed"; exit 1 ;;
           esac
-          server="ghcr.io/aligoren/orbit:${TAG}"
-          cli="ghcr.io/aligoren/orbit-cli:${TAG}"
+          server="ghcr.io/orchesta/orbit:${TAG}"
+          cli="ghcr.io/orchesta/orbit-cli:${TAG}"
           case "$TAG" in
             *-*) ;;
-            *) server="${server},ghcr.io/aligoren/orbit:latest"; cli="${cli},ghcr.io/aligoren/orbit-cli:latest" ;;
+            *) server="${server},ghcr.io/orchesta/orbit:latest"; cli="${cli},ghcr.io/orchesta/orbit-cli:latest" ;;
           esac
           echo "server=${server}" >> "$GITHUB_OUTPUT"
           echo "cli=${cli}" >> "$GITHUB_OUTPUT"

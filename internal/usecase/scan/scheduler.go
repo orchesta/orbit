@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/usecase/schedule"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/usecase/schedule"
 )
 
 // DueRepositories hands out repositories whose next scheduled scan is due.

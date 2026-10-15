@@ -23,7 +23,6 @@ The backend is Go, the UI is React, and the database is PostgreSQL. Orbit is an 
 - [Security notes](#security-notes)
 - [Limitations](#limitations)
 - [Development](#development)
-- [Documentation](#documentation)
 - [License](#license)
 
 ## Features
@@ -94,7 +93,7 @@ To replace the default database password (`orbit_secret`), add `ORBIT_DATABASE_P
    ```
 
    The token makes sure nobody else can claim a freshly exposed instance by creating the first admin account.
-3. **Settings → Access Tokens → Add Token**: add a GitHub or GitLab personal access token. For Azure DevOps, add a connection under **Azure DevOps connections** first, then a token for it (see [Azure DevOps](docs/providers/azure-devops.md)).
+3. **Settings → Access Tokens → Add Token**: add a GitHub or GitLab personal access token. For Azure DevOps, add a connection under **Azure DevOps connections** first, then a token for it (see [Git providers](#git-providers)).
 4. **Repositories → Import**: pick repositories from a token, or add one manually by URL.
 5. Each repository is scanned on its schedule (default `0 */6 * * *`, every 6 hours; schedules run at most every 15 minutes). Open a repository and click **Scan Now** for an immediate scan.
 6. Check the **Dashboard** for the overview and **Vulnerabilities** for the findings of each repository's latest scan.
@@ -105,17 +104,26 @@ To replace the default database password (`orbit_secret`), add `ORBIT_DATABASE_P
 
 ## Command line: `orbit scan`
 
-`orbit scan` checks a directory that is already on disk, such as your working copy or a CI checkout, without a server or a database. It prints or writes a report and exits with a code a build can act on. Full reference: [docs/cli](docs/cli/README.md).
+`orbit scan` checks a directory that is already on disk, such as your working copy or a CI checkout, without a server or a database. It prints or writes a report and exits with a code a build can act on. `orbit scan -h` lists every flag.
 
 ### Install
 
 | Option | How |
 | --- | --- |
 | Docker | `docker run --rm -v "$PWD":/src:ro ghcr.io/orchesta/orbit-cli:<tag>` (runs `scan --path /src` by default) |
-| Release binary | `orbit_<tag>_<os>_<arch>` from the [GitHub releases](https://github.com/orchesta/orbit/releases) for Linux amd64/arm64, macOS arm64 and Windows amd64, verified against `checksums.txt` ([commands](docs/cli/README.md#release-binary)) |
+| Release binary | `orbit_<tag>_<os>_<arch>` from the [GitHub releases](https://github.com/orchesta/orbit/releases) for Linux amd64/arm64, macOS arm64 and Windows amd64, verified against `checksums.txt` (see below) |
 | From source | `go build -o orbit ./cmd/orbit` with Go 1.27+, or `docker build -f deploy/docker/Dockerfile.cli -t orbit-cli .` |
 
-Images and binaries are published when a `v*` tag is pushed (see [Releases and images](#releases-and-images)).
+Images and binaries are published when a `v*` tag is pushed (see [Releases and images](#releases-and-images)). To install a release binary on Linux or macOS:
+
+```bash
+TAG=v1.0.0                      # the release you want
+ASSET=orbit_${TAG}_linux_amd64  # or linux_arm64, darwin_arm64, windows_amd64.exe
+BASE=https://github.com/orchesta/orbit/releases/download/$TAG
+curl -fsSLO "$BASE/$ASSET" && curl -fsSLO "$BASE/checksums.txt"
+grep " $ASSET\$" checksums.txt | sha256sum -c -     # macOS: shasum -a 256 -c -
+chmod +x "$ASSET" && sudo mv "$ASSET" /usr/local/bin/orbit
+```
 
 ### Usage
 
@@ -169,11 +177,16 @@ GHSA-xxxx-yyyy-zzzz  expires=2026-12-31  Not reachable: only used in tests
 CVE-2024-1234        package=lodash      Accepted until the upgrade, see JIRA-12
 ```
 
-Expired entries stop matching and produce a warning, and so do entries that never matched. The format is described in [docs/cli](docs/cli/README.md#orbitignore).
+- Put the file at the root of the scanned directory, or pass it with `--ignore-file`. Blank lines and lines starting with `#` are ignored.
+- Matching is case-insensitive and covers the ID a finding is reported under and its aliases, so either the CVE or the GHSA ID works.
+- `expires=YYYY-MM-DD` keeps an entry active until the end of that day (UTC); after that the finding counts again and a warning is printed.
+- `package=<name>` limits an entry to one package.
+- A malformed line is an error (exit 2) that names the line. Entries that never matched produce an `unused ignore entry` warning.
+- Ignored findings still appear in the reports, marked as ignored.
 
 ## Quick start: CI
 
-The same `orbit scan` runs in ready-made templates. Full guide: [docs/ci](docs/ci/README.md).
+The same `orbit scan` runs in ready-made templates. Each template describes its inputs in the comment at its top.
 
 ### GitHub Actions
 
@@ -200,7 +213,7 @@ steps:
 - GitLab CI: include [`ci/gitlab/orbit.gitlab-ci.yml`](ci/gitlab/orbit.gitlab-ci.yml). It writes a JUnit report for the merge request and a SARIF artifact.
 - Azure Pipelines: use the step template [`ci/azure-pipelines/orbit-scan.yml`](ci/azure-pipelines/orbit-scan.yml) (example: [`example.yml`](ci/azure-pipelines/example.yml)). It works on Azure DevOps Services and on Azure DevOps Server 2020 and later, in a container or with a downloaded, checksum-verified binary (Windows agents too).
 
-Setup, parameters and caveats for both are in [docs/ci](docs/ci/README.md).
+Parameters and caveats for both are in the comment at the top of each template.
 
 ## Supported ecosystems and files
 
@@ -226,7 +239,9 @@ The server imports and clones repositories from:
 | Azure DevOps Services | `dev.azure.com/{org}`, `{org}.visualstudio.com` | Add a connection, then a PAT with **Code (Read)** |
 | Azure DevOps Server (on-premises, 2019 and later) | `https://host[:port]/tfs/{Collection}` | Add a connection, then a PAT |
 
-GitHub Enterprise Server and self-managed GitLab are not supported; the GitHub and GitLab clients only talk to the public hosts above. Azure DevOps needs a **connection** (a saved, HTTPS-only base URL) before tokens and repositories can be added. Internal CA certificates, URL rules, limitations and troubleshooting are covered in [docs/providers/azure-devops.md](docs/providers/azure-devops.md).
+GitHub Enterprise Server and self-managed GitLab are not supported; the GitHub and GitLab clients only talk to the public hosts above. Azure DevOps needs a **connection** (a saved, HTTPS-only base URL) before tokens and repositories can be added. Only `https` base URLs are accepted, and a token is only ever sent to the host and port of its connection.
+
+For an Azure DevOps Server behind an internal certificate authority, mount the CA bundle into the Orbit container and point both Go and git at it with `SSL_CERT_FILE` and `GIT_SSL_CAINFO`. Orbit does not offer an option to skip certificate verification.
 
 The CLI does not talk to any Git provider. It scans whatever is checked out.
 
@@ -341,7 +356,7 @@ Paginated responses carry `data`, `total`, `page`, `per_page` and `total_pages` 
 | `POST` | `/tokens` | Add a token (Azure DevOps tokens need `git_host_id`) |
 | `DELETE` | `/tokens/{id}` | Delete a token |
 
-**Git host connections** (Azure DevOps, see [docs/providers/azure-devops.md](docs/providers/azure-devops.md))
+**Git host connections** (Azure DevOps)
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
@@ -417,7 +432,7 @@ The release binaries are mainly for the CLI. The server serves the UI from `./ui
 - **First-run setup** requires `ORBIT_SETUP_TOKEN` when it is set, so only someone who has the token can create the first admin account.
 - **Logins** are limited to 5 failures per email and 20 per client IP in 15 minutes. Behind a reverse proxy, set `ORBIT_SERVER_TRUST_PROXY_HEADERS=true` so the limit applies per real client.
 - **Browser access** is same-origin only unless `ORBIT_SERVER_CORS_ALLOWED_ORIGINS` is set.
-- **TLS verification** is never turned off. For an Azure DevOps Server with an internal CA, mount a CA bundle as described in [docs/providers/azure-devops.md](docs/providers/azure-devops.md).
+- **TLS verification** is never turned off. For an Azure DevOps Server with an internal CA, mount a CA bundle as described under [Git providers](#git-providers).
 - **CI logs.** `orbit scan` neutralises CI log commands (`##vso[`, `##[`, a leading `::`) in text that comes from the scanned repository or osv.dev, to reduce the risk of repository content issuing commands to the CI agent. The default `.orbitignore` must be a regular file; a symlink is refused.
 
 ## Limitations
@@ -518,20 +533,9 @@ deploy/docker/             Dockerfiles, Compose file, PostgreSQL upgrade script
 deploy/k8s/                Kubernetes manifest
 ci/                        GitLab CI and Azure Pipelines templates
 action.yml                 GitHub Action
-docs/                      documentation
 ```
 
 See [ui/README.md](ui/README.md) for the UI.
-
-## Documentation
-
-| Document | Contents |
-| --- | --- |
-| [docs/cli/README.md](docs/cli/README.md) | `orbit scan` reference: install, flags, exit codes, report formats, `.orbitignore`, troubleshooting |
-| [docs/ci/README.md](docs/ci/README.md) | CI templates for GitHub Actions, GitLab CI and Azure Pipelines, privacy, Azure DevOps Server and air-gapped installs |
-| [docs/providers/azure-devops.md](docs/providers/azure-devops.md) | Azure DevOps Services and Server: connections, tokens, internal CAs, troubleshooting |
-| [docs/review/README.md](docs/review/README.md) | Code, security and architecture review of October 2026, with finding IDs (in Turkish) |
-| [docs/proposals/ci-cd-scanning.md](docs/proposals/ci-cd-scanning.md) | Design proposal for build-time scanning in CI/CD (in Turkish) |
 
 ## License
 

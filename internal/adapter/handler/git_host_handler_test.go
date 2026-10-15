@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/domain/repository"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/repository"
 )
 
 // fakeGitHosts keeps connections in memory; GitHostRepo calls it does not

@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/entity"
 )
 
 // ParsedFile is one manifest or lockfile after parsing.

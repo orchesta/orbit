@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aligoren/orbit/internal/infrastructure/analyzer"
+	"github.com/orchesta/orbit/internal/infrastructure/analyzer"
 )
 
 func locked(name, version string, dev bool) analyzer.ParsedDependency {

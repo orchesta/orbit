@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Orbit scan
-        uses: aligoren/orbit@v1.0.0 # pin to a release tag, or better a full commit SHA
+        uses: orchesta/orbit@v1.0.0 # pin to a release tag, or better a full commit SHA
         with:
           fail-on: high
           version: v1.0.0

@@ -17,13 +17,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aligoren/orbit/internal/buildinfo"
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/engine"
-	"github.com/aligoren/orbit/internal/infrastructure/git"
-	"github.com/aligoren/orbit/internal/infrastructure/vulnerability/osv"
-	"github.com/aligoren/orbit/internal/report"
-	vulnuc "github.com/aligoren/orbit/internal/usecase/vulnerability"
+	"github.com/orchesta/orbit/internal/buildinfo"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/engine"
+	"github.com/orchesta/orbit/internal/infrastructure/git"
+	"github.com/orchesta/orbit/internal/infrastructure/vulnerability/osv"
+	"github.com/orchesta/orbit/internal/report"
+	vulnuc "github.com/orchesta/orbit/internal/usecase/vulnerability"
 )
 
 // Exit codes of orbit scan.
@@ -406,7 +406,7 @@ func sarifOptions(root string) report.SARIFOptions {
 }
 
 func writeReport(w io.Writer, format string, f []report.Finding, s report.Summary, color bool, so report.SARIFOptions) error {
-	tool := report.ToolInfo{Name: "orbit", Version: buildinfo.Version, InformationURI: "https://github.com/aligoren/orbit"}
+	tool := report.ToolInfo{Name: "orbit", Version: buildinfo.Version, InformationURI: "https://github.com/orchesta/orbit"}
 	switch format {
 	case "json":
 		return report.WriteJSON(w, f, s, tool)

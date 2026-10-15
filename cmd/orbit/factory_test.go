@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	gitprovider "github.com/aligoren/orbit/internal/infrastructure/git"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	gitprovider "github.com/orchesta/orbit/internal/infrastructure/git"
 )
 
 type stubCloner struct{ gitprovider.Cloner }

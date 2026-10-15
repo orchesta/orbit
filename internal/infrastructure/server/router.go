@@ -5,12 +5,12 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/aligoren/orbit/internal/adapter/handler"
-	"github.com/aligoren/orbit/internal/domain/repository"
-	"github.com/aligoren/orbit/internal/infrastructure/auth"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/orchesta/orbit/internal/adapter/handler"
+	"github.com/orchesta/orbit/internal/domain/repository"
+	"github.com/orchesta/orbit/internal/infrastructure/auth"
 )
 
 // Handlers holds all HTTP handlers injected into the server.

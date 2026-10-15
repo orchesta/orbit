@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/entity"
 )
 
 // EventType represents the type of webhook event.

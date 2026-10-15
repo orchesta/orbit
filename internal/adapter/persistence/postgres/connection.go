@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/aligoren/orbit/internal/infrastructure/config"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/orchesta/orbit/internal/infrastructure/config"
 )
 
 // NewConnection creates a new PostgreSQL connection pool.

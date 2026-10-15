@@ -10,16 +10,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aligoren/orbit/internal/adapter/persistence/postgres"
-	"github.com/aligoren/orbit/internal/domain/entity"
-	domainrepo "github.com/aligoren/orbit/internal/domain/repository"
-	gitprovider "github.com/aligoren/orbit/internal/infrastructure/git"
-	"github.com/aligoren/orbit/internal/infrastructure/git/azuredevops"
-	"github.com/aligoren/orbit/internal/usecase/repo"
-	"github.com/aligoren/orbit/internal/usecase/schedule"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/orchesta/orbit/internal/adapter/persistence/postgres"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	domainrepo "github.com/orchesta/orbit/internal/domain/repository"
+	gitprovider "github.com/orchesta/orbit/internal/infrastructure/git"
+	"github.com/orchesta/orbit/internal/infrastructure/git/azuredevops"
+	"github.com/orchesta/orbit/internal/usecase/repo"
+	"github.com/orchesta/orbit/internal/usecase/schedule"
 )
 
 // maxBulkImport caps how many repositories one import request may create.

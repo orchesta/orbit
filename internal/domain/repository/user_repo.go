@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
 )
 
 // ErrSetupAlreadyCompleted is returned when the first admin has already been created.

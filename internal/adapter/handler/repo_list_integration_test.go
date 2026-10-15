@@ -13,12 +13,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aligoren/orbit/internal/adapter/persistence/postgres"
-	"github.com/aligoren/orbit/internal/infrastructure/config"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/orchesta/orbit/internal/adapter/persistence/postgres"
+	"github.com/orchesta/orbit/internal/infrastructure/config"
 )
 
 // newListTestPool creates a fresh, fully migrated database on

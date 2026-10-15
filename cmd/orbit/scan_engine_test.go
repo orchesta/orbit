@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/engine"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/engine"
 )
 
 // lodashAdvisories answers like vulnerability.Lookup does for

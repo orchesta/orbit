@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
 )
 
 // ErrInUse is returned by Delete when other records still reference the row.

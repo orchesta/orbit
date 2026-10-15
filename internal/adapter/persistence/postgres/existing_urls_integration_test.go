@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/domain/repository"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/repository"
 )
 
 func TestExistingURLsMatchesNormalized(t *testing.T) {

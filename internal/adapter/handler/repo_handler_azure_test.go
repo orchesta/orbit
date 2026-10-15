@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/domain/repository"
-	gitprovider "github.com/aligoren/orbit/internal/infrastructure/git"
-	"github.com/aligoren/orbit/internal/infrastructure/git/azuredevops"
-	"github.com/aligoren/orbit/internal/usecase/repo"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/repository"
+	gitprovider "github.com/orchesta/orbit/internal/infrastructure/git"
+	"github.com/orchesta/orbit/internal/infrastructure/git/azuredevops"
+	"github.com/orchesta/orbit/internal/usecase/repo"
 )
 
 // fakeAzure records the ListRepositories call and answers with repos or err.

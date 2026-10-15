@@ -8,12 +8,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/domain/repository"
-	"github.com/aligoren/orbit/internal/engine"
-	"github.com/aligoren/orbit/internal/infrastructure/git"
-	"github.com/aligoren/orbit/internal/usecase/schedule"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/repository"
+	"github.com/orchesta/orbit/internal/engine"
+	"github.com/orchesta/orbit/internal/infrastructure/git"
+	"github.com/orchesta/orbit/internal/usecase/schedule"
 )
 
 // ErrRepositoryNotFound is returned when a scan is requested for an unknown repository.

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/entity"
 )
 
 func TestParseIgnoreFile(t *testing.T) {

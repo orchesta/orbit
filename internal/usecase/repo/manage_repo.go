@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/domain/repository"
-	"github.com/aligoren/orbit/internal/usecase/schedule"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/repository"
+	"github.com/orchesta/orbit/internal/usecase/schedule"
 )
 
 // ErrGitHostNotFound is returned when a repository names a connection that

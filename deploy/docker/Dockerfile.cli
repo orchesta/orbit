@@ -1,6 +1,6 @@
 # Orbit CLI image: `orbit scan` only, no server, no database.
 #
-#   docker run --rm -v "$PWD":/src:ro ghcr.io/aligoren/orbit-cli
+#   docker run --rm -v "$PWD":/src:ro ghcr.io/orchesta/orbit-cli
 #
 # The CLI only reads the scanned tree, so a read-only mount owned by any uid works.
 # Writing a report with --out needs a writable directory; pass --user "$(id -u):$(id -g)"
@@ -20,7 +20,7 @@ COPY . .
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath \
-    -ldflags "-s -w -X github.com/aligoren/orbit/internal/buildinfo.Version=${VERSION}" \
+    -ldflags "-s -w -X github.com/orchesta/orbit/internal/buildinfo.Version=${VERSION}" \
     -o /orbit ./cmd/orbit
 
 FROM alpine:3.24

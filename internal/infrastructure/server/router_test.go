@@ -10,13 +10,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aligoren/orbit/internal/adapter/handler"
-	"github.com/aligoren/orbit/internal/adapter/persistence/postgres"
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/domain/repository"
-	"github.com/aligoren/orbit/internal/infrastructure/auth"
-	"github.com/aligoren/orbit/internal/usecase/repo"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/adapter/handler"
+	"github.com/orchesta/orbit/internal/adapter/persistence/postgres"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/repository"
+	"github.com/orchesta/orbit/internal/infrastructure/auth"
+	"github.com/orchesta/orbit/internal/usecase/repo"
 )
 
 func newTestRouter(t *testing.T, opts RouterOptions) (http.Handler, *bytes.Buffer) {

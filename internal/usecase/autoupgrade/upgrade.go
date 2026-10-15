@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/domain/repository"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/repository"
 )
 
 // PullRequestCreator defines the interface for creating pull requests on Git providers.
@@ -161,7 +161,7 @@ func (uc *UseCase) UpgradeDependency(ctx context.Context, repoID, depID uuid.UUI
 **Manifest File:** %s
 
 ---
-*This PR was automatically created by [Orbit](https://github.com/aligoren/orbit).*`,
+*This PR was automatically created by [Orbit](https://github.com/orchesta/orbit).*`,
 		dep.Name,
 		dep.Ecosystem,
 		dep.CurrentVersion,

@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aligoren/orbit/internal/infrastructure/config"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/orchesta/orbit/internal/infrastructure/config"
 )
 
 // newTestPool creates a fresh database with every migration applied and

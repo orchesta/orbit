@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
 )
 
 func completedScan(t *testing.T, ctx context.Context, scans *ScanResultPostgresRepo, repoID uuid.UUID, startedAt time.Time, vulnerable, total int) *entity.ScanResult {

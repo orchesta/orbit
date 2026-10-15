@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aligoren/orbit/internal/adapter/persistence/postgres"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/orchesta/orbit/internal/adapter/persistence/postgres"
 )
 
 // fakeTokens is an in-memory access token store for TokenHandler and RepoHandler.

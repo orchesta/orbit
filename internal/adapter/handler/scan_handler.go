@@ -4,9 +4,9 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/aligoren/orbit/internal/usecase/scan"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/usecase/scan"
 )
 
 // ScanHandler handles HTTP requests for scanning operations.

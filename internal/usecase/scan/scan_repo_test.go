@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/domain/repository"
-	"github.com/aligoren/orbit/internal/engine"
-	"github.com/aligoren/orbit/internal/infrastructure/analyzer"
-	"github.com/aligoren/orbit/internal/infrastructure/git"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/repository"
+	"github.com/orchesta/orbit/internal/engine"
+	"github.com/orchesta/orbit/internal/infrastructure/analyzer"
+	"github.com/orchesta/orbit/internal/infrastructure/git"
 )
 
 type fakeRepoRepo struct {

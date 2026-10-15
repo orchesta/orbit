@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	gitprovider "github.com/aligoren/orbit/internal/infrastructure/git"
-	"github.com/aligoren/orbit/internal/infrastructure/httpclient"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	gitprovider "github.com/orchesta/orbit/internal/infrastructure/git"
+	"github.com/orchesta/orbit/internal/infrastructure/httpclient"
 )
 
 // ErrUnauthorized means Azure DevOps did not accept the token. Azure DevOps

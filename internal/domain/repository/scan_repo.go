@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
 )
 
 // ErrScanNotOwned is returned when a worker writes to a scan that was

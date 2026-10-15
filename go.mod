@@ -1,4 +1,4 @@
-module github.com/aligoren/orbit
+module github.com/orchesta/orbit
 
 go 1.27.2
 

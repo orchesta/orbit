@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
 )
 
 // ErrDuplicate is returned by Create when a repository with the same URL is already stored.

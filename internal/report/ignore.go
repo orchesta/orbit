@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/entity"
 )
 
 const ignoreDateLayout = "2006-01-02"

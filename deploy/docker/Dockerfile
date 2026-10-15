@@ -30,7 +30,7 @@ COPY . .
 # Embed the UI dist into the binary's working dir
 COPY --from=ui-builder /app/ui/dist ./ui/dist
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X github.com/aligoren/orbit/internal/buildinfo.Version=${VERSION}" -o /orbit ./cmd/orbit
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X github.com/orchesta/orbit/internal/buildinfo.Version=${VERSION}" -o /orbit ./cmd/orbit
 
 # ============================================
 # Stage 3: Production runtime

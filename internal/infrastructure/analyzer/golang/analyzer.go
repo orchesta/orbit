@@ -13,9 +13,9 @@ import (
 	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/infrastructure/analyzer"
-	"github.com/aligoren/orbit/internal/infrastructure/httpclient"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/infrastructure/analyzer"
+	"github.com/orchesta/orbit/internal/infrastructure/httpclient"
 )
 
 // Ensure interface compliance.

@@ -6,10 +6,10 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	domainrepo "github.com/aligoren/orbit/internal/domain/repository"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	domainrepo "github.com/orchesta/orbit/internal/domain/repository"
 )
 
 // GitHostHandler handles HTTP requests for Git host connections.

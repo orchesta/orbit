@@ -6,9 +6,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	domainrepo "github.com/aligoren/orbit/internal/domain/repository"
-	"github.com/aligoren/orbit/internal/usecase/repo"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	domainrepo "github.com/orchesta/orbit/internal/domain/repository"
+	"github.com/orchesta/orbit/internal/usecase/repo"
 )
 
 func TestPlanImportSkipsExistingAndRepeatedRepositories(t *testing.T) {

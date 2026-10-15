@@ -3,8 +3,8 @@ package handler
 import (
 	"net/http"
 
-	"github.com/aligoren/orbit/internal/adapter/persistence/postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/orchesta/orbit/internal/adapter/persistence/postgres"
 )
 
 // DashboardHandler handles HTTP requests for the dashboard.

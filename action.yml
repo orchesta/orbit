@@ -1,6 +1,6 @@
 name: Orbit dependency scan
 description: Scan a repository for vulnerable Go, npm, Python and NuGet dependencies with the Orbit CLI. No server or database needed.
-author: aligoren
+author: orchesta
 branding:
   icon: shield
   color: blue
@@ -31,7 +31,7 @@ inputs:
     default: ""
   version:
     description: >-
-      Tag of the ghcr.io/aligoren/orbit-cli image, for example v1.2.3. Empty uses
+      Tag of the ghcr.io/orchesta/orbit-cli image, for example v1.2.3. Empty uses
       the ref the action was used with when it is a full release tag (vMAJOR.MINOR.PATCH,
       prerelease suffix allowed), otherwise "latest" with a warning. Major-version
       refs such as @v1 have no matching image tag, so pin this input.
@@ -93,5 +93,5 @@ runs:
           --user "$(id -u):$(id -g)" \
           -v "$GITHUB_WORKSPACE":/src \
           -w /src \
-          "ghcr.io/aligoren/orbit-cli:${version}" \
+          "ghcr.io/orchesta/orbit-cli:${version}" \
           "${args[@]}"

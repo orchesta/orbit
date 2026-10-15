@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
 )
 
 // seedScanWithVulns stores a completed scan for repoID with one dependency per

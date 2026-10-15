@@ -3,7 +3,7 @@ package buildinfo
 
 // Version is the release version. Release builds set it with
 //
-//	go build -ldflags "-X github.com/aligoren/orbit/internal/buildinfo.Version=v1.2.3"
+//	go build -ldflags "-X github.com/orchesta/orbit/internal/buildinfo.Version=v1.2.3"
 //
 // and other builds report "dev".
 var Version = "dev"

@@ -13,10 +13,10 @@ import (
 	"runtime/debug"
 	"sync"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/infrastructure/analyzer"
-	"github.com/aligoren/orbit/internal/infrastructure/git"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/infrastructure/analyzer"
+	"github.com/orchesta/orbit/internal/infrastructure/git"
 )
 
 // VulnLookup finds the known vulnerabilities of deps without persisting

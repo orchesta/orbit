@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	gitprovider "github.com/aligoren/orbit/internal/infrastructure/git"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	gitprovider "github.com/orchesta/orbit/internal/infrastructure/git"
 )
 
 // newClonerFactory picks the cloner for a repository's provider. Unknown

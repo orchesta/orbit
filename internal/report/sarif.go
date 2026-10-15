@@ -8,7 +8,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/entity"
 )
 
 type sarifText struct {

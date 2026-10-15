@@ -3,7 +3,7 @@
 # Use it from your .gitlab-ci.yml:
 #
 #   include:
-#     - remote: 'https://raw.githubusercontent.com/aligoren/orbit/v1.0.0/ci/gitlab/orbit.gitlab-ci.yml'
+#     - remote: 'https://raw.githubusercontent.com/orchesta/orbit/v1.0.0/ci/gitlab/orbit.gitlab-ci.yml'
 #
 #   variables:
 #     ORBIT_VERSION: v1.0.0   # image tag; pin it, the template default is latest
@@ -37,7 +37,7 @@ variables:
 
 .orbit-scan:
   image:
-    name: ghcr.io/aligoren/orbit-cli:$ORBIT_VERSION
+    name: ghcr.io/orchesta/orbit-cli:$ORBIT_VERSION
     entrypoint: [""]
     # The image runs as uid 10001, which cannot write to the checkout GitLab creates
     # as root. Run as root inside the throwaway container so reports can be written.

@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/domain/repository"
-	"github.com/aligoren/orbit/internal/infrastructure/auth"
 	"github.com/go-chi/chi/v5"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/repository"
+	"github.com/orchesta/orbit/internal/infrastructure/auth"
 )
 
 // AuthOptions configures optional authentication behaviour.

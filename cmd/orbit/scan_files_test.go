@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/entity"
 )
 
 // A symlinked .orbitignore is refused with exit 2: a repository must not be

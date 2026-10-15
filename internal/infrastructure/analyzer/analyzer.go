@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/entity"
 )
 
 // Analyzer defines the interface for ecosystem-specific package analyzers.

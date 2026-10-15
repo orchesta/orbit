@@ -18,9 +18,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/aligoren/orbit/internal/buildinfo"
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/engine"
+	"github.com/orchesta/orbit/internal/buildinfo"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/engine"
 )
 
 // fakeEngine stands in for engine.Engine: it returns a canned result and

@@ -18,7 +18,7 @@
 # useContainer: false  downloads the release binary and verifies it against checksums.txt
 #                      (Linux, macOS and Windows agents, no Docker needed).
 # Air-gapped: mirror the image and set imageName, or mirror the release assets and set
-# binaryBaseUrl. See docs/ci/README.md.
+# binaryBaseUrl.
 
 parameters:
   - name: path
@@ -38,10 +38,10 @@ parameters:
     default: true
   - name: imageName
     type: string
-    default: ghcr.io/aligoren/orbit-cli
+    default: ghcr.io/orchesta/orbit-cli
   - name: binaryBaseUrl
     type: string
-    default: https://github.com/aligoren/orbit/releases/download
+    default: https://github.com/orchesta/orbit/releases/download
 
 steps:
   # ---- container mode (Linux agents with Docker) -------------------------------------

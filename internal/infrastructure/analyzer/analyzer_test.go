@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/entity"
 )
 
 func TestMatchesManifest(t *testing.T) {

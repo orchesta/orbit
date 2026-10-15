@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/aligoren/orbit/internal/domain/entity"
-	"github.com/aligoren/orbit/internal/domain/repository"
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/repository"
 )
 
 func newAdmin(t *testing.T, email string) *entity.User {
