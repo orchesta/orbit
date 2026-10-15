@@ -98,6 +98,7 @@ steps:
           case "$(uname -s)-$(uname -m)" in
             Linux-x86_64)         asset="orbit_${ORBIT_VERSION}_linux_amd64" ;;
             Linux-aarch64|Linux-arm64) asset="orbit_${ORBIT_VERSION}_linux_arm64" ;;
+            Darwin-x86_64)        asset="orbit_${ORBIT_VERSION}_darwin_amd64" ;;
             Darwin-arm64)         asset="orbit_${ORBIT_VERSION}_darwin_arm64" ;;
             *) echo "##vso[task.logissue type=error]No Orbit binary for $(uname -s) $(uname -m)"; exit 1 ;;
           esac

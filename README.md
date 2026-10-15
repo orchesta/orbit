@@ -111,14 +111,14 @@ To replace the default database password (`orbit_secret`), add `ORBIT_DATABASE_P
 | Option | How |
 | --- | --- |
 | Docker | `docker run --rm -v "$PWD":/src:ro orchestalabs/orbit-cli:<tag>` ([Docker Hub](https://hub.docker.com/r/orchestalabs/orbit-cli); runs `scan --path /src` by default) |
-| Release binary | `orbit_<tag>_<os>_<arch>` from the [GitHub releases](https://github.com/orchesta/orbit/releases) for Linux amd64/arm64, macOS arm64 and Windows amd64, verified against `checksums.txt` (see below) |
+| Release binary | `orbit_<tag>_<os>_<arch>` from the [GitHub releases](https://github.com/orchesta/orbit/releases) for Linux amd64/arm64, macOS amd64/arm64 and Windows amd64, verified against `checksums.txt` (see below) |
 | From source | `go install github.com/orchesta/orbit/cmd/orbit@latest` with Go 1.27+ (reports version `dev`), `go build -o orbit ./cmd/orbit` in a clone, or `docker build -f deploy/docker/Dockerfile.cli -t orbit-cli .` |
 
 Images and binaries are published when a `v*` tag is pushed (see [Releases and images](#releases-and-images)). To install a release binary on Linux or macOS:
 
 ```bash
 TAG=v1.0.0                      # the release you want
-ASSET=orbit_${TAG}_linux_amd64  # or linux_arm64, darwin_arm64, windows_amd64.exe
+ASSET=orbit_${TAG}_linux_amd64  # or linux_arm64, darwin_amd64, darwin_arm64, windows_amd64.exe
 BASE=https://github.com/orchesta/orbit/releases/download/$TAG
 curl -fsSLO "$BASE/$ASSET" && curl -fsSLO "$BASE/checksums.txt"
 grep " $ASSET\$" checksums.txt | sha256sum -c -     # macOS: shasum -a 256 -c -
@@ -419,7 +419,7 @@ The manifest runs one replica. Login rate limits are kept in memory, so with mor
 
 Pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which publishes:
 
-- a GitHub release with `orbit_<tag>_<os>_<arch>` binaries for Linux amd64 and arm64, macOS arm64 and Windows amd64 (`.exe`), plus `checksums.txt` (SHA-256),
+- a GitHub release with `orbit_<tag>_<os>_<arch>` binaries for Linux amd64 and arm64, macOS amd64 (Intel) and arm64 (Apple silicon) and Windows amd64 (`.exe`), plus `checksums.txt` (SHA-256),
 - [`orchestalabs/orbit:<tag>`](https://hub.docker.com/r/orchestalabs/orbit) on Docker Hub, the server image with the UI,
 - [`orchestalabs/orbit-cli:<tag>`](https://hub.docker.com/r/orchestalabs/orbit-cli) on Docker Hub, the CLI-only image (no `git`, entrypoint `orbit`, default command `scan --path /src`).
 
