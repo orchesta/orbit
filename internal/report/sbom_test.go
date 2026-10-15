@@ -237,3 +237,68 @@ func TestSBOMPackagesRefsStayUnique(t *testing.T) {
 		refs[p.Ref] = true
 	}
 }
+
+func TestSPDXGolden(t *testing.T) {
+	f, s := buildSBOMFixture(t)
+	var b bytes.Buffer
+	if err := WriteSPDX(&b, f, s, testTool, sbomOpts); err != nil {
+		t.Fatal(err)
+	}
+	golden(t, "report.spdx.golden", b.Bytes())
+
+	var doc struct {
+		DocumentNamespace string `json:"documentNamespace"`
+		Packages          []struct {
+			SPDXID          string `json:"SPDXID"`
+			Name            string `json:"name"`
+			LicenseDeclared string `json:"licenseDeclared"`
+		} `json:"packages"`
+		Relationships []struct {
+			From string `json:"spdxElementId"`
+			Type string `json:"relationshipType"`
+			To   string `json:"relatedSpdxElement"`
+		} `json:"relationships"`
+	}
+	if err := json.Unmarshal(b.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.DocumentNamespace != "https://example.com/orbit/spdx/web-3e671687-395b-41f5-a30f-a58921a69b79" {
+		t.Errorf("documentNamespace = %s", doc.DocumentNamespace)
+	}
+	if len(doc.Packages) != 7 { // root + 6
+		t.Fatalf("packages = %d, want 7", len(doc.Packages))
+	}
+	for _, p := range doc.Packages {
+		if p.Name == "ms" && p.LicenseDeclared != "NOASSERTION" {
+			t.Errorf("an invalid license expression must become NOASSERTION, got %q", p.LicenseDeclared)
+		}
+	}
+	count := map[string]int{}
+	for _, r := range doc.Relationships {
+		count[r.Type]++
+	}
+	if count["DESCRIBES"] != 1 || count["DEPENDS_ON"] != 4 || count["DEV_DEPENDENCY_OF"] != 1 {
+		t.Errorf("relationships = %v", count)
+	}
+	if strings.Contains(b.String(), "GHSA-") || strings.Contains(b.String(), "MAL-") {
+		t.Error("SPDX 2.3 output must not contain vulnerabilities")
+	}
+}
+
+func TestSBOMNeutralisesCICommands(t *testing.T) {
+	res := &engine.Result{Dependencies: []*entity.Dependency{{ID: uuid.New(), Name: "##vso[task.setvariable]x",
+		CurrentVersion: "1.0.0", Ecosystem: entity.EcosystemNpm, ManifestFile: "package-lock.json", IsDirect: true}}}
+	f, s := Build(res, nil, "", fixedNow)
+	for name, write := range map[string]func(*bytes.Buffer) error{
+		"cyclonedx": func(b *bytes.Buffer) error { return WriteCycloneDX(b, f, s, testTool, sbomOpts) },
+		"spdx":      func(b *bytes.Buffer) error { return WriteSPDX(b, f, s, testTool, sbomOpts) },
+	} {
+		var b bytes.Buffer
+		if err := write(&b); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(b.String(), "##vso[") {
+			t.Errorf("%s: raw ##vso[ in output", name)
+		}
+	}
+}

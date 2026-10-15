@@ -89,3 +89,12 @@ func TestCycloneDXMatchesSchema(t *testing.T) {
 	}
 	validateSchema(t, "bom-1.6.schema.json", b.Bytes())
 }
+
+func TestSPDXMatchesSchema(t *testing.T) {
+	f, s := buildSBOMFixture(t)
+	var b bytes.Buffer
+	if err := WriteSPDX(&b, f, s, testTool, sbomOpts); err != nil {
+		t.Fatal(err)
+	}
+	validateSchema(t, "spdx-2.3.schema.json", b.Bytes())
+}
