@@ -34,7 +34,7 @@ func TestScanBaselineOnlyNewFindingsFail(t *testing.T) {
 	if !regexp.MustCompile(`(?m)^HIGH\s+GHSA-0 `).MatchString(stdout) || !regexp.MustCompile(`(?m)^HIGH \(new\)\s+GHSA-1 `).MatchString(stdout) {
 		t.Errorf("table must mark only GHSA-1 as new:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "(2 high), 1 new") || !strings.Contains(stdout, "threshold high (new findings only): FAILED") {
+	if !strings.Contains(stdout, "(2 high), 1 new") || !strings.Contains(stdout, "threshold high (new findings and malicious packages): FAILED") {
 		t.Errorf("table summary:\n%s", stdout)
 	}
 	// The baseline was written by another orbit version (1.0.0, the tests
@@ -225,7 +225,7 @@ func TestScanEmptyBaselineFlagComparesWithNothing(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit %d, want 1; stderr:\n%s", code, stderr)
 	}
-	if strings.Contains(stdout, "(new)") || regexp.MustCompile(`\d+ new\b`).MatchString(stdout) || strings.Contains(stdout, "new findings only") {
+	if strings.Contains(stdout, "(new)") || regexp.MustCompile(`\d+ new\b`).MatchString(stdout) || strings.Contains(stdout, "new findings and malicious packages") {
 		t.Errorf("no baseline, but the table shows new markers:\n%s", stdout)
 	}
 	if strings.Contains(stderr, "comparing with baseline") {

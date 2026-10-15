@@ -477,7 +477,7 @@ func TestTableWithoutBaselineHasNoNewMarker(t *testing.T) {
 	}
 	out := b.String()
 	if strings.Contains(out, "(new)") || strings.Contains(out, ", new)") ||
-		newSummaryRE.MatchString(out) || strings.Contains(out, "(new findings only)") {
+		newSummaryRE.MatchString(out) || strings.Contains(out, "(new findings and malicious packages)") {
 		t.Errorf("no baseline, no new marker:\n%s", out)
 	}
 }
@@ -491,7 +491,7 @@ func TestTableBaselineThresholdPassesOnExistingFindings(t *testing.T) {
 	if err := WriteTable(&b, f, s); err != nil {
 		t.Fatal(err)
 	}
-	if out := b.String(); !strings.Contains(out, "threshold critical (new findings only): passed\n") {
+	if out := b.String(); !strings.Contains(out, "threshold critical (new findings and malicious packages): passed\n") {
 		t.Errorf("want a passed threshold line:\n%s", out)
 	}
 }

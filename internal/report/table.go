@@ -140,18 +140,18 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 	if s.KEVFindings > 0 {
 		printf("%d known exploited (CISA KEV)\n", s.KEVFindings)
 	}
+	// With a baseline both gate lines follow only the findings that count:
+	// new ones and malicious packages (see gates).
+	scope := ""
+	if s.Baseline {
+		scope = " (new findings and malicious packages)"
+	}
 	if s.Threshold != "" {
 		// Only the severity and malicious gate: the KEV gate has its own
 		// line below. The exit code follows s.Failed, which covers both.
-		// With a baseline both follow only the findings that count (new or
-		// malicious, see gates).
 		status := "passed"
 		if s.ThresholdFailed {
 			status = "FAILED"
-		}
-		scope := ""
-		if s.Baseline {
-			scope = " (new findings only)"
 		}
 		printf("threshold %s%s: %s\n", s.Threshold, scope, status)
 	}
@@ -160,7 +160,7 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 		if s.KEVFailed {
 			status = "FAILED"
 		}
-		printf("fail on KEV: %s\n", status)
+		printf("fail on KEV%s: %s\n", scope, status)
 	}
 	for _, msg := range s.Warnings {
 		printf("warning: %s\n", singleLine(msg))
