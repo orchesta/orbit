@@ -3,9 +3,11 @@ package report
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/orchesta/orbit/internal/domain/entity"
@@ -126,7 +128,11 @@ type SARIFOptions struct {
 // WriteSARIF writes a SARIF 2.1.0 log with one rule per distinct advisory. A
 // rule with a malicious finding is tagged "malicious" and rated 10.0. A rule listed in CISA KEV is also tagged "known-exploited";
 // its security-severity is not raised.
-func WriteSARIF(w io.Writer, f []Finding, _ Summary, tool ToolInfo, opts SARIFOptions) error {
+func WriteSARIF(w io.Writer, f []Finding, s Summary, tool ToolInfo, opts SARIFOptions) error {
+	recs := make(map[[4]string]Recommendation, len(s.Recommendations))
+	for _, r := range s.Recommendations {
+		recs[[4]string{r.Ecosystem, r.Manifest, r.Package, r.Current}] = r
+	}
 	rules := []sarifRule{}
 	ruleIdx := map[string]int{}
 	ruleRank := map[string]int{}
@@ -172,6 +178,7 @@ func WriteSARIF(w io.Writer, f []Finding, _ Summary, tool ToolInfo, opts SARIFOp
 			msg += "; remove or replace it"
 		case fv != "":
 			msg += " (fixed in " + fv + ")"
+			msg += upgradeHint(recs[[4]string{string(d.Ecosystem), d.ManifestFile, d.Name, d.CurrentVersion}], v.OSVID)
 		default:
 			msg += " (no fix available)"
 		}
@@ -215,4 +222,23 @@ func WriteSARIF(w io.Writer, f []Finding, _ Summary, tool ToolInfo, opts SARIFOp
 		driver["informationUri"] = tool.InformationURI
 	}
 	return encodeJSON(w, doc)
+}
+
+// upgradeHint follows a finding that has a fix. For a package recommended
+// for removal it says so, since upgrading is not the advice; otherwise it
+// names the upgrade that also clears the package's other advisories, and is
+// "" when this fix is the only one.
+func upgradeHint(r Recommendation, id string) string {
+	if r.Malicious {
+		return ". This package is reported as malicious; remove or replace it."
+	}
+	if r.Upgrade == "" || len(r.Fixes) < 2 || !slices.Contains(r.Fixes, id) {
+		return ""
+	}
+	n := len(r.Fixes) - 1
+	word := "advisories"
+	if n == 1 {
+		word = "advisory"
+	}
+	return fmt.Sprintf(". Upgrading to %s fixes this and %d other %s for this package.", r.Upgrade, n, word)
 }

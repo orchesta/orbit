@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"encoding/json"
 	"reflect"
 	"regexp"
 	"slices"
@@ -283,5 +284,67 @@ func TestRecommendListsEachAdvisoryOnce(t *testing.T) {
 	}, nil)
 	if len(got) != 1 || !slices.Equal(got[0].Fixes, []string{"GHSA-q1"}) || !slices.Equal(got[0].NoFix, []string{"GHSA-q2"}) {
 		t.Fatalf("got %+v, want GHSA-q1 and GHSA-q2 once each", got)
+	}
+}
+
+func sarifMessages(t *testing.T, deps []*entity.Dependency, vulns []*entity.Vulnerability) map[string]string {
+	t.Helper()
+	f, s := Build(&engine.Result{Dependencies: deps, Vulnerabilities: vulns}, nil, "", fixedNow)
+	var b bytes.Buffer
+	if err := WriteSARIF(&b, f, s, testTool, SARIFOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Runs []struct {
+			Results []struct {
+				RuleID  string                `json:"ruleId"`
+				Message struct{ Text string } `json:"message"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(b.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, r := range doc.Runs[0].Results {
+		got[r.RuleID] = r.Message.Text
+	}
+	return got
+}
+
+func TestSARIFMessageNamesTheUpgradeThatFixesMore(t *testing.T) {
+	lodash := rdep("lodash", "4.17.15", "npm", "package-lock.json")
+	got := sarifMessages(t, []*entity.Dependency{lodash}, []*entity.Vulnerability{
+		rvuln(lodash, "GHSA-a", entity.SeverityHigh, "4.17.19"),
+		rvuln(lodash, "GHSA-b", entity.SeverityHigh, "4.17.21"),
+		rvuln(lodash, "GHSA-c", entity.SeverityHigh, ""),
+	})
+	want := map[string]string{
+		"GHSA-a": "lodash@4.17.15 is affected by GHSA-a (fixed in 4.17.19). Upgrading to 4.17.21 fixes this and 1 other advisory for this package.",
+		"GHSA-b": "lodash@4.17.15 is affected by GHSA-b (fixed in 4.17.21). Upgrading to 4.17.21 fixes this and 1 other advisory for this package.",
+		"GHSA-c": "lodash@4.17.15 is affected by GHSA-c (no fix available)",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("messages:\n got %v\nwant %v", got, want)
+	}
+}
+
+// A fixed finding in a package that is recommended for removal must not
+// tell the reader that upgrading fixes it.
+func TestSARIFMessageDoesNotSuggestUpgradingAMaliciousPackage(t *testing.T) {
+	evil := rdep("evil-pkg", "1.0.0", "npm", "package-lock.json")
+	got := sarifMessages(t, []*entity.Dependency{evil}, []*entity.Vulnerability{
+		rvuln(evil, "MAL-2025-1234", entity.SeverityCritical, ""),
+		rvuln(evil, "GHSA-a", entity.SeverityHigh, "1.0.1"),
+		rvuln(evil, "GHSA-b", entity.SeverityHigh, "1.0.2"),
+	})
+	for _, id := range []string{"GHSA-a", "GHSA-b"} {
+		m := got[id]
+		if strings.Contains(m, "Upgrading to") {
+			t.Errorf("%s: message suggests upgrading: %q", id, m)
+		}
+		if !strings.Contains(m, "remove or replace it") {
+			t.Errorf("%s: message does not say to remove or replace: %q", id, m)
+		}
 	}
 }
