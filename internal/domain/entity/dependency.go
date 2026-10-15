@@ -28,20 +28,24 @@ const (
 
 // Dependency represents a package dependency found in a repository.
 type Dependency struct {
-	ID             uuid.UUID  `json:"id"`
-	RepositoryID   uuid.UUID  `json:"repository_id"`
-	ScanResultID   uuid.UUID  `json:"scan_result_id"`
-	Name           string     `json:"name"`
-	CurrentVersion string     `json:"current_version"`
-	LatestVersion  string     `json:"latest_version"`
-	Ecosystem      Ecosystem  `json:"ecosystem"`
-	ManifestFile   string     `json:"manifest_file"`
-	IsOutdated     bool       `json:"is_outdated"`
-	IsDirect       bool       `json:"is_direct"`   // Direct vs transitive dependency
-	IsResolved     bool       `json:"is_resolved"` // Version comes from a lockfile (exact), not a manifest range
-	IsDev          bool       `json:"is_dev"`      // Development-only dependency
-	UpdateType     UpdateType `json:"update_type"`
-	LastCheckedAt  time.Time  `json:"last_checked_at"`
+	ID             uuid.UUID `json:"id"`
+	RepositoryID   uuid.UUID `json:"repository_id"`
+	ScanResultID   uuid.UUID `json:"scan_result_id"`
+	Name           string    `json:"name"`
+	CurrentVersion string    `json:"current_version"`
+	LatestVersion  string    `json:"latest_version"`
+	Ecosystem      Ecosystem `json:"ecosystem"`
+	ManifestFile   string    `json:"manifest_file"`
+	IsOutdated     bool      `json:"is_outdated"`
+	IsDirect       bool      `json:"is_direct"`   // Direct vs transitive dependency
+	IsResolved     bool      `json:"is_resolved"` // Version comes from a lockfile (exact), not a manifest range
+	IsDev          bool      `json:"is_dev"`      // Development-only dependency
+	// Via names the direct dependencies that pull a dependency in, when the
+	// lockfile records the graph (npm package-lock.json v2 and v3). The
+	// engine sets it; the server does not store it.
+	Via           []string   `json:"via,omitempty"`
+	UpdateType    UpdateType `json:"update_type"`
+	LastCheckedAt time.Time  `json:"last_checked_at"`
 }
 
 // NewDependency creates a new Dependency.

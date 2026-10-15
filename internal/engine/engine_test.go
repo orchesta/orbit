@@ -637,3 +637,23 @@ func TestAnalyzeTreeWithoutManifestsMarksExploitDataSkipped(t *testing.T) {
 		t.Fatalf("exploit data off: Exploit = %+v, want nil", res.Exploit)
 	}
 }
+
+// The npm fixture with a real dependency graph: Via survives Resolve and
+// reaches the scanned dependencies.
+func TestAnalyzeCarriesViaFromThePackageLock(t *testing.T) {
+	reg, _ := newRegistry(nil)
+	res := analyze(t, engine.New(reg, nil, engine.Options{}), "../infrastructure/analyzer/npm/testdata/lock-v3-graph")
+	via := map[string][]string{}
+	for _, d := range res.Dependencies {
+		via[d.Name+"@"+d.CurrentVersion] = d.Via
+	}
+	if got := via["qs@6.7.0"]; !slices.Equal(got, []string{"express"}) {
+		t.Errorf("qs@6.7.0 via %v, want [express]", got)
+	}
+	if got := via["safe-buffer@5.1.2"]; !slices.Equal(got, []string{"express", "mocha"}) {
+		t.Errorf("safe-buffer@5.1.2 via %v, want [express mocha]", got)
+	}
+	if got := via["express@4.17.1"]; got != nil {
+		t.Errorf("express@4.17.1 via %v, want nil", got)
+	}
+}

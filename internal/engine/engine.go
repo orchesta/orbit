@@ -159,6 +159,7 @@ func (e *Engine) Analyze(ctx context.Context, root string) (*Result, error) {
 		dep.IsDirect = rd.IsDirect
 		dep.IsResolved = rd.Resolved
 		dep.IsDev = rd.Dev
+		dep.Via = rd.Via
 		res.Dependencies = append(res.Dependencies, dep)
 		// Go has no lockfile: go.mod already lists the versions the build
 		// resolves to, so its rows are not counted.
