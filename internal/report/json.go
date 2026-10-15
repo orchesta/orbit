@@ -66,11 +66,12 @@ type jsonFinding struct {
 }
 
 type jsonReport struct {
-	SchemaVersion int              `json:"schema_version"`
-	Tool          jsonTool         `json:"tool"`
-	Summary       jsonSummary      `json:"summary"`
-	Dependencies  []jsonDependency `json:"dependencies"`
-	Findings      []jsonFinding    `json:"findings"`
+	SchemaVersion   int              `json:"schema_version"`
+	Tool            jsonTool         `json:"tool"`
+	Summary         jsonSummary      `json:"summary"`
+	Dependencies    []jsonDependency `json:"dependencies"`
+	Findings        []jsonFinding    `json:"findings"`
+	Recommendations []Recommendation `json:"recommendations"`
 }
 
 func nonNil(s []string) []string {
@@ -120,6 +121,10 @@ func WriteJSON(w io.Writer, f []Finding, s Summary, tool ToolInfo) error {
 			FixedVersion: fix, References: nonNil(v.References), Ignored: x.Ignored, IgnoreReason: x.IgnoreReason,
 			KEV: v.KEV, KEVDateAdded: added, EPSS: v.EPSS, EPSSPercentile: v.EPSSPercentile,
 		})
+	}
+	r.Recommendations = s.Recommendations
+	if r.Recommendations == nil {
+		r.Recommendations = []Recommendation{}
 	}
 	return encodeJSON(w, r)
 }

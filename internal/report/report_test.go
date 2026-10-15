@@ -169,7 +169,8 @@ func TestJSONEmptyArraysNotNull(t *testing.T) {
 	if err := WriteJSON(&b, f, s, testTool); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(b.String(), `"findings": []`) || !strings.Contains(b.String(), `"dependencies": []`) {
+	if !strings.Contains(b.String(), `"findings": []`) || !strings.Contains(b.String(), `"dependencies": []`) ||
+		!strings.Contains(b.String(), `"recommendations": []`) {
 		t.Errorf("want empty arrays:\n%s", b.String())
 	}
 }

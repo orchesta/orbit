@@ -32,7 +32,7 @@ The backend is Go, the UI is React, and the database is PostgreSQL. Orbit is an 
 - Vulnerability data from osv.dev. Outdated-version checks against npm, PyPI, NuGet and the Go module proxy.
 - Exploit signals: each finding with a CVE ID is marked when it is in CISA's Known Exploited Vulnerabilities (KEV) catalog and carries its FIRST EPSS score, so you can see what to fix first.
 - Server: imports repositories from GitHub, GitLab and Azure DevOps (Services and Server), scans them on a cron schedule per repository with a bounded worker pool, and shows a dashboard, a vulnerability list and scan history.
-- CLI: `orbit scan` with `table`, `json`, `sarif` and `junit` output, a severity threshold, documented exit codes, and an `.orbitignore` file for accepted findings with optional expiry dates.
+- CLI: `orbit scan` with `table`, `json`, `sarif` and `junit` output, a severity threshold, documented exit codes, an upgrade recommendation per vulnerable package, and an `.orbitignore` file for accepted findings with optional expiry dates.
 - Flags known malicious packages (OpenSSF Malicious Packages, `MAL-` advisories on osv.dev) separately. They fail `orbit scan` at every `--fail-on` level except `none`.
 - Ready-made CI templates for GitHub Actions, GitLab CI and Azure Pipelines (Azure DevOps Services and Server 2020+).
 - Access tokens are encrypted at rest (AES-256-GCM). First-run setup is protected by a setup token. Failed logins are rate-limited.
@@ -146,9 +146,15 @@ HIGH      -    5.2%   CVE-2020-8203   lodash@4.17.15  4.17.19  package-lock.json
 MEDIUM    -    7.3%   CVE-2020-28500  lodash@4.17.15  4.17.21  package-lock.json
 MEDIUM    -    1.9%   CVE-2025-13465  lodash@4.17.15  4.18.0   package-lock.json
 
+PACKAGE         UPGRADE TO  FIXES  VIA  MANIFEST
+lodash@4.17.15  4.18.0      4      -    package-lock.json
+Each upgrade is the lowest version at or above every known fix for that package. It can still break your build; check the release notes.
+
 1 dependencies, 1 vulnerable (2 high, 2 medium)
 threshold high: FAILED
 ```
+
+After the findings, the table recommends one upgrade per installed package: the lowest version at or above the fixed versions of all its advisories. Advisories without a known fix are listed by ID, and a package reported as malicious is marked for removal. For npm `package-lock.json` (lockfile versions 2 and 3), `VIA` names the direct dependency that pulls a transitive package in; other lockfiles leave it empty. The JSON report has the same data under `recommendations`; ignored findings are not included. These are hints, not tested upgrades: Orbit does not check that the version exists, that no other advisory affects it, or that your other dependencies accept it.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -216,6 +222,8 @@ osv.dev also serves the [OpenSSF Malicious Packages](https://github.com/ossf/mal
 ```
 SEVERITY              ID              PACKAGE      FIXED  MANIFEST
 CRITICAL (malicious)  MAL-2025-46969  chalk@5.6.1  -      package-lock.json
+
+remove chalk@5.6.1: reported as malicious (MAL-2025-46969)
 
 1 dependencies, 1 vulnerable (1 critical), 1 malicious
 threshold high: FAILED
@@ -490,6 +498,7 @@ Orbit reports known vulnerabilities for the versions it can see. Please keep the
 - It finds only advisories that are published in osv.dev. A clean result means no known advisory matched, not that the dependencies are free of problems.
 - Malicious packages are found only when they are in the OpenSSF Malicious Packages data on osv.dev, matched by package name and version. A private package with the same name as a public malicious one is reported too, and `.orbitignore` cannot suppress that finding.
 - Exploit signals match CVE IDs only. KEV and EPSS cover CVEs, not every advisory; a finding without a signal is not known to be safe. The server stores them at scan time, so a CVE that CISA lists later appears after the next scan.
+- Upgrade recommendations compare fixed versions only. The direct dependency that pulls a package in is known only for npm `package-lock.json` v2 and v3, and only in the CLI; the server does not store the dependency graph.
 - It does not analyse whether vulnerable code is actually reached by your application.
 - Without a lockfile, versions are estimated from manifest ranges and can be wrong in either direction.
 - Supported ecosystems are Go, npm, Python and NuGet. Other ecosystems (for example Maven, Gradle, Cargo or Composer) are not scanned.

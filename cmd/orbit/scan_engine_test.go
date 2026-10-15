@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -97,6 +99,13 @@ type jsonReport struct {
 		FixedVersion *string  `json:"fixed_version"`
 		Ignored      bool     `json:"ignored"`
 	} `json:"findings"`
+	Recommendations []struct {
+		Package string   `json:"package"`
+		Current string   `json:"current"`
+		Upgrade string   `json:"upgrade"`
+		Fixes   []string `json:"fixes"`
+		Via     string   `json:"via"`
+	} `json:"recommendations"`
 }
 
 // The real engine and report path: aliased advisories become one finding,
@@ -260,5 +269,61 @@ func TestScanRealEngineAddsExploitData(t *testing.T) {
 	code = runScan(context.Background(), []string{"--path", dir, "--format", "json", "--no-exploit-data"}, &out, &errOut, realDepsWith(jqueryAdvisory{}, enricher))
 	if code != 0 || hits.Load() != before || !strings.Contains(out.String(), `"kev": "disabled"`) {
 		t.Fatalf("--no-exploit-data: exit %d, %d requests; want 0 and none", code, hits.Load()-before)
+	}
+}
+
+// qsAdvisories answers for qs@6.7.0 with two advisories fixed in different
+// versions.
+type qsAdvisories struct{}
+
+func (qsAdvisories) Lookup(_ context.Context, deps []*entity.Dependency) ([]*entity.Vulnerability, int, error) {
+	var vulns []*entity.Vulnerability
+	n := 0
+	for _, d := range deps {
+		if d.Name != "qs" || d.CurrentVersion != "6.7.0" {
+			continue
+		}
+		n++
+		a := entity.NewVulnerability(d.ID, "CVE-2022-24999", "qs prototype poisoning", entity.SeverityHigh)
+		a.FixedVersion = ptr("6.7.3")
+		b := entity.NewVulnerability(d.ID, "GHSA-test-qs02", "test advisory", entity.SeverityMedium)
+		b.FixedVersion = ptr("6.9.0")
+		vulns = append(vulns, a, b)
+	}
+	return vulns, n, nil
+}
+
+// The real engine on the npm graph fixture: one upgrade for both advisories
+// of the nested qs, named with the direct dependency that pulls it in.
+func TestScanRecommendsTheSmallestUpgradeWithVia(t *testing.T) {
+	dir := t.TempDir()
+	lock, err := os.ReadFile(filepath.Join("..", "..", "internal", "infrastructure", "analyzer", "npm", "testdata", "lock-v3-graph", "package-lock.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "package-lock.json", string(lock))
+	writeFile(t, dir, "package.json", `{"name":"graph-app","version":"1.0.0","dependencies":{"express":"^4.17.1","qs":"^6.11.0"},"devDependencies":{"mocha":"^10.0.0"}}`)
+
+	code, stdout, stderr := runReal(t, qsAdvisories{}, "--path", dir, "--format", "json")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1; stderr:\n%s", code, stderr)
+	}
+	var rep jsonReport
+	if err := json.Unmarshal([]byte(stdout), &rep); err != nil {
+		t.Fatalf("%v\n%s", err, stdout)
+	}
+	if len(rep.Recommendations) != 1 {
+		t.Fatalf("recommendations = %+v, want one", rep.Recommendations)
+	}
+	r := rep.Recommendations[0]
+	if r.Package != "qs" || r.Current != "6.7.0" || r.Upgrade != "6.9.0" || r.Via != "express" ||
+		!slices.Equal(r.Fixes, []string{"CVE-2022-24999", "GHSA-test-qs02"}) {
+		t.Fatalf("recommendation = %+v", r)
+	}
+
+	_, stdout, _ = runReal(t, qsAdvisories{}, "--path", dir)
+	if !regexp.MustCompile(`qs@6\.7\.0\s+6\.9\.0\s+2\s+express\s+package-lock\.json`).MatchString(stdout) ||
+		!strings.Contains(stdout, "VIA is the direct dependency") {
+		t.Fatalf("table:\n%s", stdout)
 	}
 }

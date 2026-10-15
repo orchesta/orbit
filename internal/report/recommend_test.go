@@ -1,8 +1,11 @@
 package report
 
 import (
+	"bytes"
 	"reflect"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -163,5 +166,47 @@ func TestRecommendForMergesAdvisoriesStoredTwice(t *testing.T) {
 	}
 	if got := RecommendFor(nil, nil); got == nil || len(got) != 0 {
 		t.Fatalf("RecommendFor(nil, nil) = %#v, want an empty, non-nil list", got)
+	}
+}
+
+func TestTableRecommendationsShowViaAndMalicious(t *testing.T) {
+	qs := rdep("qs", "6.7.0", "npm", "package-lock.json", "body-parser", "express", "mocha", "webpack")
+	evil := rdep("evil-pkg", "1.0.0", "npm", "package-lock.json")
+	f, s := Build(&engine.Result{Dependencies: []*entity.Dependency{qs, evil}, Vulnerabilities: []*entity.Vulnerability{
+		rvuln(qs, "CVE-2022-24999", entity.SeverityHigh, "6.7.3"),
+		rvuln(evil, "MAL-2025-1234", entity.SeverityCritical, ""),
+	}}, nil, "", fixedNow)
+	var b bytes.Buffer
+	if err := WriteTable(&b, f, s); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	for _, want := range []string{
+		"qs@6.7.0  6.7.3       1      body-parser, express, mocha and 1 more  package-lock.json\n",
+		"remove evil-pkg@1.0.0: reported as malicious (MAL-2025-1234)\n",
+		"It can still break your build; check the release notes.\n",
+		"VIA is the direct dependency that pulls the package in",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if regexp.MustCompile(`(?m)^evil-pkg@`).MatchString(out) {
+		t.Errorf("a malicious package must not get an upgrade row:\n%s", out)
+	}
+
+	// debug@4.4.2: removal is still the advice; the GitHub fix is only named.
+	debug := rdep("debug", "4.4.2", "npm", "package-lock.json")
+	f, s = Build(&engine.Result{Dependencies: []*entity.Dependency{debug}, Vulnerabilities: debugAdvisories(debug)}, nil, "", fixedNow)
+	b.Reset()
+	if err := WriteTable(&b, f, s); err != nil {
+		t.Fatal(err)
+	}
+	out = b.String()
+	if want := "remove debug@4.4.2: reported as malicious (CVE-2025-59144); a non-malicious advisory names 4.4.3 as fixed\n"; !strings.Contains(out, want) {
+		t.Errorf("missing %q in:\n%s", want, out)
+	}
+	if regexp.MustCompile(`(?m)^debug@4\.4\.2\s+4\.4\.3`).MatchString(out) {
+		t.Errorf("a malicious package must not get an upgrade row:\n%s", out)
 	}
 }

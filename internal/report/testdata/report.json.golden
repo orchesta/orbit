@@ -166,5 +166,48 @@
       "epss": null,
       "epss_percentile": null
     }
+  ],
+  "recommendations": [
+    {
+      "ecosystem": "npm",
+      "package": "lodash",
+      "current": "4.17.15",
+      "upgrade": "4.17.21",
+      "fixes": [
+        "GHSA-medium-0001"
+      ],
+      "no_fix": [
+        "GHSA-crit-0003"
+      ],
+      "manifest": "package-lock.json",
+      "via": "",
+      "malicious": false
+    },
+    {
+      "ecosystem": "PyPI",
+      "package": "django",
+      "current": "3.0.0",
+      "upgrade": "3.0.7",
+      "fixes": [
+        "GHSA-high-0002"
+      ],
+      "no_fix": [],
+      "manifest": "requirements.txt",
+      "via": "",
+      "malicious": false
+    },
+    {
+      "ecosystem": "npm",
+      "package": "express",
+      "current": "4.18.2",
+      "upgrade": "",
+      "fixes": [],
+      "no_fix": [
+        "GHSA-esc-0005"
+      ],
+      "manifest": "package-lock.json",
+      "via": "",
+      "malicious": false
+    }
   ]
 }
