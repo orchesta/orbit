@@ -36,7 +36,7 @@ func (f *maliciousVulnRepo) GetByID(_ context.Context, id uuid.UUID) (*entity.Vu
 	return nil, nil
 }
 
-func (f *maliciousVulnRepo) ListLatest(context.Context, string, int, int) ([]*entity.VulnerabilityFinding, int, error) {
+func (f *maliciousVulnRepo) ListLatest(context.Context, repository.VulnerabilityListFilter, int, int) ([]*entity.VulnerabilityFinding, int, error) {
 	var out []*entity.VulnerabilityFinding
 	for _, v := range f.vulns {
 		out = append(out, &entity.VulnerabilityFinding{ID: v.ID, OSVID: v.OSVID, Aliases: v.Aliases,

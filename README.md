@@ -387,7 +387,7 @@ Paginated responses carry `data`, `total`, `page`, `per_page` and `total_pages` 
 | `GET` | `/scans/{id}/vulnerabilities` | Vulnerabilities of a scan |
 | `GET` | `/repositories/{id}/vulnerabilities` | Vulnerabilities of a repository |
 
-`GET /vulnerabilities` takes `page` (max 1,000,000), `per_page` (default 25, max 100) and `severity` (`critical`, `high`, `medium`, `low`, `unknown`). Besides the pagination fields it returns `counts` (findings per severity, ignoring the `severity` filter) and `unverified_repositories` (repositories without a successful vulnerability check).
+`GET /vulnerabilities` takes `page` (max 1,000,000), `per_page` (default 25, max 100), `severity` (`critical`, `high`, `medium`, `low`, `unknown`), `kev` (`true` for findings in CISA KEV only), `min_epss` (0 to 1, for example `0.1` for an EPSS of 10% or more) and `sort` (`severity`, the default, or `epss`). Besides the pagination fields it returns `counts` (findings per severity and `kev`, the number in KEV, ignoring the filters) and `unverified_repositories` (repositories without a successful vulnerability check). Every vulnerability in the API carries `kev`, `kev_date_added`, `epss` and `epss_percentile`; they are `false` or `null` when the data was not available at scan time.
 
 Every vulnerability these endpoints return also has `malicious`: true when its ID or one of its aliases starts with `MAL-` (OpenSSF Malicious Packages). The flag is derived from the stored IDs, so it also covers scans stored before Orbit rated such advisories `critical`. `counts.malicious` counts such findings across all severities; they are also counted under their severity.
 

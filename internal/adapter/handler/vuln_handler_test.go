@@ -15,12 +15,12 @@ import (
 
 type listVulnRepo struct {
 	repository.VulnerabilityRepo
-	gotSeverity         string
+	got                 repository.VulnerabilityListFilter
 	gotLimit, gotOffset int
 }
 
-func (f *listVulnRepo) ListLatest(_ context.Context, severity string, limit, offset int) ([]*entity.VulnerabilityFinding, int, error) {
-	f.gotSeverity, f.gotLimit, f.gotOffset = severity, limit, offset
+func (f *listVulnRepo) ListLatest(_ context.Context, filter repository.VulnerabilityListFilter, limit, offset int) ([]*entity.VulnerabilityFinding, int, error) {
+	f.got, f.gotLimit, f.gotOffset = filter, limit, offset
 	return nil, 51, nil
 }
 
@@ -44,8 +44,8 @@ func TestListVulnerabilities(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if repo.gotSeverity != "unknown" || repo.gotLimit != 25 || repo.gotOffset != 50 {
-		t.Fatalf("repo called with %q %d %d", repo.gotSeverity, repo.gotLimit, repo.gotOffset)
+	if repo.got.Severity != "unknown" || repo.gotLimit != 25 || repo.gotOffset != 50 {
+		t.Fatalf("repo called with %q %d %d", repo.got.Severity, repo.gotLimit, repo.gotOffset)
 	}
 	if body.Data.TotalPages != 3 || body.Data.Counts.Unknown != 4 || body.Data.UnverifiedRepositories != 2 || body.Data.Data == nil {
 		t.Fatalf("page = %+v", body.Data)
@@ -66,5 +66,34 @@ func TestListVulnerabilities(t *testing.T) {
 	}
 	if repo.gotLimit != 0 {
 		t.Fatalf("repo called for an out-of-range page with offset %d", repo.gotOffset)
+	}
+}
+
+func TestListVulnerabilitiesExploitFilters(t *testing.T) {
+	repo := &listVulnRepo{}
+	r := chi.NewRouter()
+	NewVulnHandler(repo, nil).RegisterRoutes(r)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/vulnerabilities?kev=true&min_epss=0.1&sort=epss", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	if !repo.got.KEVOnly || repo.got.MinEPSS == nil || *repo.got.MinEPSS != 0.1 || repo.got.Sort != "epss" {
+		t.Fatalf("filter = %+v", repo.got)
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/vulnerabilities", nil))
+	if repo.got.KEVOnly || repo.got.MinEPSS != nil || repo.got.Sort != "severity" {
+		t.Fatalf("default filter = %+v; want no exploit filter, sort severity", repo.got)
+	}
+
+	for _, q := range []string{"kev=yes", "min_epss=1.5", "min_epss=-0.1", "min_epss=NaN", "min_epss=abc", "sort=name"} {
+		rec = httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/vulnerabilities?"+q, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", q, rec.Code)
+		}
 	}
 }
