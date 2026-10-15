@@ -132,8 +132,10 @@ type SARIFOptions struct {
 // rule with a malicious finding is tagged "malicious" and rated 10.0. A rule listed in CISA KEV is also tagged "known-exploited";
 // its security-severity is not raised. With a baseline (s.Baseline) every
 // finding's result has baselineState "new" or "unchanged"; "updated" and
-// "absent" are not produced. License results have none: the baseline does
-// not apply to license violations.
+// "absent" are not produced. SARIF 2.1.0 §3.27.24 wants baselineState on
+// every result once one has it, so license results then have "new": the
+// baseline never filters license violations, so they gate like new
+// findings. A license rule is tagged "license" only, not "security".
 func WriteSARIF(w io.Writer, f []Finding, s Summary, tool ToolInfo, opts SARIFOptions) error {
 	recs := make(map[[4]string]Recommendation, len(s.Recommendations))
 	for _, r := range s.Recommendations {
@@ -216,13 +218,11 @@ func WriteSARIF(w io.Writer, f []Finding, s Summary, tool ToolInfo, opts SARIFOp
 			ruleID := "license/" + id
 			if _, ok := ruleIdx[ruleID]; !ok {
 				ruleIdx[ruleID] = len(rules)
-				props := map[string]any{}
-				addRuleTag(props, "license")
 				rules = append(rules, sarifRule{
 					ID:               ruleID,
 					ShortDescription: sarifText{"Denied license " + id},
 					HelpURI:          licenseHelpURI(id),
-					Properties:       props,
+					Properties:       map[string]any{"tags": []string{"license"}},
 				})
 			}
 			var r sarifResult
@@ -232,6 +232,9 @@ func WriteSARIF(w io.Writer, f []Finding, s Summary, tool ToolInfo, opts SARIFOp
 			r.Locations[0].PhysicalLocation.ArtifactLocation = opts.artifactLocation(d.ManifestFile)
 			sum := sha256.Sum256([]byte(strings.Join([]string{ruleID, string(d.Ecosystem), d.Name, d.CurrentVersion, d.ManifestFile}, "|")))
 			r.PartialFingerprints = map[string]string{"orbit/v1": hex.EncodeToString(sum[:])}
+			if s.Baseline {
+				r.BaselineState = "new"
+			}
 			if v.Ignored {
 				r.Suppressions = []sarifSuppression{{Kind: "external", Justification: v.IgnoreReason}}
 			}

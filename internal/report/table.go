@@ -309,8 +309,7 @@ func licenseCell(d *entity.Dependency) string {
 }
 
 // licensePolicyLine is the table's verdict line for the license policy. It
-// counts the violations that are not ignored; the denied identifiers are
-// canonical SPDX IDs (spdx.ParseIDs), so they need no singleLine.
+// counts the violations that are not ignored.
 func licensePolicyLine(s Summary) string {
 	n := 0
 	for _, v := range s.LicenseViolations {
@@ -326,5 +325,5 @@ func licensePolicyLine(s Summary) string {
 	if n == 1 {
 		noun = "violation"
 	}
-	return fmt.Sprintf("license policy (deny %s): %d %s, %s", strings.Join(s.DeniedLicenses, ", "), n, noun, status)
+	return fmt.Sprintf("license policy (deny %s): %d %s, %s", singleLine(strings.Join(s.DeniedLicenses, ", ")), n, noun, status)
 }
