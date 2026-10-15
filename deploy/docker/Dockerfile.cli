@@ -25,6 +25,10 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 
 FROM alpine:3.24
 
+LABEL org.opencontainers.image.source="https://github.com/orchesta/orbit" \
+      org.opencontainers.image.description="Orbit CLI: orbit scan for CI builds" \
+      org.opencontainers.image.licenses="MIT"
+
 # ca-certificates: TLS to api.osv.dev. No git: the CLI scans a local path.
 RUN apk add --no-cache ca-certificates \
     && adduser -D -u 10001 -g '' orbit

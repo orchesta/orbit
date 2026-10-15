@@ -112,7 +112,7 @@ To replace the default database password (`orbit_secret`), add `ORBIT_DATABASE_P
 | --- | --- |
 | Docker | `docker run --rm -v "$PWD":/src:ro ghcr.io/orchesta/orbit-cli:<tag>` (runs `scan --path /src` by default) |
 | Release binary | `orbit_<tag>_<os>_<arch>` from the [GitHub releases](https://github.com/orchesta/orbit/releases) for Linux amd64/arm64, macOS arm64 and Windows amd64, verified against `checksums.txt` (see below) |
-| From source | `go build -o orbit ./cmd/orbit` with Go 1.27+, or `docker build -f deploy/docker/Dockerfile.cli -t orbit-cli .` |
+| From source | `go install github.com/orchesta/orbit/cmd/orbit@latest` with Go 1.27+ (reports version `dev`), `go build -o orbit ./cmd/orbit` in a clone, or `docker build -f deploy/docker/Dockerfile.cli -t orbit-cli .` |
 
 Images and binaries are published when a `v*` tag is pushed (see [Releases and images](#releases-and-images)). To install a release binary on Linux or macOS:
 

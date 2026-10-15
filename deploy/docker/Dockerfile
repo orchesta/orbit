@@ -37,6 +37,10 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldfl
 # ============================================
 FROM alpine:3.24
 
+LABEL org.opencontainers.image.source="https://github.com/orchesta/orbit" \
+      org.opencontainers.image.description="Orbit server: dependency and vulnerability scanner with web UI" \
+      org.opencontainers.image.licenses="MIT"
+
 RUN apk add --no-cache ca-certificates git tzdata
 
 RUN adduser -D -u 10001 -g '' orbit
