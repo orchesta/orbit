@@ -24,6 +24,7 @@ import (
 	"github.com/orchesta/orbit/internal/infrastructure/auth"
 	"github.com/orchesta/orbit/internal/infrastructure/config"
 	"github.com/orchesta/orbit/internal/infrastructure/crypto"
+	"github.com/orchesta/orbit/internal/infrastructure/depsdev"
 	"github.com/orchesta/orbit/internal/infrastructure/exploit"
 	"github.com/orchesta/orbit/internal/infrastructure/git/azuredevops"
 	"github.com/orchesta/orbit/internal/infrastructure/git/github"
@@ -103,9 +104,10 @@ func newAnalyzerRegistry() *analyzer.Registry {
 }
 
 // serverEngineOptions is how the server's scans run: latest versions
-// checked, Via skipped (the server does not store it), and exploit data
-// unless turned off.
-func serverEngineOptions(ec config.ExploitConfig, logger *slog.Logger) engine.Options {
+// checked, Via skipped (the server does not store it), exploit data unless
+// turned off, and license lookups on deps.dev only when turned on. Licenses
+// recorded in lockfiles are kept either way.
+func serverEngineOptions(ec config.ExploitConfig, sc config.ScannerConfig, logger *slog.Logger) engine.Options {
 	opts := engine.Options{CheckLatest: true, SkipVia: true, Logger: logger}
 	if ec.Enabled {
 		// One enricher for every scan: the KEV catalog is downloaded once and
@@ -113,6 +115,10 @@ func serverEngineOptions(ec config.ExploitConfig, logger *slog.Logger) engine.Op
 		opts.Exploit = exploit.NewEnricher(exploit.Config{KEVURL: ec.KEVURL, EPSSURL: ec.EPSSURL, Logger: logger})
 	} else {
 		logger.Info("exploit data (CISA KEV, FIRST EPSS) is disabled")
+	}
+	if sc.Licenses {
+		opts.Licenses = depsdev.NewClient()
+		logger.Info("license lookups on deps.dev are enabled")
 	}
 	return opts
 }
@@ -193,7 +199,7 @@ func runServer() {
 
 	// Initialize use cases
 	repoUseCase := repo.NewUseCase(repoRepo, gitHostRepo)
-	scanEngine := engine.New(registry, vulnuc.NewLookup(osvClient, logger), serverEngineOptions(cfg.Exploit, logger))
+	scanEngine := engine.New(registry, vulnuc.NewLookup(osvClient, logger), serverEngineOptions(cfg.Exploit, cfg.Scanner, logger))
 	scanUseCase := scan.NewUseCase(
 		repoRepo, scanRepo, depRepo, vulnRepo, scanEngine,
 		gitProviderFactory, gitHostRepo,

@@ -87,6 +87,11 @@ type ScannerConfig struct {
 	MaxConcurrentScans int `mapstructure:"max_concurrent_scans"` // scans that may run at once
 	ScanTimeout        int `mapstructure:"scan_timeout"`         // seconds a whole scan may take
 	RetainScans        int `mapstructure:"retain_scans"`         // finished scans kept per repository
+
+	// Licenses turns on license lookups on deps.dev for dependencies whose
+	// lockfile records none. Off by default: it sends package names and
+	// versions to another external service.
+	Licenses bool `mapstructure:"licenses"`
 }
 
 // ExploitConfig controls the exploit signals (CISA KEV, FIRST EPSS) added
@@ -120,6 +125,7 @@ func Load() (*Config, error) {
 	v.SetDefault("scanner.max_concurrent_scans", 3)
 	v.SetDefault("scanner.scan_timeout", 900)
 	v.SetDefault("scanner.retain_scans", 10)
+	v.SetDefault("scanner.licenses", false)
 	v.SetDefault("server.shutdown_timeout", 25)
 	v.SetDefault("exploit.enabled", true)
 	v.SetDefault("exploit.kev_url", "")

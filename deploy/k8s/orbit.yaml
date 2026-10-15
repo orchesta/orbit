@@ -86,6 +86,10 @@ spec:
             # nothing is sent to www.cisa.gov or api.first.org.
             # - name: ORBIT_EXPLOIT_ENABLED
             #   value: "false"
+            # Optional: look up on api.deps.dev the licenses that lockfiles do
+            # not record (sends package names and versions).
+            # - name: ORBIT_SCANNER_LICENSES
+            #   value: "true"
           livenessProbe:
             httpGet:
               path: /api/v1/health

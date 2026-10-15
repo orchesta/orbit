@@ -27,6 +27,9 @@ services:
       ORBIT_EXPLOIT_ENABLED: ${ORBIT_EXPLOIT_ENABLED:-true}
       ORBIT_EXPLOIT_KEV_URL: ${ORBIT_EXPLOIT_KEV_URL:-}
       ORBIT_EXPLOIT_EPSS_URL: ${ORBIT_EXPLOIT_EPSS_URL:-}
+      # true looks up on api.deps.dev the licenses lockfiles do not record
+      # (sends package names and versions).
+      ORBIT_SCANNER_LICENSES: ${ORBIT_SCANNER_LICENSES:-false}
     depends_on:
       postgres:
         condition: service_healthy

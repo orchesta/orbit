@@ -65,12 +65,12 @@ var parityAdvisories = map[string][]parityAdvisory{
 // scan must produce for the parity checkout (see describeDeps and
 // describeVulns), so a regression shared by both paths is caught too.
 var wantParityDeps = []string{
-	`Go svc/go.mod github.com/google/uuid@1.6.0 direct=true resolved=false dev=false latest="" outdated=false update=none`,
-	`PyPI svc/requirements.txt flask@2.0 direct=true resolved=false dev=false latest="3.0.0" outdated=true update=major`,
-	`PyPI svc/requirements.txt requests@2.31.0 direct=true resolved=true dev=false latest="2.32.3" outdated=true update=minor`,
-	`npm package-lock.json accepts@1.3.8 direct=false resolved=true dev=false latest="1.3.8" outdated=false update=none`,
-	`npm package-lock.json express@4.18.2 direct=true resolved=true dev=false latest="4.21.2" outdated=true update=minor`,
-	`npm package-lock.json jest@29.7.0 direct=true resolved=true dev=true latest="29.7.0" outdated=false update=none`,
+	`Go svc/go.mod github.com/google/uuid@1.6.0 direct=true resolved=false dev=false latest="" outdated=false update=none license=""`,
+	`PyPI svc/requirements.txt flask@2.0 direct=true resolved=false dev=false latest="3.0.0" outdated=true update=major license=""`,
+	`PyPI svc/requirements.txt requests@2.31.0 direct=true resolved=true dev=false latest="2.32.3" outdated=true update=minor license=""`,
+	`npm package-lock.json accepts@1.3.8 direct=false resolved=true dev=false latest="1.3.8" outdated=false update=none license="MIT"`,
+	`npm package-lock.json express@4.18.2 direct=true resolved=true dev=false latest="4.21.2" outdated=true update=minor license="MIT"`,
+	`npm package-lock.json jest@29.7.0 direct=true resolved=true dev=true latest="29.7.0" outdated=false update=none license=""`,
 }
 
 var wantParityVulns = []string{
@@ -194,9 +194,9 @@ func connectWithRetry(t *testing.T, dsn string) *pgx.Conn {
 func describeDeps(deps []*entity.Dependency) []string {
 	var out []string
 	for _, d := range deps {
-		out = append(out, fmt.Sprintf("%s %s %s@%s direct=%v resolved=%v dev=%v latest=%q outdated=%v update=%s",
+		out = append(out, fmt.Sprintf("%s %s %s@%s direct=%v resolved=%v dev=%v latest=%q outdated=%v update=%s license=%q",
 			d.Ecosystem, d.ManifestFile, d.Name, d.CurrentVersion, d.IsDirect, d.IsResolved, d.IsDev,
-			d.LatestVersion, d.IsOutdated, d.UpdateType))
+			d.LatestVersion, d.IsOutdated, d.UpdateType, d.License))
 	}
 	slices.Sort(out)
 	return out

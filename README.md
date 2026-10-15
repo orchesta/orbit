@@ -197,6 +197,8 @@ Orbit reports each dependency's license as an SPDX expression in the JSON report
 
 `--deny-license` alone sends nothing to deps.dev: it checks the licenses the lockfiles record. With `--licenses` as well, a failed deps.dev lookup stops the scan with exit 2, because a license that could not be looked up would otherwise pass as allowed. The policy is separate from `--fail-on`, so it applies with `--fail-on none` too, and `--baseline` does not filter it. The table lists the violations and ends with a `license policy (deny ...)` line that says `passed` or `FAILED`; JSON has `license_violations` and `summary.license_failed`, SARIF a `license/<ID>` rule per denied license, and JUnit a test case per violation.
 
+The server stores each dependency's license with the scan and returns it from `GET /api/v1/scans/{id}/dependencies`. Licenses from npm lockfiles are always stored. deps.dev lookups are off by default; set `scanner.licenses: true` (`ORBIT_SCANNER_LICENSES=true`) to turn them on. The server has no license policy: it shows licenses but does not fail or flag scans because of them.
+
 ### Exploit signals: CISA KEV and FIRST EPSS
 
 For every finding with a CVE ID (as its ID or an alias), Orbit adds:
@@ -403,10 +405,11 @@ The server reads `orbit.yaml` (or `orbit.yml` and other formats viper supports) 
 | `ORBIT_SCANNER_MAX_CONCURRENT_SCANS` | `3` | Size of the background scan worker pool |
 | `ORBIT_SCANNER_SCAN_TIMEOUT` | `900` | Seconds a whole scan may take |
 | `ORBIT_SCANNER_RETAIN_SCANS` | `10` | Finished scans kept per repository; `0` keeps all |
+| `ORBIT_SCANNER_LICENSES` | `false` | `true` looks up on deps.dev the licenses that lockfiles do not record. Licenses from npm lockfiles are stored either way. The server shows licenses but applies no license policy |
 | `ORBIT_EXPLOIT_ENABLED` | `true` | Adds CISA KEV and FIRST EPSS data to findings. `false` sends nothing to www.cisa.gov or api.first.org |
 | `ORBIT_EXPLOIT_KEV_URL` / `ORBIT_EXPLOIT_EPSS_URL` | empty (public services) | Mirrors of the KEV JSON feed and the EPSS API, for restricted networks |
 
-Compose-only variables, set in `deploy/docker/.env`: `ORBIT_DATABASE_PASSWORD` (also used for the PostgreSQL container), `ORBIT_SERVER_TRUST_PROXY_HEADERS`, `ORBIT_SERVER_CORS_ALLOWED_ORIGINS`, `ORBIT_EXPLOIT_ENABLED`, `ORBIT_EXPLOIT_KEV_URL`, `ORBIT_EXPLOIT_EPSS_URL`, `ORBIT_TMP_SIZE` (size of the `/tmp` tmpfs that holds clones, default `1g`) and `COMPOSE_PROJECT_NAME`.
+Compose-only variables, set in `deploy/docker/.env`: `ORBIT_DATABASE_PASSWORD` (also used for the PostgreSQL container), `ORBIT_SERVER_TRUST_PROXY_HEADERS`, `ORBIT_SERVER_CORS_ALLOWED_ORIGINS`, `ORBIT_EXPLOIT_ENABLED`, `ORBIT_EXPLOIT_KEV_URL`, `ORBIT_EXPLOIT_EPSS_URL`, `ORBIT_SCANNER_LICENSES`, `ORBIT_TMP_SIZE` (size of the `/tmp` tmpfs that holds clones, default `1g`) and `COMPOSE_PROJECT_NAME`.
 
 `orbit.yaml` also contains `log.level`, `log.format` and `scanner.default_schedule`. The current server does not apply them: it always logs JSON at `info` level, and new repositories get the schedule `0 */6 * * *` unless one is given when they are added.
 
@@ -474,7 +477,7 @@ Paginated responses carry `data`, `total`, `page`, `per_page` and `total_pages` 
 | `POST` | `/repositories/{id}/scan` | Queue a scan (202 Accepted) |
 | `GET` | `/repositories/{id}/scans` | Scan history |
 | `GET` | `/scans/{id}` | Scan result |
-| `GET` | `/scans/{id}/dependencies` | Dependencies found by a scan |
+| `GET` | `/scans/{id}/dependencies` | Dependencies found by a scan, each with its license (SPDX expression, "" when unknown) |
 | `GET` | `/scans/{id}/recommendations` | Smallest upgrade per vulnerable package of a completed scan (`via` is always empty on the server); 409 while the scan is not completed or after it failed |
 
 **Vulnerabilities**
@@ -569,7 +572,7 @@ The release binaries are mainly for the CLI. The server serves the UI from `./ui
 
 ## Security notes
 
-- **What leaves your network.** To find vulnerabilities, Orbit sends package coordinates (ecosystem, name, version) to `api.osv.dev`. Source code, file paths and repository details are not sent. The server also asks the public registries (npm, PyPI, NuGet, the Go module proxy) for the latest versions of every package; the CLI does that only with `--outdated`. Private feeds such as Azure Artifacts are not queried. For exploit data, Orbit downloads the whole CISA KEV catalog from `www.cisa.gov` (nothing about your project is sent) and sends the CVE IDs of its findings to `api.first.org` in the query string to get their EPSS scores; this tells FIRST which CVEs affect the scanned project. Both requests carry a User-Agent naming Orbit and its version. Turn them off with `--no-exploit-data`, or `ORBIT_EXPLOIT_ENABLED=false` on the server.
+- **What leaves your network.** To find vulnerabilities, Orbit sends package coordinates (ecosystem, name, version) to `api.osv.dev`. Source code, file paths and repository details are not sent. The server also asks the public registries (npm, PyPI, NuGet, the Go module proxy) for the latest versions of every package; the CLI does that only with `--outdated`. Private feeds such as Azure Artifacts are not queried. For exploit data, Orbit downloads the whole CISA KEV catalog from `www.cisa.gov` (nothing about your project is sent) and sends the CVE IDs of its findings to `api.first.org` in the query string to get their EPSS scores; this tells FIRST which CVEs affect the scanned project. Both requests carry a User-Agent naming Orbit and its version. Turn them off with `--no-exploit-data`, or `ORBIT_EXPLOIT_ENABLED=false` on the server. License lookups send package coordinates to `api.deps.dev`; they are off unless you pass `--licenses`, or set `ORBIT_SCANNER_LICENSES=true` on the server.
 - **Access tokens** for GitHub, GitLab and Azure DevOps, including tokens stored on repositories, are encrypted at rest with AES-256-GCM using `ORBIT_CRYPTO_ENCRYPTION_KEY`. Losing the key means re-adding the tokens.
 - **First-run setup** requires `ORBIT_SETUP_TOKEN` when it is set, so only someone who has the token can create the first admin account.
 - **Logins** are limited to 5 failures per email and 20 per client IP in 15 minutes. Behind a reverse proxy, set `ORBIT_SERVER_TRUST_PROXY_HEADERS=true` so the limit applies per real client.

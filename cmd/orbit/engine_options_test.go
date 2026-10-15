@@ -38,7 +38,7 @@ func viaCount(t *testing.T, opts engine.Options) int {
 // shows it.
 func TestServerScansSkipViaAndTheCLIKeepsIt(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
-	server := serverEngineOptions(config.ExploitConfig{}, logger)
+	server := serverEngineOptions(config.ExploitConfig{}, config.ScannerConfig{}, logger)
 	if !server.SkipVia || !server.CheckLatest {
 		t.Fatalf("server options %+v, want SkipVia and CheckLatest", server)
 	}
@@ -74,5 +74,34 @@ func TestCLIEngineOptionsFollowTheEngineConfig(t *testing.T) {
 	}
 	if on.Logger != logger {
 		t.Error("the logger was not passed on")
+	}
+}
+
+// The server keeps SkipVia and its exploit switch whatever scanner.licenses
+// says, and asks deps.dev for licenses only when scanner.licenses is on.
+func TestServerEngineOptionsFollowTheConfig(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	for _, licenses := range []bool{false, true} {
+		opts := serverEngineOptions(config.ExploitConfig{Enabled: true}, config.ScannerConfig{Licenses: licenses}, logger)
+		if !opts.SkipVia || !opts.CheckLatest {
+			t.Errorf("licenses=%v: options %+v, want SkipVia and CheckLatest", licenses, opts)
+		}
+		if _, ok := opts.Exploit.(*exploit.Enricher); !ok {
+			t.Errorf("licenses=%v: Options.Exploit = %T, want *exploit.Enricher", licenses, opts.Exploit)
+		}
+		_, isClient := opts.Licenses.(*depsdev.Client)
+		if licenses != isClient {
+			t.Errorf("licenses=%v: Options.Licenses = %T", licenses, opts.Licenses)
+		}
+		if opts.Logger != logger {
+			t.Errorf("licenses=%v: the logger was not passed on", licenses)
+		}
+	}
+	off := serverEngineOptions(config.ExploitConfig{}, config.ScannerConfig{Licenses: true}, logger)
+	if off.Exploit != nil || !off.SkipVia {
+		t.Errorf("exploit off, licenses on: options %+v, want no exploit data and SkipVia", off)
+	}
+	if _, ok := off.Licenses.(*depsdev.Client); !ok {
+		t.Errorf("exploit off, licenses on: Options.Licenses = %T, want *depsdev.Client", off.Licenses)
 	}
 }
