@@ -355,3 +355,215 @@ func TestExampleWorkflowsPinActions(t *testing.T) {
 		}
 	}
 }
+
+// ---- GitLab --------------------------------------------------------------
+
+func gitlabJob(t *testing.T) map[string]any {
+	t.Helper()
+	return loadYAML(t, "gitlab/orbit.gitlab-ci.yml")[".orbit-scan"].(map[string]any)
+}
+
+// gitlabScript is the job's script as the runner runs it: with errexit on.
+func gitlabScript(t *testing.T) string {
+	t.Helper()
+	return "set -e\n" + gitlabJob(t)["script"].([]any)[0].(string)
+}
+
+// gitlabEnv is the predefined CI/CD variables the script reads. The ORBIT_*
+// variables are left unset: the template applies their defaults itself.
+func gitlabEnv(extra map[string]string) map[string]string {
+	env := map[string]string{
+		"CI_PROJECT_DIR": ".", "CI_API_V4_URL": "https://gitlab.example.com/api/v4", "CI_PROJECT_ID": "42",
+		"CI_JOB_TOKEN": "job-token", "CI_JOB_NAME": "orbit-scan", "CI_DEFAULT_BRANCH": "main",
+	}
+	for k, v := range extra {
+		env[k] = v
+	}
+	return env
+}
+
+func TestGitLabKeepsTheBaselineArtifact(t *testing.T) {
+	paths := gitlabJob(t)["artifacts"].(map[string]any)["paths"].([]any)
+	if !slices.Contains(paths, any("orbit-baseline.json")) {
+		t.Errorf("artifacts.paths = %v, want orbit-baseline.json", paths)
+	}
+}
+
+func TestGitLabWithoutBaselineIsUnchanged(t *testing.T) {
+	r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{"FAKE_RC": "1", "CI_COMMIT_BRANCH": "main"}))
+	o := r.of("orbit")
+	if r.code != 1 || len(o) != 2 || len(r.of("wget")) != 0 {
+		t.Fatalf("exit %d, calls %+v; output:\n%s", r.code, r.calls, r.output)
+	}
+	for _, c := range o {
+		if slices.Contains(c.args, "--baseline") {
+			t.Errorf("unexpected --baseline: %v", c.args)
+		}
+	}
+}
+
+// The default branch records the baseline. Its findings are reported but do
+// not fail the job: GitLab serves artifacts only from successful pipelines,
+// so a failing job would never leave a baseline behind.
+func TestGitLabAutoRecordsOnDefaultBranch(t *testing.T) {
+	dir := t.TempDir()
+	r := runScript(t, "sh", gitlabScript(t), dir, gitlabEnv(map[string]string{
+		"ORBIT_BASELINE": "auto", "CI_COMMIT_BRANCH": "main", "FAKE_RC": "1",
+	}))
+	o := r.of("orbit")
+	if r.code != 0 || len(o) != 3 || len(r.of("wget")) != 0 {
+		t.Fatalf("exit %d (want 0: the default branch records), %d orbit calls (want 3); output:\n%s", r.code, len(o), r.output)
+	}
+	if !hasSeq(o[2].args, "--fail-on", "none") || !hasSeq(o[2].args, "--format", "json", "--out", "orbit-baseline.json") ||
+		!slices.Contains(o[2].args, "--quiet") {
+		t.Errorf("third run = %v", o[2].args)
+	}
+	for i, c := range o {
+		if slices.Contains(c.args, "--baseline") {
+			t.Errorf("run %d = %v, want no --baseline while recording", i, c.args)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "orbit-baseline.json")); err != nil {
+		t.Errorf("orbit-baseline.json not written: %v", err)
+	}
+	if !strings.Contains(r.output, "records the baseline") {
+		t.Errorf("no note about recording:\n%s", r.output)
+	}
+}
+
+func TestGitLabAutoRecordingStillFailsOnErrors(t *testing.T) {
+	r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{
+		"ORBIT_BASELINE": "auto", "CI_COMMIT_BRANCH": "main", "FAKE_RC": "2",
+	}))
+	if r.code != 2 || len(r.of("orbit")) != 1 {
+		t.Fatalf("exit %d, calls %+v", r.code, r.calls)
+	}
+}
+
+func TestGitLabAutoInMergeRequestDownloadsTheBaseline(t *testing.T) {
+	tmp := t.TempDir()
+	r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{
+		"ORBIT_BASELINE": "auto", "CI_MERGE_REQUEST_IID": "7", "CI_MERGE_REQUEST_TARGET_BRANCH_NAME": "release/1.0",
+		"CI_JOB_NAME": "orbit scan", "TMPDIR": tmp, "FAKE_RC": "1",
+	}))
+	w := r.of("wget")
+	if len(w) != 1 {
+		t.Fatalf("wget calls = %+v; output:\n%s", w, r.output)
+	}
+	if !hasSeq(w[0].args, "--header", "JOB-TOKEN: job-token") ||
+		!slices.Contains(w[0].args, "https://gitlab.example.com/api/v4/projects/42/jobs/artifacts/release%2F1.0/raw/orbit-baseline.json?job=orbit%20scan") {
+		t.Errorf("wget args = %v", w[0].args)
+	}
+	prev := filepath.Join(tmp, "orbit-baseline.prev.json")
+	o := r.of("orbit")
+	if r.code != 1 || len(o) != 2 {
+		t.Fatalf("exit %d, %d orbit calls; output:\n%s", r.code, len(o), r.output)
+	}
+	for _, c := range o {
+		if !hasSeq(c.args, "--baseline", prev) {
+			t.Errorf("orbit call lacks --baseline %s: %v", prev, c.args)
+		}
+	}
+}
+
+// A branch pipeline outside the default branch downloads from the default
+// branch; ORBIT_BASELINE_JOB names the recording job when it differs.
+func TestGitLabAutoOnBranchUsesDefaultBranchAndBaselineJob(t *testing.T) {
+	r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{
+		"ORBIT_BASELINE": "auto", "CI_COMMIT_BRANCH": "feature", "ORBIT_BASELINE_JOB": "scan:main",
+	}))
+	w := r.of("wget")
+	if r.code != 0 || len(w) != 1 || len(r.of("orbit")) != 2 {
+		t.Fatalf("exit %d, calls %+v; output:\n%s", r.code, r.calls, r.output)
+	}
+	if !slices.Contains(w[0].args, "https://gitlab.example.com/api/v4/projects/42/jobs/artifacts/main/raw/orbit-baseline.json?job=scan:main") {
+		t.Errorf("wget args = %v", w[0].args)
+	}
+}
+
+// With no baseline yet (a first run, or a target branch that never recorded
+// one) the job warns and every finding counts; the download failure itself
+// does not fail the job.
+func TestGitLabAutoWithoutBaselineCountsEverything(t *testing.T) {
+	for _, rc := range []int{0, 1} {
+		tmp := t.TempDir()
+		r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{
+			"ORBIT_BASELINE": "auto", "CI_COMMIT_BRANCH": "feature", "FAKE_WGET_RC": "1",
+			"FAKE_RC": strconv.Itoa(rc), "TMPDIR": tmp,
+		}))
+		if r.code != rc || len(r.of("orbit")) != 2 ||
+			!strings.Contains(r.output, "warning: no Orbit baseline from the latest successful main pipeline") {
+			t.Fatalf("rc %d: exit %d, calls %+v; output:\n%s", rc, r.code, r.calls, r.output)
+		}
+		for _, c := range r.of("orbit") {
+			if slices.Contains(c.args, "--baseline") {
+				t.Errorf("--baseline without a baseline: %v", c.args)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(tmp, "orbit-baseline.prev.json")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("failed download left a file behind: %v", err)
+		}
+	}
+}
+
+func TestGitLabExplicitBaselinePath(t *testing.T) {
+	r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{
+		"ORBIT_BASELINE": "ci/base line.json", "CI_COMMIT_BRANCH": "main",
+	}))
+	o := r.of("orbit")
+	if r.code != 0 || len(o) != 2 || len(r.of("wget")) != 0 {
+		t.Fatalf("exit %d, calls %+v (an explicit path neither downloads nor records); output:\n%s", r.code, r.calls, r.output)
+	}
+	for _, c := range o {
+		if !hasSeq(c.args, "--baseline", "ci/base line.json") {
+			t.Errorf("orbit call lacks the explicit baseline: %v", c.args)
+		}
+	}
+}
+
+// Plan 02's variables: ORBIT_FAIL_ON_KEV gates only the first run;
+// ORBIT_EXPLOIT_DATA false keeps every run, the recording one too, from
+// contacting cisa.gov and api.first.org.
+func TestGitLabBaselineKeepsExploitFlags(t *testing.T) {
+	r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{
+		"ORBIT_BASELINE": "auto", "CI_COMMIT_BRANCH": "main", "ORBIT_FAIL_ON_KEV": "true", "ORBIT_EXPLOIT_DATA": "false",
+	}))
+	o := r.of("orbit")
+	if r.code != 0 || len(o) != 3 {
+		t.Fatalf("exit %d, calls %+v; output:\n%s", r.code, r.calls, r.output)
+	}
+	if !slices.Contains(o[0].args, "--fail-on-kev") || !slices.Contains(o[0].args, "--no-exploit-data") {
+		t.Errorf("first run = %v, want --fail-on-kev and --no-exploit-data", o[0].args)
+	}
+	for i, c := range o[1:] {
+		if slices.Contains(c.args, "--fail-on-kev") || !slices.Contains(c.args, "--no-exploit-data") {
+			t.Errorf("run %d = %v, want --no-exploit-data and no --fail-on-kev", i+2, c.args)
+		}
+	}
+}
+
+func TestGitLabDefaultsLeaveExploitFlagsOut(t *testing.T) {
+	r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{
+		"ORBIT_BASELINE": "auto", "CI_COMMIT_BRANCH": "main",
+	}))
+	o := r.of("orbit")
+	if r.code != 0 || len(o) != 3 {
+		t.Fatalf("exit %d, calls %+v; output:\n%s", r.code, r.calls, r.output)
+	}
+	for i, c := range o {
+		if slices.Contains(c.args, "--fail-on-kev") || slices.Contains(c.args, "--no-exploit-data") {
+			t.Errorf("run %d = %v, want neither --fail-on-kev nor --no-exploit-data", i+1, c.args)
+		}
+	}
+}
+
+func TestGitLabRejectsInvalidBooleans(t *testing.T) {
+	for key, val := range map[string]string{"ORBIT_FAIL_ON_KEV": "yes", "ORBIT_EXPLOIT_DATA": "no"} {
+		r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{
+			key: val, "ORBIT_BASELINE": "auto", "CI_COMMIT_BRANCH": "feature",
+		}))
+		if r.code != 2 || len(r.calls) != 0 || !strings.Contains(r.output, "error: "+key) {
+			t.Errorf("%s=%s: exit %d, calls %+v; output:\n%s", key, val, r.code, r.calls, r.output)
+		}
+	}
+}

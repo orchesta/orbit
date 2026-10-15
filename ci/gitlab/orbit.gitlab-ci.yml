@@ -12,6 +12,8 @@
 #     ORBIT_PATH: ""          # optional: directory to scan, default $CI_PROJECT_DIR
 #     ORBIT_FAIL_ON_KEV: "false"  # optional: "true" also fails on any finding in CISA KEV
 #     ORBIT_EXPLOIT_DATA: "true"  # optional: "false" sends nothing to www.cisa.gov or api.first.org
+#     ORBIT_BASELINE: ""      # optional: "" off, "auto", or a path to an earlier orbit JSON report
+#     ORBIT_BASELINE_JOB: ""  # optional, auto: job whose orbit-baseline.json is used (default: this job's name)
 #
 # Variables you set in your own .gitlab-ci.yml (top level or on the job) override the
 # template, because the template only declares ORBIT_VERSION at its top level (needed for
@@ -34,6 +36,26 @@
 # one extra osv.dev round trip. The second run downloads the KEV catalog and EPSS scores
 # again (about 200 KB).
 # Only the first run decides the job result, so the job fails at most once.
+#
+# Baseline (ORBIT_BASELINE: auto): merge requests fail only on findings that are new compared
+# with the default branch, and on malicious packages; all findings are still reported.
+#   - On the default branch (not a merge request pipeline) the job also writes
+#     orbit-baseline.json, one more scan, and keeps it as an artifact. Every finding there is
+#     an existing one, so exit 1 is reported as a warning but does not fail the job (not even
+#     for a malicious package or a KEV entry): GitLab hands out artifacts only from the
+#     latest successful pipeline of a branch. Exit 2 still fails it.
+#   - Everywhere else the job downloads orbit-baseline.json of the latest successful pipeline
+#     of the merge request's target branch (the default branch otherwise) through the job
+#     artifacts API with CI_JOB_TOKEN, and passes it to --baseline. This works on every tier;
+#     needs:project is not used. With no baseline yet (a first run, or a target branch that
+#     never recorded one) it warns and every finding counts.
+#   - GitLab keeps the artifacts of each branch's latest successful pipeline regardless of
+#     expire_in ("Keep artifacts from most recent successful jobs", on by default).
+#   - Merge request pipelines that run in a fork download from the fork's own pipelines.
+#   - Schedule a default-branch pipeline (for example daily) so advisories published since
+#     the last merge are part of the baseline.
+# Any other ORBIT_BASELINE value is a path to a report you provide; it is passed to
+# --baseline as is, and a missing file is an error (exit 2).
 
 variables:
   ORBIT_VERSION: latest   # pin to a release tag such as v1.0.0
@@ -63,29 +85,73 @@ variables:
         false) exploit_flag="--no-exploit-data" ;;
         *) echo "error: ORBIT_EXPLOIT_DATA must be true or false, got '$ORBIT_EXPLOIT_DATA'" >&2; exit 2 ;;
       esac
+      baseline=""
+      record=false
+      case "${ORBIT_BASELINE:-}" in
+        "") ;;
+        auto)
+          if [ -z "${CI_MERGE_REQUEST_IID:-}" ] && [ -n "${CI_COMMIT_BRANCH:-}" ] \
+            && [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+            record=true
+          else
+            ref="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-$CI_DEFAULT_BRANCH}"
+            job="${ORBIT_BASELINE_JOB:-$CI_JOB_NAME}"
+            urlenc() {
+              printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/ /%20/g' -e 's|/|%2F|g' -e 's/#/%23/g' \
+                -e 's/?/%3F/g' -e 's/&/%26/g' -e 's/+/%2B/g'
+            }
+            prev="${TMPDIR:-/tmp}/orbit-baseline.prev.json"
+            url="$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs/artifacts/$(urlenc "$ref")"
+            url="$url/raw/orbit-baseline.json?job=$(urlenc "$job")"
+            if wget -q -T 60 --header "JOB-TOKEN: $CI_JOB_TOKEN" -O "$prev" "$url"; then
+              baseline="$prev"
+            else
+              rm -f "$prev"
+              echo "warning: no Orbit baseline from the latest successful $ref pipeline" \
+                "(job $job); every finding counts" >&2
+            fi
+          fi
+          ;;
+        *) baseline="$ORBIT_BASELINE" ;;
+      esac
       rc=0
       orbit scan --path "$path" --fail-on "$fail_on" $kev_flag $exploit_flag \
         ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_IGNORE_FILE"} \
+        ${baseline:+--baseline "$baseline"} \
         --format junit --out orbit-junit.xml || rc=$?
-      # Exit 2 is an error (osv.dev unreachable, timeout, bad flag, or no KEV catalog with
-      # ORBIT_FAIL_ON_KEV): no report was written and a second run would most likely fail
-      # the same way.
+      # Exit 2 is an error (osv.dev unreachable, timeout, bad flag, bad baseline, or no KEV
+      # catalog with ORBIT_FAIL_ON_KEV): no report was written and another run would most
+      # likely fail the same way.
       if [ "$rc" -ne 2 ]; then
-        # No --fail-on-kev here: this run only writes the SARIF artifact.
+        # No --fail-on-kev in the runs below: they only write artifacts.
         orbit scan --path "$path" --fail-on none $exploit_flag \
           ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_IGNORE_FILE"} \
+          ${baseline:+--baseline "$baseline"} \
           --format sarif --out orbit.sarif --quiet \
           || echo "warning: could not write orbit.sarif" >&2
+        if [ "$record" = true ]; then
+          orbit scan --path "$path" --fail-on none $exploit_flag \
+            ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_IGNORE_FILE"} \
+            --format json --out orbit-baseline.json --quiet \
+            || echo "warning: could not write orbit-baseline.json" >&2
+        fi
+      fi
+      if [ "$record" = true ] && [ "$rc" -eq 1 ]; then
+        echo "warning: Orbit findings are reported in orbit-junit.xml but do not fail the job:" \
+          "$CI_DEFAULT_BRANCH records the baseline" >&2
+        rc=0
       fi
       # Keep the first run's exit code: 0 clean, 1 findings at or above the threshold, a
-      # malicious package (unless the threshold is none), or in KEV with ORBIT_FAIL_ON_KEV,
-      # 2 error.
+      # malicious package (unless the threshold is none), or in KEV with ORBIT_FAIL_ON_KEV
+      # (with a baseline only new findings count, malicious packages always do), 2 error.
+      # The default branch in baseline mode turns 1 into 0, see above.
       exit "$rc"
   artifacts:
     when: always
     expire_in: 30 days
     paths:
       - orbit.sarif
+      - orbit-baseline.json
     reports:
       junit: orbit-junit.xml
 

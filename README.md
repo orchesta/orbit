@@ -276,7 +276,7 @@ The templates pull `orchestalabs/orbit-cli` from Docker Hub, which limits pulls 
 
 ### New findings only, in CI
 
-The GitHub Action has a baseline mode. Runs of the default branch scan as usual, also write `orbit-baseline.json` and store it. Their findings are reported but do not fail the run: on the default branch every finding is an existing one, so the action turns exit 1 into a warning when it writes `baseline-output`. Errors (exit 2) still fail it. Pull requests fetch the newest stored baseline and fail only on new findings. When there is none yet (the first run, or it expired) they warn and every finding counts. Schedule a daily run of the default branch so advisories published since the last merge are part of the baseline.
+The GitHub Action and the GitLab template have a baseline mode. Runs of the default branch scan as usual, also write `orbit-baseline.json` and store it. Their findings are reported but do not fail the run: on the default branch every finding is an existing one, so exit 1 becomes a warning there (the action does this whenever it writes `baseline-output`). Errors (exit 2) still fail it. Pull and merge requests fetch the newest stored baseline and fail only on new findings and on malicious packages. When there is none yet (the first run, or it expired) they warn and every finding counts. Schedule a daily run of the default branch so advisories published since the last merge are part of the baseline.
 
 **GitHub Actions** uses the cache: a pull request can restore caches of its base branch, also from forks, and caches written by pull requests stay scoped to them, so a pull request cannot replace the baseline. GitHub removes caches nobody used for 7 days. The full workflow is [`.github/examples/orbit-scan-baseline.yml`](.github/examples/orbit-scan-baseline.yml); the parts that matter:
 
@@ -300,9 +300,19 @@ The GitHub Action has a baseline mode. Runs of the default branch scan as usual,
     key: orbit-baseline-${{ github.run_id }}-${{ github.run_attempt }}
 ```
 
+**GitLab CI**: set `ORBIT_BASELINE: auto`. The default branch keeps `orbit-baseline.json` as a job artifact, written by a third scan. Other pipelines download it from the latest successful pipeline of the merge request's target branch (outside merge requests: the default branch) through the job artifacts API with `CI_JOB_TOKEN`; this works on every tier and needs no `needs:project`. GitLab keeps the artifacts of a branch's latest successful pipeline regardless of `expire_in` (unless "Keep artifacts from most recent successful jobs" is turned off). If your job has another name on the default branch, set `ORBIT_BASELINE_JOB`. `ORBIT_BASELINE` can also be a path to a report you provide yourself.
+
+```yaml
+include:
+  - remote: 'https://raw.githubusercontent.com/orchesta/orbit/v1.0.0/ci/gitlab/orbit.gitlab-ci.yml'
+variables:
+  ORBIT_VERSION: v1.0.0
+  ORBIT_BASELINE: auto
+```
+
 ### GitLab CI and Azure Pipelines
 
-- GitLab CI: include [`ci/gitlab/orbit.gitlab-ci.yml`](ci/gitlab/orbit.gitlab-ci.yml). It writes a JUnit report for the merge request and a SARIF artifact.
+- GitLab CI: include [`ci/gitlab/orbit.gitlab-ci.yml`](ci/gitlab/orbit.gitlab-ci.yml). It writes a JUnit report for the merge request and a SARIF artifact, and has a [baseline mode](#new-findings-only-in-ci) (`ORBIT_BASELINE`).
 - Azure Pipelines: use the step template [`ci/azure-pipelines/orbit-scan.yml`](ci/azure-pipelines/orbit-scan.yml) (example: [`example.yml`](ci/azure-pipelines/example.yml)). It works on Azure DevOps Services and on Azure DevOps Server 2020 and later, in a container or with a downloaded, checksum-verified binary (Windows agents too).
 
 Both take a KEV gate (`ORBIT_FAIL_ON_KEV` / `failOnKev`) and can turn exploit data off (`ORBIT_EXPLOIT_DATA` / `exploitData`); the SARIF run never applies the KEV gate.
