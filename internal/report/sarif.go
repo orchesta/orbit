@@ -46,6 +46,7 @@ type sarifResult struct {
 	Message             sarifText          `json:"message"`
 	Locations           []sarifLocation    `json:"locations"`
 	PartialFingerprints map[string]string  `json:"partialFingerprints"`
+	BaselineState       string             `json:"baselineState,omitempty"` // SARIF 2.1.0 §3.27.24, only with a baseline
 	Suppressions        []sarifSuppression `json:"suppressions,omitempty"`
 	Properties          map[string]any     `json:"properties,omitempty"`
 }
@@ -127,7 +128,9 @@ type SARIFOptions struct {
 
 // WriteSARIF writes a SARIF 2.1.0 log with one rule per distinct advisory. A
 // rule with a malicious finding is tagged "malicious" and rated 10.0. A rule listed in CISA KEV is also tagged "known-exploited";
-// its security-severity is not raised.
+// its security-severity is not raised. With a baseline (s.Baseline) every
+// result has baselineState "new" or "unchanged"; "updated" and "absent" are
+// not produced.
 func WriteSARIF(w io.Writer, f []Finding, s Summary, tool ToolInfo, opts SARIFOptions) error {
 	recs := make(map[[4]string]Recommendation, len(s.Recommendations))
 	for _, r := range s.Recommendations {
@@ -193,6 +196,12 @@ func WriteSARIF(w io.Writer, f []Finding, s Summary, tool ToolInfo, opts SARIFOp
 		r.Locations[0].PhysicalLocation.ArtifactLocation = opts.artifactLocation(d.ManifestFile)
 		sum := sha256.Sum256([]byte(strings.Join([]string{v.OSVID, string(d.Ecosystem), d.Name, d.CurrentVersion, d.ManifestFile}, "|")))
 		r.PartialFingerprints = map[string]string{"orbit/v1": hex.EncodeToString(sum[:])}
+		if s.Baseline {
+			r.BaselineState = "unchanged"
+			if x.New {
+				r.BaselineState = "new"
+			}
+		}
 		if x.Ignored {
 			r.Suppressions = []sarifSuppression{{Kind: "external", Justification: x.IgnoreReason}}
 		}

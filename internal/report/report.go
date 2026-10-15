@@ -141,12 +141,14 @@ func atOrAbove(sev, threshold entity.Severity) bool {
 	return threshold != "" && severityRank(sev) >= severityRank(threshold)
 }
 
-// failsGate reports whether f trips the exit-1 gate of s. It is the only
-// place that decides this, so the summary and JUnit agree. An ignored
-// finding never does. With a threshold (not --fail-on none), a malicious
-// package always does and any other finding does at or above s.Threshold.
-// With s.FailOnKEV, a finding listed in CISA KEV does too, whatever its
-// severity and also with --fail-on none (see kevGate).
+// failsGate reports whether f trips the exit-1 gate of s: it is the only
+// place that decides what trips the gate. Whether a finding that trips it
+// fails the build is decided by gates (failsGate and countsTowardGate), which
+// the summary, JUnit and the exit code all use. An ignored finding never
+// trips the gate. With a threshold (not --fail-on none), a malicious package
+// always does and any other finding does at or above s.Threshold. With
+// s.FailOnKEV, a finding listed in CISA KEV does too, whatever its severity
+// and also with --fail-on none (see kevGate).
 func failsGate(f Finding, s Summary) bool {
 	if f.Ignored {
 		return false
@@ -157,19 +159,19 @@ func failsGate(f Finding, s Summary) bool {
 	return kevGate(f, s)
 }
 
-// counts reports whether f counts toward the gates: it is new (not in the
-// baseline) or malicious. A malicious package counts even when the baseline
-// lists it: "it was there before" is no reason to keep one.
-func counts(f Finding) bool {
+// countsTowardGate reports whether f counts toward the gates: it is new (not
+// in the baseline) or malicious. A malicious package counts even when the
+// baseline lists it: "it was there before" is no reason to keep one.
+func countsTowardGate(f Finding) bool {
 	return f.New || f.Malicious
 }
 
 // gates reports whether f fails the build: it trips failsGate (not ignored;
-// the threshold, a malicious package or --fail-on-kev) and counts (see
-// counts). failsGate decides what trips the gate; gates only adds whether
-// the finding is new.
+// the threshold, a malicious package or --fail-on-kev) and counts toward
+// the gate (see countsTowardGate). failsGate decides what trips the gate;
+// gates only adds whether the finding counts (new, or malicious).
 func gates(f Finding, s Summary) bool {
-	return failsGate(f, s) && counts(f)
+	return failsGate(f, s) && countsTowardGate(f)
 }
 
 // anyGates reports whether any finding gates.

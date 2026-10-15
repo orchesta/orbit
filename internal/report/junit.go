@@ -33,10 +33,15 @@ type junitSuite struct {
 	Cases    []junitCase `xml:"testcase"`
 }
 
+// junitBaselineMessage marks a finding that would fail but is in the baseline.
+const junitBaselineMessage = "existing finding (in the baseline)"
+
 // WriteJUnit writes one testsuite "orbit". Each finding is a testcase: a
-// failure when it trips the gate (see failsGate: the threshold, a malicious
-// package, or KEV with FailOnKEV), skipped when ignored. A malicious package
-// has the failure type "malicious".
+// failure when it gates (see gates: it trips failsGate, the threshold, a
+// malicious package or KEV with FailOnKEV, and it is new or malicious), so
+// the failures agree with the exit code. It is skipped when ignored, or when
+// it trips failsGate but is in the baseline; passing otherwise. A malicious
+// package has the failure type "malicious".
 func WriteJUnit(w io.Writer, f []Finding, s Summary) error {
 	suite := junitSuite{Name: "orbit"}
 	for _, x := range f {
@@ -46,7 +51,7 @@ func WriteJUnit(w io.Writer, f []Finding, s Summary) error {
 		case x.Ignored:
 			c.Skipped = &junitSkipped{Message: x.IgnoreReason}
 			suite.Skipped++
-		case failsGate(x, s):
+		case gates(x, s):
 			msg := fmt.Sprintf("%s: %s", v.Severity, v.Summary)
 			if v.KEV {
 				msg = "[KEV] " + msg
@@ -62,6 +67,9 @@ func WriteJUnit(w io.Writer, f []Finding, s Summary) error {
 			body += exploitLines(v)
 			c.Failure = &junitFailure{Message: msg, Type: typ, Body: body}
 			suite.Failures++
+		case failsGate(x, s):
+			c.Skipped = &junitSkipped{Message: junitBaselineMessage}
+			suite.Skipped++
 		}
 		suite.Cases = append(suite.Cases, c)
 	}

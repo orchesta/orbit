@@ -77,7 +77,7 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 			if fixed == "" {
 				fixed = "-"
 			}
-			row := []string{severityCell(x)}
+			row := []string{severityCell(x, s)}
 			if exploitCols {
 				kev := "-"
 				switch {
@@ -133,6 +133,9 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 	if s.Malicious > 0 {
 		printf(", %d malicious", s.Malicious)
 	}
+	if s.Baseline {
+		printf(", %d new", s.New)
+	}
 	printf("\n")
 	if s.KEVFindings > 0 {
 		printf("%d known exploited (CISA KEV)\n", s.KEVFindings)
@@ -140,11 +143,17 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 	if s.Threshold != "" {
 		// Only the severity and malicious gate: the KEV gate has its own
 		// line below. The exit code follows s.Failed, which covers both.
+		// With a baseline both follow only the findings that count (new or
+		// malicious, see gates).
 		status := "passed"
 		if s.ThresholdFailed {
 			status = "FAILED"
 		}
-		printf("threshold %s: %s\n", s.Threshold, status)
+		scope := ""
+		if s.Baseline {
+			scope = " (new findings only)"
+		}
+		printf("threshold %s%s: %s\n", s.Threshold, scope, status)
 	}
 	if s.FailOnKEV {
 		status := "passed"
@@ -160,15 +169,19 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 }
 
 // severityCell is the SEVERITY column: the severity in capitals, followed by
-// "(malicious)", "(ignored)" or both.
-func severityCell(x Finding) string {
+// "(malicious)", "(ignored)", "(new)" or a combination. "new" is shown only
+// with a baseline and not on ignored findings.
+func severityCell(x Finding, s Summary) string {
 	sev := strings.ToUpper(string(x.Vulnerability.Severity))
 	var marks []string
 	if x.Malicious {
 		marks = append(marks, "malicious")
 	}
-	if x.Ignored {
+	switch {
+	case x.Ignored:
 		marks = append(marks, "ignored")
+	case s.Baseline && x.New:
+		marks = append(marks, "new")
 	}
 	if len(marks) > 0 {
 		sev += " (" + strings.Join(marks, ", ") + ")"
