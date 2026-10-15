@@ -66,14 +66,20 @@ func defaultScanDeps() scanDeps {
 		newEngine: func(ec engineConfig, logger *slog.Logger) analyzerEngine {
 			osvClient := osv.NewClient()
 			osvClient.Logger = logger
-			opts := engine.Options{CheckLatest: ec.checkLatest, Logger: logger}
-			if ec.exploitData {
-				opts.Exploit = exploit.NewEnricher(exploit.Config{Logger: logger})
-			}
-			return engine.New(newAnalyzerRegistry(), vulnuc.NewLookup(osvClient, logger), opts)
+			return engine.New(newAnalyzerRegistry(), vulnuc.NewLookup(osvClient, logger), cliEngineOptions(ec, logger))
 		},
 		now: time.Now,
 	}
+}
+
+// cliEngineOptions is how orbit scan runs the engine. Unlike the server it
+// computes Via, which the reports show.
+func cliEngineOptions(ec engineConfig, logger *slog.Logger) engine.Options {
+	opts := engine.Options{CheckLatest: ec.checkLatest, Logger: logger}
+	if ec.exploitData {
+		opts.Exploit = exploit.NewEnricher(exploit.Config{Logger: logger})
+	}
+	return opts
 }
 
 // failOnLevels maps --fail-on values to report thresholds; "none" is "".

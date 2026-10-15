@@ -102,6 +102,21 @@ func newAnalyzerRegistry() *analyzer.Registry {
 	return registry
 }
 
+// serverEngineOptions is how the server's scans run: latest versions
+// checked, Via skipped (the server does not store it), and exploit data
+// unless turned off.
+func serverEngineOptions(ec config.ExploitConfig, logger *slog.Logger) engine.Options {
+	opts := engine.Options{CheckLatest: true, SkipVia: true, Logger: logger}
+	if ec.Enabled {
+		// One enricher for every scan: the KEV catalog is downloaded once and
+		// refreshed every 12 hours, EPSS scores are cached for 12 hours.
+		opts.Exploit = exploit.NewEnricher(exploit.Config{KEVURL: ec.KEVURL, EPSSURL: ec.EPSSURL, Logger: logger})
+	} else {
+		logger.Info("exploit data (CISA KEV, FIRST EPSS) is disabled")
+	}
+	return opts
+}
+
 // runServer runs the Orbit server until SIGINT or SIGTERM.
 func runServer() {
 	// Initialize logger
@@ -178,15 +193,7 @@ func runServer() {
 
 	// Initialize use cases
 	repoUseCase := repo.NewUseCase(repoRepo, gitHostRepo)
-	engineOpts := engine.Options{CheckLatest: true, Logger: logger}
-	if cfg.Exploit.Enabled {
-		// One enricher for every scan: the KEV catalog is downloaded once and
-		// refreshed every 12 hours, EPSS scores are cached for 12 hours.
-		engineOpts.Exploit = exploit.NewEnricher(exploit.Config{KEVURL: cfg.Exploit.KEVURL, EPSSURL: cfg.Exploit.EPSSURL, Logger: logger})
-	} else {
-		logger.Info("exploit data (CISA KEV, FIRST EPSS) is disabled")
-	}
-	scanEngine := engine.New(registry, vulnuc.NewLookup(osvClient, logger), engineOpts)
+	scanEngine := engine.New(registry, vulnuc.NewLookup(osvClient, logger), serverEngineOptions(cfg.Exploit, logger))
 	scanUseCase := scan.NewUseCase(
 		repoRepo, scanRepo, depRepo, vulnRepo, scanEngine,
 		gitProviderFactory, gitHostRepo,
