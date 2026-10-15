@@ -20,8 +20,9 @@ type Recommendation struct {
 	// version at or above every one of them; "" when no advisory has a
 	// known fix above Current.
 	Upgrade string   `json:"upgrade"`
-	Fixes   []string `json:"fixes"` // advisory IDs that Upgrade fixes, sorted
-	// NoFix lists the advisories without a known fix above Current, sorted.
+	Fixes   []string `json:"fixes"` // advisory IDs that Upgrade fixes, sorted and unique
+	// NoFix lists the advisories without a known fix above Current, sorted
+	// and unique.
 	NoFix    []string `json:"no_fix"`
 	Manifest string   `json:"manifest"`
 	// Via names the direct dependencies that pull the package in, sorted
@@ -110,7 +111,9 @@ func Recommend(findings []Finding) []Recommendation {
 	for _, g := range groups {
 		r := g.rec
 		sort.Strings(r.Fixes)
+		r.Fixes = slices.Compact(r.Fixes)
 		sort.Strings(r.NoFix)
+		r.NoFix = slices.Compact(r.NoFix)
 		if r.Upgrade != "" && r.Ecosystem == string(entity.EcosystemGo) && !strings.HasPrefix(r.Upgrade, "v") {
 			r.Upgrade = "v" + r.Upgrade
 		}

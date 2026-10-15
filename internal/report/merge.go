@@ -68,8 +68,9 @@ func idSet(v *entity.Vulnerability) []string {
 }
 
 // mergeGroup combines vulnerabilities of one dependency that are the same
-// issue. Members are ranked by severity (highest first), then ID, aliases and
-// summary, so the result does not depend on input order. The merged finding:
+// issue. Members are ranked by severity (highest first), then ID, aliases,
+// summary and fixed version, so the result does not depend on input order.
+// The merged finding:
 //   - is reported under a CVE ID of a member if there is one, otherwise the
 //     smallest member ID, and lists every other ID (sorted) as an alias;
 //   - has the highest severity and the first non-empty summary and details;
@@ -97,7 +98,12 @@ func mergeGroup(group []*entity.Vulnerability) *entity.Vulnerability {
 		if aa, ba := strings.Join(a.Aliases, ","), strings.Join(b.Aliases, ","); aa != ba {
 			return aa < ba
 		}
-		return a.Summary < b.Summary
+		if a.Summary != b.Summary {
+			return a.Summary < b.Summary
+		}
+		// Two spellings of one fix ("2.0", "2.0.0") are equal to newer, so
+		// highestFix keeps the first; string order makes that choice stable.
+		return fixedIn(a) < fixedIn(b)
 	})
 
 	m := *members[0]

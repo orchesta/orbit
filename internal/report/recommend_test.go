@@ -210,3 +210,78 @@ func TestTableRecommendationsShowViaAndMalicious(t *testing.T) {
 		t.Errorf("a malicious package must not get an upgrade row:\n%s", out)
 	}
 }
+
+// Two members of one group that differ only in how the fix is spelled
+// ("2.0" and "2.0.0" are equal, so newer never switches) give the same
+// merged fix whatever the input order.
+func TestRecommendIsDeterministicWhenFixesAreSpelledDifferently(t *testing.T) {
+	pkg := rdep("pkg", "1.0", "PyPI", "poetry.lock")
+	a := rvuln(pkg, "CVE-2026-0001", entity.SeverityHigh, "2.0")
+	b := rvuln(pkg, "CVE-2026-0001", entity.SeverityHigh, "2.0.0")
+	var upgrades, fixes []string
+	for _, vulns := range [][]*entity.Vulnerability{{a, b}, {b, a}} {
+		f, s := Build(&engine.Result{Dependencies: []*entity.Dependency{pkg}, Vulnerabilities: vulns}, nil, "", fixedNow)
+		if len(f) != 1 || len(s.Recommendations) != 1 {
+			t.Fatalf("got %d findings, %d recommendations, want one of each", len(f), len(s.Recommendations))
+		}
+		fixes = append(fixes, fixedIn(f[0].Vulnerability))
+		upgrades = append(upgrades, s.Recommendations[0].Upgrade)
+	}
+	if fixes[0] != fixes[1] || upgrades[0] != upgrades[1] {
+		t.Fatalf("fixed versions %q and upgrades %q depend on input order", fixes, upgrades)
+	}
+}
+
+func TestRecommendKeepsTheVOfAGoFix(t *testing.T) {
+	net := rdep("golang.org/x/net", "v0.10.0", "Go", "go.mod")
+	got := recs(t, []*entity.Dependency{net}, []*entity.Vulnerability{rvuln(net, "GO-2023-2102", entity.SeverityHigh, "v0.17.0")}, nil)
+	if len(got) != 1 || got[0].Upgrade != "v0.17.0" {
+		t.Fatalf("got %+v, want v0.17.0", got)
+	}
+}
+
+// A malicious finding is never ignored, so an ignore entry does not hide
+// its recommendation.
+func TestRecommendKeepsAnIgnoredMaliciousPackage(t *testing.T) {
+	evil := rdep("evil-pkg", "1.0.0", "npm", "package-lock.json")
+	got := recs(t, []*entity.Dependency{evil}, []*entity.Vulnerability{rvuln(evil, "MAL-2025-1234", entity.SeverityCritical, "")},
+		&IgnoreList{Entries: []IgnoreEntry{{ID: "MAL-2025-1234", Reason: "accepted"}}})
+	if len(got) != 1 || !got[0].Malicious {
+		t.Fatalf("got %+v, want the malicious package recommended", got)
+	}
+}
+
+func TestRecommendSortsByTheMostSevereAdvisoryFirst(t *testing.T) {
+	aaa := rdep("aaa", "1.0.0", "npm", "package-lock.json")
+	mmm := rdep("mmm", "1.0.0", "npm", "package-lock.json")
+	zzz := rdep("zzz", "1.0.0", "npm", "package-lock.json")
+	got := recs(t, []*entity.Dependency{aaa, mmm, zzz}, []*entity.Vulnerability{
+		rvuln(aaa, "GHSA-a", entity.SeverityLow, "1.0.1"),
+		rvuln(mmm, "GHSA-m1", entity.SeverityLow, "1.0.1"),
+		rvuln(mmm, "GHSA-m2", entity.SeverityHigh, "1.0.2"),
+		rvuln(zzz, "GHSA-z", entity.SeverityCritical, "1.0.1"),
+	}, nil)
+	var order []string
+	for _, r := range got {
+		order = append(order, r.Package)
+	}
+	if want := []string{"zzz", "mmm", "aaa"}; !slices.Equal(order, want) {
+		t.Fatalf("order = %v, want %v", order, want)
+	}
+}
+
+// Two copies of one installed version (the same key, two dependency rows)
+// list each advisory once.
+func TestRecommendListsEachAdvisoryOnce(t *testing.T) {
+	one := rdep("qs", "6.7.0", "npm", "package-lock.json")
+	two := rdep("qs", "6.7.0", "npm", "package-lock.json")
+	got := recs(t, []*entity.Dependency{one, two}, []*entity.Vulnerability{
+		rvuln(one, "GHSA-q1", entity.SeverityHigh, "6.7.3"),
+		rvuln(two, "GHSA-q1", entity.SeverityHigh, "6.7.3"),
+		rvuln(one, "GHSA-q2", entity.SeverityLow, ""),
+		rvuln(two, "GHSA-q2", entity.SeverityLow, ""),
+	}, nil)
+	if len(got) != 1 || !slices.Equal(got[0].Fixes, []string{"GHSA-q1"}) || !slices.Equal(got[0].NoFix, []string{"GHSA-q2"}) {
+		t.Fatalf("got %+v, want GHSA-q1 and GHSA-q2 once each", got)
+	}
+}
