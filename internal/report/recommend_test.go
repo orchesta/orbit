@@ -321,7 +321,7 @@ func TestSARIFMessageNamesTheUpgradeThatFixesMore(t *testing.T) {
 	})
 	want := map[string]string{
 		"GHSA-a": "lodash@4.17.15 is affected by GHSA-a (fixed in 4.17.19). Upgrading to 4.17.21 fixes this and 1 other advisory for this package.",
-		"GHSA-b": "lodash@4.17.15 is affected by GHSA-b (fixed in 4.17.21). Upgrading to 4.17.21 fixes this and 1 other advisory for this package.",
+		"GHSA-b": "lodash@4.17.15 is affected by GHSA-b (fixed in 4.17.21; this also fixes 1 other advisory for this package)",
 		"GHSA-c": "lodash@4.17.15 is affected by GHSA-c (no fix available)",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -346,6 +346,46 @@ func TestSARIFMessageDoesNotSuggestUpgradingAMaliciousPackage(t *testing.T) {
 		if !strings.Contains(m, "remove or replace it") {
 			t.Errorf("%s: message does not say to remove or replace: %q", id, m)
 		}
+	}
+}
+
+// When the finding's own fix is the upgrade, the hint does not name the
+// same version twice. A Go upgrade gets its "v"; the fix may not have one.
+func TestSARIFMessageDoesNotRepeatTheUpgradeItIsFixedIn(t *testing.T) {
+	net := rdep("golang.org/x/net", "v0.10.0", "Go", "go.mod")
+	got := sarifMessages(t, []*entity.Dependency{net}, []*entity.Vulnerability{
+		rvuln(net, "GO-2023-2102", entity.SeverityHigh, "0.17.0"),
+		rvuln(net, "GO-2023-1988", entity.SeverityHigh, "0.13.0"),
+		rvuln(net, "GO-2023-1495", entity.SeverityHigh, "0.7.0"), // stale: not above the installed version
+		rvuln(net, "GO-2024-2687", entity.SeverityHigh, "0.15.0"),
+	})
+	want := map[string]string{
+		"GO-2023-2102": "golang.org/x/net@v0.10.0 is affected by GO-2023-2102 (fixed in 0.17.0; this also fixes 2 other advisories for this package)",
+		"GO-2023-1988": "golang.org/x/net@v0.10.0 is affected by GO-2023-1988 (fixed in 0.13.0). Upgrading to v0.17.0 fixes this and 2 other advisories for this package.",
+		"GO-2023-1495": "golang.org/x/net@v0.10.0 is affected by GO-2023-1495 (fixed in 0.7.0)",
+		"GO-2024-2687": "golang.org/x/net@v0.10.0 is affected by GO-2024-2687 (fixed in 0.15.0). Upgrading to v0.17.0 fixes this and 2 other advisories for this package.",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("messages:\n got %v\nwant %v", got, want)
+	}
+}
+
+// A finding without a fix in a package reported as malicious tells the
+// reader to remove the package, as a finding with a fix does.
+func TestSARIFMessageTellsToRemoveAMaliciousPackageWithoutAFix(t *testing.T) {
+	evil := rdep("evil-pkg", "1.0.0", "npm", "package-lock.json")
+	got := sarifMessages(t, []*entity.Dependency{evil}, []*entity.Vulnerability{
+		rvuln(evil, "MAL-2025-1234", entity.SeverityCritical, ""),
+		rvuln(evil, "GHSA-a", entity.SeverityHigh, ""),
+		rvuln(evil, "GHSA-b", entity.SeverityHigh, "1.0.1"),
+	})
+	want := map[string]string{
+		"MAL-2025-1234": "evil-pkg@1.0.0 is a known malicious package (MAL-2025-1234); remove or replace it",
+		"GHSA-a":        "evil-pkg@1.0.0 is affected by GHSA-a (no fix available). This package is reported as malicious; remove or replace it.",
+		"GHSA-b":        "evil-pkg@1.0.0 is affected by GHSA-b (fixed in 1.0.1). This package is reported as malicious; remove or replace it.",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("messages:\n got %v\nwant %v", got, want)
 	}
 }
 

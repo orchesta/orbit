@@ -170,6 +170,7 @@ func WriteSARIF(w io.Writer, f []Finding, s Summary, tool ToolInfo, opts SARIFOp
 			rules[i].HelpURI = v.References[0]
 		}
 		msg := affectedText(x)
+		rec := recs[[4]string{string(d.Ecosystem), d.ManifestFile, d.Name, d.CurrentVersion}]
 		switch fv := fixedIn(v); {
 		case x.Malicious && fv != "":
 			// fv comes from a member that is not a MAL- advisory (highestFix).
@@ -177,10 +178,12 @@ func WriteSARIF(w io.Writer, f []Finding, s Summary, tool ToolInfo, opts SARIFOp
 		case x.Malicious:
 			msg += "; remove or replace it"
 		case fv != "":
-			msg += " (fixed in " + fv + ")"
-			msg += upgradeHint(recs[[4]string{string(d.Ecosystem), d.ManifestFile, d.Name, d.CurrentVersion}], v.OSVID)
+			msg += fixedText(rec, v.OSVID, fv)
 		default:
 			msg += " (no fix available)"
+			if rec.Malicious {
+				msg += removalHint
+			}
 		}
 		msg += exploitSuffix(v)
 		var r sarifResult
@@ -224,21 +227,30 @@ func WriteSARIF(w io.Writer, f []Finding, s Summary, tool ToolInfo, opts SARIFOp
 	return encodeJSON(w, doc)
 }
 
-// upgradeHint follows a finding that has a fix. For a package recommended
-// for removal it says so, since upgrading is not the advice; otherwise it
-// names the upgrade that also clears the package's other advisories, and is
-// "" when this fix is the only one.
-func upgradeHint(r Recommendation, id string) string {
+// removalHint follows a finding of a package recommended for removal that
+// is not itself the malicious advisory: upgrading is not the advice.
+const removalHint = ". This package is reported as malicious; remove or replace it."
+
+// fixedText follows a finding of advisory id, fixed in fv, that is not
+// malicious itself; r is its package's recommendation. It names the fix and,
+// for a package recommended for removal, says so. Otherwise, when the
+// package's upgrade also clears other advisories, it says so: as part of the
+// fix when the upgrade is fv itself, or as a sentence naming the upgrade.
+func fixedText(r Recommendation, id, fv string) string {
 	if r.Malicious {
-		return ". This package is reported as malicious; remove or replace it."
+		return " (fixed in " + fv + ")" + removalHint
 	}
 	if r.Upgrade == "" || len(r.Fixes) < 2 || !slices.Contains(r.Fixes, id) {
-		return ""
+		return " (fixed in " + fv + ")"
 	}
 	n := len(r.Fixes) - 1
 	word := "advisories"
 	if n == 1 {
 		word = "advisory"
 	}
-	return fmt.Sprintf(". Upgrading to %s fixes this and %d other %s for this package.", r.Upgrade, n, word)
+	// Recommend gives a Go upgrade the "v" that go get expects.
+	if r.Upgrade == fv || r.Upgrade == "v"+fv {
+		return fmt.Sprintf(" (fixed in %s; this also fixes %d other %s for this package)", fv, n, word)
+	}
+	return fmt.Sprintf(" (fixed in %s). Upgrading to %s fixes this and %d other %s for this package.", fv, r.Upgrade, n, word)
 }
