@@ -205,6 +205,23 @@ func TestLoadExploitSettings(t *testing.T) {
 	}
 }
 
+// Compose passes ORBIT_EXPLOIT_KEV_URL and ORBIT_EXPLOIT_EPSS_URL as
+// empty strings when deploy/docker/.env does not set them; that means the
+// public services.
+func TestLoadTreatsEmptyExploitURLsAsTheDefaults(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("ORBIT_EXPLOIT_ENABLED", "true")
+	t.Setenv("ORBIT_EXPLOIT_KEV_URL", "")
+	t.Setenv("ORBIT_EXPLOIT_EPSS_URL", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Exploit.Enabled || cfg.Exploit.KEVURL != "" || cfg.Exploit.EPSSURL != "" {
+		t.Fatalf("exploit = %+v; want enabled with the public services", cfg.Exploit)
+	}
+}
+
 func TestLoadRejectsInvalidExploitURLs(t *testing.T) {
 	for _, env := range []string{"ORBIT_EXPLOIT_KEV_URL", "ORBIT_EXPLOIT_EPSS_URL"} {
 		for _, value := range []string{"ftp://mirror.example/kev.json", "mirror.example/kev.json", "https://"} {

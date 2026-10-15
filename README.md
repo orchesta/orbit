@@ -313,7 +313,7 @@ The server reads `orbit.yaml` (or `orbit.yml` and other formats viper supports) 
 | `ORBIT_EXPLOIT_ENABLED` | `true` | Adds CISA KEV and FIRST EPSS data to findings. `false` sends nothing to www.cisa.gov or api.first.org |
 | `ORBIT_EXPLOIT_KEV_URL` / `ORBIT_EXPLOIT_EPSS_URL` | empty (public services) | Mirrors of the KEV JSON feed and the EPSS API, for restricted networks |
 
-Compose-only variables, set in `deploy/docker/.env`: `ORBIT_DATABASE_PASSWORD` (also used for the PostgreSQL container), `ORBIT_SERVER_TRUST_PROXY_HEADERS`, `ORBIT_SERVER_CORS_ALLOWED_ORIGINS`, `ORBIT_TMP_SIZE` (size of the `/tmp` tmpfs that holds clones, default `1g`) and `COMPOSE_PROJECT_NAME`.
+Compose-only variables, set in `deploy/docker/.env`: `ORBIT_DATABASE_PASSWORD` (also used for the PostgreSQL container), `ORBIT_SERVER_TRUST_PROXY_HEADERS`, `ORBIT_SERVER_CORS_ALLOWED_ORIGINS`, `ORBIT_EXPLOIT_ENABLED`, `ORBIT_EXPLOIT_KEV_URL`, `ORBIT_EXPLOIT_EPSS_URL`, `ORBIT_TMP_SIZE` (size of the `/tmp` tmpfs that holds clones, default `1g`) and `COMPOSE_PROJECT_NAME`.
 
 `orbit.yaml` also contains `log.level`, `log.format` and `scanner.default_schedule`. The current server does not apply them: it always logs JSON at `info` level, and new repositories get the schedule `0 */6 * * *` unless one is given when they are added.
 

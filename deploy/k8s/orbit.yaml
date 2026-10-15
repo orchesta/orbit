@@ -82,6 +82,10 @@ spec:
             # as the client IP for login rate limiting.
             # - name: ORBIT_SERVER_TRUST_PROXY_HEADERS
             #   value: "true"
+            # Optional: do not add CISA KEV and FIRST EPSS data to findings, so
+            # nothing is sent to www.cisa.gov or api.first.org.
+            # - name: ORBIT_EXPLOIT_ENABLED
+            #   value: "false"
           livenessProbe:
             httpGet:
               path: /api/v1/health

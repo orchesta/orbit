@@ -22,6 +22,11 @@ services:
       # Optional; set them in deploy/docker/.env. Empty values are ignored.
       ORBIT_SERVER_TRUST_PROXY_HEADERS: ${ORBIT_SERVER_TRUST_PROXY_HEADERS:-false}
       ORBIT_SERVER_CORS_ALLOWED_ORIGINS: ${ORBIT_SERVER_CORS_ALLOWED_ORIGINS:-}
+      # false sends nothing to www.cisa.gov or api.first.org; empty URLs mean
+      # the public KEV feed and EPSS API.
+      ORBIT_EXPLOIT_ENABLED: ${ORBIT_EXPLOIT_ENABLED:-true}
+      ORBIT_EXPLOIT_KEV_URL: ${ORBIT_EXPLOIT_KEV_URL:-}
+      ORBIT_EXPLOIT_EPSS_URL: ${ORBIT_EXPLOIT_EPSS_URL:-}
     depends_on:
       postgres:
         condition: service_healthy
