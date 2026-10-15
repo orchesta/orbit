@@ -22,6 +22,16 @@ function parseBody(text) {
   }
 }
 
+// dropRejectedToken forgets the token after a 401, but only if it is still
+// the one the request was sent with; a newer one (e.g. from a login while
+// the request was in flight) stays.
+function dropRejectedToken(status, token) {
+  if (status === 401 && localStorage.getItem('orbit_token') === token) {
+    localStorage.removeItem('orbit_token');
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+  }
+}
+
 // request calls the API and returns the envelope's data field.
 export async function request(endpoint, options = {}) {
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
@@ -33,12 +43,7 @@ export async function request(endpoint, options = {}) {
 
   const body = parseBody(await response.text());
   if (!response.ok) {
-    // Only the token this request was sent with was rejected; a newer one
-    // (e.g. from a login while it was in flight) stays.
-    if (response.status === 401 && localStorage.getItem('orbit_token') === token) {
-      localStorage.removeItem('orbit_token');
-      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
-    }
+    dropRejectedToken(response.status, token);
     const message = body?.error || `Request failed (${response.status} ${response.statusText || 'error'})`;
     throw new ApiError(response.status, message);
   }
@@ -46,6 +51,36 @@ export async function request(endpoint, options = {}) {
     throw new ApiError(response.status, `Unexpected response (${response.status})`);
   }
   return body.data;
+}
+
+// attachmentName returns the file name of a Content-Disposition header.
+export function attachmentName(disposition) {
+  const m = /filename="?([^";]+)"?/i.exec(disposition || '');
+  return m ? m[1] : null;
+}
+
+// download fetches a file from the API with the stored token and hands it
+// to the browser as a download named by the server, or fallbackName.
+export async function download(endpoint, fallbackName) {
+  const headers = {};
+  const token = localStorage.getItem('orbit_token');
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const response = await fetch(`${API_BASE}${endpoint}`, { headers });
+  if (!response.ok) {
+    dropRejectedToken(response.status, token);
+    const body = parseBody(await response.text());
+    throw new ApiError(response.status, body?.error || `Download failed (${response.status} ${response.statusText || 'error'})`);
+  }
+  const url = URL.createObjectURL(await response.blob());
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = attachmentName(response.headers.get('Content-Disposition')) || fallbackName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoking right after click() can cancel the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // Auth API
@@ -102,6 +137,11 @@ export const scanApi = {
   getDependencies: (id) => request(`/scans/${id}/dependencies`),
   getVulnerabilities: (id) => request(`/scans/${id}/vulnerabilities`),
   getRecommendations: (id) => request(`/scans/${id}/recommendations`),
+  // format is "cyclonedx" or "spdx".
+  downloadSbom: (id, format) => download(
+    `/scans/${id}/sbom?format=${format}`,
+    `orbit-${String(id).slice(0, 8)}.${format === 'spdx' ? 'spdx' : 'cdx'}.json`,
+  ),
 };
 
 // Dashboard / Health API

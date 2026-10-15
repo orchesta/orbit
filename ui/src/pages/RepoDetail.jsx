@@ -113,21 +113,24 @@ export default function RepoDetail() {
               <span>{repo.url}</span>
             </div>
           </div>
-          <button 
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2 min-w-[120px] shadow-sm disabled:opacity-50"
-            onClick={() => tracker.start(id)
-              // Show the queued scan in the history right away.
-              .then(() => queryClient.invalidateQueries({ queryKey: ['repository', id, 'scans'] }))
-              .catch((e) => alert('Scan error: ' + e.message))}
-            disabled={scanning}
-          >
-           {scanning ? (
-              <>
-                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
-                <span className="sr-only">Scanning…</span>
-              </>
-            ) : "Scan Now"}
-          </button>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+            <SbomDownload scan={latestScan} />
+            <button
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2 min-w-[120px] shadow-sm disabled:opacity-50"
+              onClick={() => tracker.start(id)
+                // Show the queued scan in the history right away.
+                .then(() => queryClient.invalidateQueries({ queryKey: ['repository', id, 'scans'] }))
+                .catch((e) => alert('Scan error: ' + e.message))}
+              disabled={scanning}
+            >
+             {scanning ? (
+                <>
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
+                  <span className="sr-only">Scanning…</span>
+                </>
+              ) : "Scan Now"}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -415,6 +418,40 @@ function StatCard({ label, value, icon, color, subtext }) {
           {icon}
         </svg>
       </div>
+    </div>
+  );
+}
+
+const sbomFormats = [['cyclonedx', 'CycloneDX'], ['spdx', 'SPDX']];
+
+// SbomDownload offers the SBOM of the last completed scan in both formats.
+function SbomDownload({ scan }) {
+  const [busy, setBusy] = useState(false);
+  const save = (format) => {
+    setBusy(true);
+    scanApi.downloadSbom(scan.id, format)
+      .catch((e) => alert('SBOM download failed: ' + e.message))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <div
+      role="group"
+      aria-label="Download SBOM"
+      className="flex items-center gap-2"
+      title={scan ? 'Software bill of materials of the last completed scan' : 'No completed scan yet'}
+    >
+      <span className="text-sm text-gray-500">SBOM</span>
+      {sbomFormats.map(([format, label]) => (
+        <button
+          key={format}
+          type="button"
+          className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+          disabled={!scan || busy}
+          onClick={() => save(format)}
+        >
+          {label}
+        </button>
+      ))}
     </div>
   );
 }

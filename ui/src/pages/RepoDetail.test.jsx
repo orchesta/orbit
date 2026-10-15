@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import RepoDetail from './RepoDetail';
 import { renderWithProviders } from '../test/render';
 import { mockFetch } from '../test/fetch';
+import { stubDownload } from '../test/download';
 
 const repo = { id: 'r1', name: 'web', url: 'https://github.com/o/web', provider: 'github', is_active: true };
 const at = { route: '/repositories/r1', path: '/repositories/:id' };
@@ -138,6 +139,48 @@ describe('RepoDetail', () => {
     status = 'completed';
     await waitFor(() => expect(calls.filter((c) => c.path === '/repositories/r1/scans').length).toBeGreaterThan(before), { timeout: 5000 });
   });
+  describe('SBOM download', () => {
+    it('downloads the last completed scan in the chosen format', async () => {
+      const { names } = stubDownload();
+      const { calls } = mockFetch({
+        'GET /repositories/r1': { body: { data: repo } },
+        'GET /repositories/r1/scans': { body: { data: [{ id: 's2', status: 'failed', error: 'clone failed' }, done] } },
+        'GET /scans/s1/dependencies': { body: { data: [] } },
+        'GET /scans/s1/vulnerabilities': { body: { data: [] } },
+        'GET /scans/s1/sbom': { body: {}, headers: { 'Content-Disposition': 'attachment; filename=web-s1.spdx.json' } },
+      });
+      renderWithProviders(<RepoDetail />, at);
+      const group = await screen.findByRole('group', { name: 'Download SBOM' });
+      await userEvent.click(within(group).getByRole('button', { name: 'SPDX' }));
+      await waitFor(() => expect(names).toEqual(['web-s1.spdx.json']));
+      expect(calls.some((c) => c.path === '/scans/s1/sbom?format=spdx')).toBe(true);
+    });
+
+    it('is disabled before the first completed scan', async () => {
+      mockFetch({ 'GET /repositories/r1': { body: { data: repo } }, 'GET /repositories/r1/scans': { body: { data: [{ id: 's1', status: 'running' }] } } });
+      renderWithProviders(<RepoDetail />, at);
+      const group = await screen.findByRole('group', { name: 'Download SBOM' });
+      expect(within(group).getByRole('button', { name: 'CycloneDX' })).toBeDisabled();
+      expect(within(group).getByRole('button', { name: 'SPDX' })).toBeDisabled();
+    });
+
+    it('reports a failed download and enables the buttons again', async () => {
+      const alert = vi.spyOn(window, 'alert').mockImplementation(() => {});
+      stubDownload();
+      mockFetch({
+        'GET /repositories/r1': { body: { data: repo } },
+        'GET /repositories/r1/scans': { body: { data: [done] } },
+        'GET /scans/s1/dependencies': { body: { data: [] } },
+        'GET /scans/s1/vulnerabilities': { body: { data: [] } },
+        'GET /scans/s1/sbom': { status: 500, body: { error: 'internal server error' } },
+      });
+      renderWithProviders(<RepoDetail />, at);
+      await userEvent.click(await screen.findByRole('button', { name: 'CycloneDX' }));
+      await waitFor(() => expect(alert).toHaveBeenCalledWith('SBOM download failed: internal server error'));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'CycloneDX' })).toBeEnabled());
+    });
+  });
+
   describe('dependency table', () => {
     const depsFixture = [
       { id: 'd1', name: 'express', ecosystem: 'npm', current_version: '^4.0.0', is_direct: true, is_resolved: false, is_dev: false },
