@@ -37,7 +37,7 @@ variables:
 
 .orbit-scan:
   image:
-    name: orchesta/orbit-cli:$ORBIT_VERSION
+    name: orchestalabs/orbit-cli:$ORBIT_VERSION
     entrypoint: [""]
     # The image runs as uid 10001, which cannot write to the checkout GitLab creates
     # as root. Run as root inside the throwaway container so reports can be written.

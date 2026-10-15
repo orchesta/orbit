@@ -1,6 +1,6 @@
 # Orbit CLI image: `orbit scan` only, no server, no database.
 #
-#   docker run --rm -v "$PWD":/src:ro orchesta/orbit-cli
+#   docker run --rm -v "$PWD":/src:ro orchestalabs/orbit-cli
 #
 # The CLI only reads the scanned tree, so a read-only mount owned by any uid works.
 # Writing a report with --out needs a writable directory; pass --user "$(id -u):$(id -g)"

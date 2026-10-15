@@ -100,8 +100,8 @@ jobs:
       contents: read
     steps:
       # Docker Hub credentials: repository secrets DOCKERHUB_USERNAME and
-      # DOCKERHUB_TOKEN (an access token with write access to orchesta/orbit
-      # and orchesta/orbit-cli).
+      # DOCKERHUB_TOKEN (an access token with write access to orchestalabs/orbit
+      # and orchestalabs/orbit-cli).
       - name: Check Docker Hub credentials
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -135,11 +135,11 @@ jobs:
           case "$TAG" in
             *+*) echo "::error::tag '$TAG' contains '+'; not allowed"; exit 1 ;;
           esac
-          server="docker.io/orchesta/orbit:${TAG}"
-          cli="docker.io/orchesta/orbit-cli:${TAG}"
+          server="docker.io/orchestalabs/orbit:${TAG}"
+          cli="docker.io/orchestalabs/orbit-cli:${TAG}"
           case "$TAG" in
             *-*) ;;
-            *) server="${server},docker.io/orchesta/orbit:latest"; cli="${cli},docker.io/orchesta/orbit-cli:latest" ;;
+            *) server="${server},docker.io/orchestalabs/orbit:latest"; cli="${cli},docker.io/orchestalabs/orbit-cli:latest" ;;
           esac
           echo "server=${server}" >> "$GITHUB_OUTPUT"
           echo "cli=${cli}" >> "$GITHUB_OUTPUT"
