@@ -32,9 +32,9 @@ inputs:
   baseline:
     description: >-
       Earlier Orbit JSON report, relative to the workspace. Only findings that are not in it
-      fail the step (a malicious package always does); all findings are still reported. If the
-      file does not exist (a first run, or an expired cache) the action warns and every finding
-      counts. Empty compares with nothing.
+      fail the step (a malicious package does even when it lists it, unless fail-on is none);
+      all findings are still reported. If the file does not exist (a first run, or an expired
+      cache) the action warns and every finding counts. Empty compares with nothing.
     required: false
     default: ""
   baseline-output:

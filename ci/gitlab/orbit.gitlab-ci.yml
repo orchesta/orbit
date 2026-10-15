@@ -66,9 +66,9 @@
 #     the last merge are part of the baseline.
 # Any other ORBIT_BASELINE value is a path to a report you provide; it is passed to
 # --baseline as is, and a missing file is an error (exit 2).
-# Every job that does not record (the default mode, merge requests) logs
-# "orbit-baseline.json: no matching files" when it uploads artifacts. That is expected:
-# the path is listed for the recording job.
+# Every job that does not record (the default mode, and auto outside the default branch)
+# logs "orbit-baseline.json: no matching files" when it uploads artifacts. That is
+# expected: the path is listed for the recording job.
 
 variables:
   ORBIT_VERSION: latest   # pin to a release tag such as v1.0.0
@@ -162,7 +162,8 @@ variables:
       fi
       # Keep the first run's exit code: 0 clean, 1 findings at or above the threshold, a
       # malicious package (unless the threshold is none), or in KEV with ORBIT_FAIL_ON_KEV
-      # (with a baseline only new findings count, malicious packages always do), 2 error.
+      # (with a baseline only new findings count, and malicious packages even when it lists
+      # them), 2 error.
       # The default branch in baseline mode turns 1 into 0 and a failed recording scan
       # into 2, see above.
       exit "$rc"
