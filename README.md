@@ -234,7 +234,7 @@ license:GPL-3.0-only  package=readline  expires=2027-06-30  Legal approved, LEGA
 - Entries do not apply to malicious packages (see below). A matching entry produces a `not applied` warning instead.
 - A malformed line is an error (exit 2) that names the line. Entries that never matched produce an `unused ignore entry` warning.
 - Ignored findings still appear in the reports, marked as ignored.
-- `license:<SPDX-ID> package=<name>` accepts one license for one package under `--deny-license`. `package=` is required. The violation still appears in the reports, marked as ignored. If the expression also needs a denied license that no entry accepts, the violation stays active and names only that license. License entries never suppress advisories.
+- `license:<SPDX-ID> package=<name>` accepts one license for one package under `--deny-license`. `package=` is required. The violation still appears in the reports, marked as ignored. If the expression also needs denied licenses that no entry accepts, the violation stays active and names only the licenses that are still denied. License entries never suppress advisories.
 
 ### Only new findings: `--baseline`
 
@@ -246,7 +246,7 @@ orbit scan --baseline orbit-baseline.json                           # on a pull 
 ```
 
 - A finding is **existing** when the baseline has a finding on the same ecosystem and package that shares an advisory ID or alias with it. Package names are compared the way `.orbitignore` compares them (PEP 503 for PyPI, case-insensitive for NuGet, exact otherwise). Versions and manifests are not compared: upgrading a package that stays vulnerable does not make its finding new, and neither does the same advisory on the same package in another manifest of the repository.
-- Only new findings that are not ignored and reach `--fail-on` (or, with `--fail-on-kev`, are in CISA KEV) cause exit 1. Malicious packages are the exception: they fail the scan even when the baseline lists them. Every format shows which findings are new: `(new)` on new rows of the table and `N new` in its summary, `"new"` in JSON (without `--baseline` every finding is new), `baselineState` `new` or `unchanged` in SARIF, and in JUnit a skipped test case instead of a failure for an existing finding.
+- Only new findings that are not ignored and reach `--fail-on` (or, with `--fail-on-kev`, are in CISA KEV) cause exit 1. Malicious packages are the exception: they fail the scan even when the baseline lists them. The table, JSON, SARIF and JUnit formats show which findings are new (CycloneDX and SPDX do not): `(new)` on new rows of the table and `N new` in its summary, `"new"` in JSON (without `--baseline` every finding is new), `baselineState` `new` or `unchanged` in SARIF, and in JUnit a skipped test case instead of a failure for an existing finding.
 - An advisory published after the baseline was written is new, even on a package the pull request did not touch. Refresh the baseline regularly, for example with a scheduled run on the default branch.
 - The baseline is any JSON report with `schema_version` 1, from any Orbit version; the version that wrote it is shown on stderr. A missing, empty or malformed file is an error (exit 2). On a first run, when there is no baseline yet, leave the flag out; the CI setups in [New findings only, in CI](#new-findings-only-in-ci) download and store the baseline and do that for you. `--out` cannot name the baseline file.
 - Findings the baseline lists do not fail the build (malicious packages still do), so treat it as trusted input and take it only from runs of your protected default branch.
@@ -282,9 +282,9 @@ orbit scan --format spdx --out orbit.spdx.json --fail-on none --sbom-name acme/s
 ```
 
 - Each dependency becomes one component (CycloneDX) or package (SPDX) with a [package URL](https://github.com/package-url/purl-spec), for example `pkg:npm/%40types/node@20.1.0`, `pkg:pypi/django@3.0.0`, `pkg:nuget/Newtonsoft.Json@13.0.1` or `pkg:golang/github.com/BurntSushi/toml@v1.6.0`. A package found in several manifests appears once; the manifests are listed as evidence (CycloneDX) or in `sourceInfo` (SPDX).
-- A version that is a range or a wildcard, as in a manifest without a lockfile, stays the component version but is left out of the purl. The `orbit:resolved` property says whether a lockfile pinned the version.
-- Dev-only dependencies have the scope `optional` in CycloneDX and a `DEV_DEPENDENCY_OF` relationship in SPDX.
-- Licenses are included when Orbit knows them: from npm lockfiles, or from deps.dev with `--licenses`. When some dependencies have no license, the run says how many on stderr and suggests `--licenses`; the lookup stays off unless you ask for it, because it sends package names and versions to deps.dev (see [Licenses](#licenses)). SPDX gets only expressions built from SPDX license list IDs; anything else becomes `NOASSERTION`. CycloneDX keeps other text as a license name.
+- A version that is a range or a wildcard, as in a manifest without a lockfile, stays the component version but is left out of the purl. In CycloneDX, the `orbit:resolved` property says whether a lockfile pinned the version.
+- Dev-only dependencies have the scope `optional` in CycloneDX. In SPDX, a direct dev-only dependency has a `DEV_DEPENDENCY_OF` relationship; a transitive one has none (see below).
+- Licenses are included when Orbit knows them: from npm lockfiles, or from deps.dev with `--licenses`. When some dependencies have no license, the run says how many on stderr and suggests `--licenses`; the lookup stays off unless you ask for it, because it sends package names and versions to deps.dev (see [Licenses](#licenses)). SPDX gets only expressions built from SPDX license list IDs; anything else becomes `NOASSERTION`. CycloneDX also keeps expressions with `LicenseRef-` identifiers.
 - The dependency graph lists only the project's direct dependencies. Orbit does not record which package pulled in a transitive one, so transitive packages have no edges.
 - CycloneDX includes the vulnerabilities, each with its osv.dev source, severity, aliases, advisory links, the affected component and the fixed version. A known malicious package gets a recommendation to remove or replace it instead of an upgrade, in each of its advisories. Findings ignored by `.orbitignore` are kept with `analysis.state` `exploitable` and `response` `will_not_fix`, with the `.orbitignore` reason in `detail`. KEV and EPSS signals, `--baseline` results and license policy violations are not included; use JSON or SARIF for them.
 - SPDX 2.3 has no vulnerability section, so the SPDX document has none; use CycloneDX, JSON or SARIF for them.
@@ -318,7 +318,7 @@ steps:
 
 `v1.0.0` is a placeholder for a real release tag. Pin it in both places: `version` is the tag of the `orchestalabs/orbit-cli` image the action runs, and a major ref such as `@v1` has no image tag. The action writes `orbit.sarif` by default. A complete workflow is in [`.github/examples/orbit-scan.yml`](.github/examples/orbit-scan.yml), and the action's inputs are in [`action.yml`](action.yml).
 
-For an SBOM instead of SARIF, set `format: cyclonedx` (writes `orbit.cdx.json`) or `format: spdx` (writes `orbit.spdx.json`). The project in the SBOM is named after the repository unless `sbom-name` is set. The action runs one scan, so `fail-on` and the other inputs apply to that run as usual. To get both SARIF and an SBOM, use the action twice:
+For an SBOM instead of SARIF, set `format: cyclonedx` (writes `orbit.cdx.json`) or `format: spdx` (writes `orbit.spdx.json`). The project in the SBOM is named after the repository unless `sbom-name` is set. The SBOM comes from the action's main scan, so `fail-on` and the other inputs apply to it as usual; `baseline-output` adds a second scan that writes only the JSON baseline. To get both SARIF and an SBOM, use the action twice:
 
 ```yaml
   - uses: orchesta/orbit@v1.0.0
@@ -716,7 +716,7 @@ internal/
   domain/                  entities and repository interfaces
   usecase/                 repository management, scan queue, scheduler and workers
   engine/                  DB-free analysis engine shared by the server and the CLI
-  report/                  CLI reports (table, JSON, SARIF, JUnit) and .orbitignore
+  report/                  CLI reports (table, JSON, SARIF, JUnit, CycloneDX, SPDX) and .orbitignore
   adapter/
     handler/               HTTP handlers
     persistence/postgres/  PostgreSQL repositories and embedded migrations
