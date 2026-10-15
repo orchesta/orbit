@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -191,5 +192,35 @@ func TestMatchUsesEcosystemPackageRules(t *testing.T) {
 	}
 	if _, ok := l.Match("X-1", nil, "zope.interface", entity.EcosystemNpm, fixedNow); ok {
 		t.Error("npm names must match exactly")
+	}
+}
+
+// Two advisories for one CVE where only the lower-ranked one carries the
+// KEV listing: the merged finding keeps the strongest signal. Lookup reports
+// both under the CVE with their own GHSA ID as an alias.
+func TestBuildMergedGroupKeepsTheStrongestExploitSignal(t *testing.T) {
+	dep := &entity.Dependency{ID: uuid.New(), Name: "jquery", CurrentVersion: "3.4.1", Ecosystem: entity.EcosystemNpm, ManifestFile: "package-lock.json"}
+	added := time.Date(2025, 1, 23, 0, 0, 0, 0, time.UTC)
+	high, pctHigh, low, pctLow := 0.84887, 0.9971, 0.2, 0.9
+	res := &engine.Result{
+		Dependencies: []*entity.Dependency{dep},
+		Vulnerabilities: []*entity.Vulnerability{
+			{ID: uuid.New(), DependencyID: dep.ID, OSVID: "CVE-2020-11023", Aliases: []string{"GHSA-aaaa-aaaa-aaaa"},
+				Severity: entity.SeverityHigh, EPSS: &low, EPSSPercentile: &pctLow},
+			{ID: uuid.New(), DependencyID: dep.ID, OSVID: "CVE-2020-11023", Aliases: []string{"GHSA-jpcq-cgw6-v4j6"},
+				Severity: entity.SeverityMedium, KEV: true, KEVDateAdded: &added, EPSS: &high, EPSSPercentile: &pctHigh},
+		},
+	}
+	f, s := Build(res, nil, entity.SeverityCritical, fixedNow)
+	if len(f) != 1 {
+		t.Fatalf("findings = %d, want 1", len(f))
+	}
+	v := f[0].Vulnerability
+	if v.OSVID != "CVE-2020-11023" || v.Severity != entity.SeverityHigh || !v.KEV || !v.KEVDateAdded.Equal(added) ||
+		*v.EPSS != high || *v.EPSSPercentile != pctHigh {
+		t.Fatalf("merged = %+v", v)
+	}
+	if s.KEVFindings != 1 {
+		t.Fatalf("KEV findings = %d, want 1", s.KEVFindings)
 	}
 }

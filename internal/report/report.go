@@ -33,9 +33,14 @@ type Summary struct {
 	Malicious                int                     // malicious findings (never ignored)
 	Threshold                entity.Severity         // "" for none
 	// Failed is true when a finding trips the gate (see failsGate): it is
-	// not ignored and, with a Threshold set, at or above it or malicious.
-	Failed   bool
-	Warnings []string
+	// not ignored and, with a Threshold set, at or above it or malicious,
+	// or with FailOnKEV listed in CISA KEV.
+	Failed      bool
+	Warnings    []string
+	FailOnKEV   bool          // a non-ignored KEV finding fails, whatever its severity
+	KEVFindings int           // non-ignored findings listed in CISA KEV
+	KEVFailed   bool          // the --fail-on-kev gate failed (see kevGateFailed)
+	Exploit     ExploitStatus // where the exploit data came from
 
 	// Deps lists every dependency (sorted), including those without findings.
 	// The JSON report needs it because WriteJSON only receives findings.
@@ -121,14 +126,18 @@ func atOrAbove(sev, threshold entity.Severity) bool {
 
 // failsGate reports whether f trips the exit-1 gate of s. It is the only
 // place that decides this, so the summary and JUnit agree. An ignored
-// finding never does, and nothing does without a threshold (--fail-on
-// none). Otherwise a malicious package always does, whatever its severity,
-// and any other finding does at or above s.Threshold.
+// finding never does. With a threshold (not --fail-on none), a malicious
+// package always does and any other finding does at or above s.Threshold.
+// With s.FailOnKEV, a finding listed in CISA KEV does too, whatever its
+// severity and also with --fail-on none (see kevGate).
 func failsGate(f Finding, s Summary) bool {
 	if f.Ignored {
 		return false
 	}
-	return s.Threshold != "" && (f.Malicious || atOrAbove(f.Vulnerability.Severity, s.Threshold))
+	if s.Threshold != "" && (f.Malicious || atOrAbove(f.Vulnerability.Severity, s.Threshold)) {
+		return true
+	}
+	return kevGate(f, s)
 }
 
 // maliciousID is the first MAL- ID among v's IDs, or v.OSVID if none is.
@@ -141,15 +150,21 @@ func maliciousID(v *entity.Vulnerability) string {
 	return v.OSVID
 }
 
-// Build pairs vulnerabilities with their dependencies, merges the advisories
-// of one dependency that are aliases of each other into one finding (see
-// mergeAliases), marks known malicious packages, applies ignores, sorts
-// deterministically (malicious first, then severity, id, package, version,
-// manifest, ecosystem) and summarizes. A merged finding is ignored when any
-// of its IDs matches an entry; every matching entry counts as used. A
-// malicious finding is never ignored: each entry that matches it is reported
-// in a warning instead.
+// Build is BuildWithOptions with a severity threshold only.
 func Build(res *engine.Result, ignores *IgnoreList, threshold entity.Severity, now time.Time) ([]Finding, Summary) {
+	return BuildWithOptions(res, ignores, BuildOptions{Threshold: threshold}, now)
+}
+
+// BuildWithOptions pairs vulnerabilities with their dependencies, merges
+// the advisories of one dependency that are aliases of each other into one
+// finding (see mergeAliases), marks known malicious packages, applies
+// ignores, sorts deterministically (malicious first, then severity; then
+// KEV listing and higher EPSS first; then id, package, version, manifest,
+// ecosystem) and summarizes. A merged finding is ignored when any of its
+// IDs matches an entry; every matching entry counts as used. A malicious
+// finding is never ignored: each entry that matches it is reported in a
+// warning instead. The report fails when a finding trips failsGate.
+func BuildWithOptions(res *engine.Result, ignores *IgnoreList, opts BuildOptions, now time.Time) ([]Finding, Summary) {
 	byID := make(map[uuid.UUID]*entity.Dependency, len(res.Dependencies))
 	for _, d := range res.Dependencies {
 		byID[d.ID] = d
@@ -195,6 +210,12 @@ func Build(res *engine.Result, ignores *IgnoreList, threshold entity.Severity, n
 		if ra, rb := severityRank(a.Vulnerability.Severity), severityRank(b.Vulnerability.Severity); ra != rb {
 			return ra > rb
 		}
+		if a.Vulnerability.KEV != b.Vulnerability.KEV {
+			return a.Vulnerability.KEV
+		}
+		if ea, eb := epssOf(a.Vulnerability), epssOf(b.Vulnerability); ea != eb {
+			return ea > eb
+		}
 		if a.Vulnerability.OSVID != b.Vulnerability.OSVID {
 			return a.Vulnerability.OSVID < b.Vulnerability.OSVID
 		}
@@ -236,7 +257,9 @@ func Build(res *engine.Result, ignores *IgnoreList, threshold entity.Severity, n
 	s := Summary{
 		Dependencies: len(res.Dependencies),
 		BySeverity:   map[entity.Severity]int{},
-		Threshold:    threshold,
+		Threshold:    opts.Threshold,
+		FailOnKEV:    opts.FailOnKEV,
+		Exploit:      exploitStatus(res.Exploit),
 		Warnings:     warnings,
 		Deps:         deps,
 	}
@@ -250,10 +273,14 @@ func Build(res *engine.Result, ignores *IgnoreList, threshold entity.Severity, n
 		if f.Malicious {
 			s.Malicious++
 		}
+		if f.Vulnerability.KEV {
+			s.KEVFindings++
+		}
 		if failsGate(f, s) {
 			s.Failed = true
 		}
 	}
+	s.KEVFailed = kevGateFailed(findings, s)
 	s.Vulnerable = len(vulnerable)
 	return findings, s
 }

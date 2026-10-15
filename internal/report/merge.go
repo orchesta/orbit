@@ -8,6 +8,7 @@ import (
 
 	"github.com/orchesta/orbit/internal/domain/entity"
 	"github.com/orchesta/orbit/internal/infrastructure/analyzer"
+	"github.com/orchesta/orbit/internal/infrastructure/exploit"
 )
 
 // mergeAliases merges the vulnerabilities of one dependency that are the same
@@ -77,7 +78,9 @@ func idSet(v *entity.Vulnerability) []string {
 //     no fix (upgrading must clear every advisory in the group). Malicious
 //     package advisories (see maliciousAdvisory) take no part when the group
 //     has other members: a MAL- record names no fix, and the other
-//     advisories say which release is clean.
+//     advisories say which release is clean;
+//   - is in KEV if any member is (earliest date) and has the highest EPSS of
+//     its members.
 func mergeGroup(group []*entity.Vulnerability) *entity.Vulnerability {
 	if len(group) == 1 {
 		return group[0]
@@ -124,7 +127,21 @@ func mergeGroup(group []*entity.Vulnerability) *entity.Vulnerability {
 	}
 	sort.Strings(m.Aliases)
 	m.FixedVersion = highestFix(members)
+	mergeExploit(&m, members)
 	return &m
+}
+
+// mergeExploit gives the merged finding the strongest exploit signal of
+// its members: listed in KEV if any member is, since the earliest date,
+// and the highest EPSS with that member's percentile. The combining rule
+// is exploit.MergeKEV and exploit.MergeEPSS, the same one the enricher
+// uses for the CVE IDs of one advisory.
+func mergeExploit(m *entity.Vulnerability, members []*entity.Vulnerability) {
+	m.KEV, m.KEVDateAdded, m.EPSS, m.EPSSPercentile = false, nil, nil, nil
+	for _, v := range members {
+		exploit.MergeKEV(m, v.KEV, v.KEVDateAdded)
+		exploit.MergeEPSS(m, v.EPSS, v.EPSSPercentile)
+	}
 }
 
 // groupID picks the ID a merged group is reported under.

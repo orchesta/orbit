@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"time"
 
 	"github.com/orchesta/orbit/internal/domain/entity"
 )
@@ -22,6 +23,16 @@ type jsonSummary struct {
 	Threshold    string                  `json:"threshold"`
 	Failed       bool                    `json:"failed"`
 	Warnings     []string                `json:"warnings"`
+	KEVFindings  int                     `json:"kev_findings"`
+	FailOnKEV    bool                    `json:"fail_on_kev"`
+	ExploitData  jsonExploitData         `json:"exploit_data"`
+}
+
+type jsonExploitData struct {
+	KEV               string `json:"kev"`
+	KEVCatalogVersion string `json:"kev_catalog_version"`
+	EPSS              string `json:"epss"`
+	EPSSDate          string `json:"epss_date"`
 }
 
 type jsonDependency struct {
@@ -35,19 +46,23 @@ type jsonDependency struct {
 }
 
 type jsonFinding struct {
-	ID           string   `json:"id"`
-	Aliases      []string `json:"aliases"`
-	Severity     string   `json:"severity"`
-	Malicious    bool     `json:"malicious"`
-	Summary      string   `json:"summary"`
-	Package      string   `json:"package"`
-	Version      string   `json:"version"`
-	Ecosystem    string   `json:"ecosystem"`
-	Manifest     string   `json:"manifest"`
-	FixedVersion *string  `json:"fixed_version"`
-	References   []string `json:"references"`
-	Ignored      bool     `json:"ignored"`
-	IgnoreReason string   `json:"ignore_reason"`
+	ID             string   `json:"id"`
+	Aliases        []string `json:"aliases"`
+	Severity       string   `json:"severity"`
+	Malicious      bool     `json:"malicious"`
+	Summary        string   `json:"summary"`
+	Package        string   `json:"package"`
+	Version        string   `json:"version"`
+	Ecosystem      string   `json:"ecosystem"`
+	Manifest       string   `json:"manifest"`
+	FixedVersion   *string  `json:"fixed_version"`
+	References     []string `json:"references"`
+	Ignored        bool     `json:"ignored"`
+	IgnoreReason   string   `json:"ignore_reason"`
+	KEV            bool     `json:"kev"`
+	KEVDateAdded   *string  `json:"kev_date_added"`
+	EPSS           *float64 `json:"epss"`
+	EPSSPercentile *float64 `json:"epss_percentile"`
 }
 
 type jsonReport struct {
@@ -74,6 +89,8 @@ func WriteJSON(w io.Writer, f []Finding, s Summary, tool ToolInfo) error {
 		Summary: jsonSummary{
 			Dependencies: s.Dependencies, Vulnerable: s.Vulnerable, Malicious: s.Malicious, BySeverity: s.BySeverity,
 			Threshold: string(s.Threshold), Failed: s.Failed, Warnings: nonNil(s.Warnings),
+			KEVFindings: s.KEVFindings, FailOnKEV: s.FailOnKEV,
+			ExploitData: jsonExploitData{s.Exploit.KEV, s.Exploit.KEVCatalogVersion, s.Exploit.EPSS, s.Exploit.EPSSDate},
 		},
 		Dependencies: []jsonDependency{},
 		Findings:     []jsonFinding{},
@@ -92,10 +109,16 @@ func WriteJSON(w io.Writer, f []Finding, s Summary, tool ToolInfo) error {
 		if fv := fixedIn(v); fv != "" {
 			fix = &fv
 		}
+		var added *string
+		if v.KEVDateAdded != nil {
+			d := v.KEVDateAdded.UTC().Format(time.DateOnly)
+			added = &d
+		}
 		r.Findings = append(r.Findings, jsonFinding{
 			ID: v.OSVID, Aliases: nonNil(v.Aliases), Severity: string(v.Severity), Malicious: x.Malicious, Summary: v.Summary,
 			Package: d.Name, Version: d.CurrentVersion, Ecosystem: string(d.Ecosystem), Manifest: d.ManifestFile,
 			FixedVersion: fix, References: nonNil(v.References), Ignored: x.Ignored, IgnoreReason: x.IgnoreReason,
+			KEV: v.KEV, KEVDateAdded: added, EPSS: v.EPSS, EPSSPercentile: v.EPSSPercentile,
 		})
 	}
 	return encodeJSON(w, r)

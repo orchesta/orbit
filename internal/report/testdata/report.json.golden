@@ -21,7 +21,15 @@
     "warnings": [
       "go.mod: unresolved version",
       "ignore entry GHSA-high-0002 expired on 2026-10-15"
-    ]
+    ],
+    "kev_findings": 0,
+    "fail_on_kev": false,
+    "exploit_data": {
+      "kev": "disabled",
+      "kev_catalog_version": "",
+      "epss": "disabled",
+      "epss_date": ""
+    }
   },
   "dependencies": [
     {
@@ -66,7 +74,11 @@
       "fixed_version": null,
       "references": [],
       "ignored": false,
-      "ignore_reason": ""
+      "ignore_reason": "",
+      "kev": false,
+      "kev_date_added": null,
+      "epss": null,
+      "epss_percentile": null
     },
     {
       "id": "GHSA-esc-0005",
@@ -81,7 +93,11 @@
       "fixed_version": null,
       "references": [],
       "ignored": false,
-      "ignore_reason": ""
+      "ignore_reason": "",
+      "kev": false,
+      "kev_date_added": null,
+      "epss": null,
+      "epss_percentile": null
     },
     {
       "id": "GHSA-high-0002",
@@ -100,7 +116,11 @@
         "https://example.com/h2"
       ],
       "ignored": false,
-      "ignore_reason": ""
+      "ignore_reason": "",
+      "kev": false,
+      "kev_date_added": null,
+      "epss": null,
+      "epss_percentile": null
     },
     {
       "id": "GHSA-medium-0001",
@@ -119,7 +139,11 @@
         "https://example.com/m1"
       ],
       "ignored": false,
-      "ignore_reason": ""
+      "ignore_reason": "",
+      "kev": false,
+      "kev_date_added": null,
+      "epss": null,
+      "epss_percentile": null
     },
     {
       "id": "GHSA-low-0004",
@@ -136,7 +160,11 @@
         "https://example.com/l4"
       ],
       "ignored": true,
-      "ignore_reason": "accepted risk"
+      "ignore_reason": "accepted risk",
+      "kev": false,
+      "kev_date_added": null,
+      "epss": null,
+      "epss_percentile": null
     }
   ]
 }
