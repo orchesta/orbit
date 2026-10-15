@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -70,5 +71,32 @@ func TestScanMaliciousPackageIgnoreEntryIsNotApplied(t *testing.T) {
 	}
 	if strings.Contains(stdout, "(ignored)") || strings.Contains(stdout, "unused ignore entry") {
 		t.Fatalf("finding shown as ignored or entry as unused:\n%s", stdout)
+	}
+}
+
+func TestScanMaliciousPackageInJSONAndSummary(t *testing.T) {
+	dir := t.TempDir()
+	writeDebugProject(t, dir)
+	code, stdout, stderr := runReal(t, debugAdvisories{}, "--path", dir, "--format", "json")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1; stderr:\n%s", code, stderr)
+	}
+	var rep struct {
+		Summary struct {
+			Malicious int `json:"malicious"`
+		} `json:"summary"`
+		Findings []struct {
+			ID        string `json:"id"`
+			Malicious bool   `json:"malicious"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &rep); err != nil {
+		t.Fatalf("%v\n%s", err, stdout)
+	}
+	if rep.Summary.Malicious != 1 || len(rep.Findings) != 1 || !rep.Findings[0].Malicious || rep.Findings[0].ID != "CVE-2025-59144" {
+		t.Fatalf("report = %+v, want one malicious finding CVE-2025-59144", rep)
+	}
+	if want := "orbit: 1 dependencies, 1 vulnerable (1 high), 1 malicious"; !strings.Contains(stderr, want) {
+		t.Fatalf("stderr lacks %q:\n%s", want, stderr)
 	}
 }

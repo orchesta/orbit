@@ -8,6 +8,7 @@
   "summary": {
     "dependencies": 3,
     "vulnerable": 3,
+    "malicious": 0,
     "by_severity": {
       "critical": 1,
       "high": 2,
@@ -56,6 +57,7 @@
       "id": "GHSA-crit-0003",
       "aliases": [],
       "severity": "critical",
+      "malicious": false,
       "summary": "Remote code execution",
       "package": "lodash",
       "version": "4.17.15",
@@ -70,6 +72,7 @@
       "id": "GHSA-esc-0005",
       "aliases": [],
       "severity": "high",
+      "malicious": false,
       "summary": "a \u0026 b \u003c c \u003e d \" e\nline2",
       "package": "express",
       "version": "4.18.2",
@@ -86,6 +89,7 @@
         "CVE-2020-0002"
       ],
       "severity": "high",
+      "malicious": false,
       "summary": "SQL injection",
       "package": "django",
       "version": "3.0.0",
@@ -104,6 +108,7 @@
         "CVE-2020-0001"
       ],
       "severity": "medium",
+      "malicious": false,
       "summary": "Prototype pollution",
       "package": "lodash",
       "version": "4.17.15",
@@ -120,6 +125,7 @@
       "id": "GHSA-low-0004",
       "aliases": [],
       "severity": "low",
+      "malicious": false,
       "summary": "Info leak",
       "package": "django",
       "version": "3.0.0",

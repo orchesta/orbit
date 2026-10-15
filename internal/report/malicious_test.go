@@ -1,7 +1,10 @@
 package report
 
 import (
+	"bytes"
+	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -162,5 +165,72 @@ func TestBuildDoesNotIgnoreMaliciousFindings(t *testing.T) {
 	}
 	if !slices.Equal(s.Warnings, want) {
 		t.Fatalf("warnings = %q, want %q", s.Warnings, want)
+	}
+}
+
+func TestTableMarksMaliciousFindings(t *testing.T) {
+	f, s := Build(maliciousResult(), nil, entity.SeverityHigh, fixedNow)
+	var b bytes.Buffer
+	if err := WriteTable(&b, f, s); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(b.String(), "\n")
+	for i, prefix := range map[int]string{
+		1: "CRITICAL (malicious)  CVE-2025-59144  debug@4.4.2 ",
+		2: "CRITICAL (malicious)  MAL-2025-46969  chalk@5.6.1 ",
+		3: "CRITICAL              GHSA-crit-0003  lodash@4.17.15",
+	} {
+		if !strings.HasPrefix(lines[i], prefix) {
+			t.Errorf("line %d = %q, want prefix %q", i, lines[i], prefix)
+		}
+	}
+	if want := "3 dependencies, 3 vulnerable (3 critical), 2 malicious\n"; !strings.Contains(b.String(), want) {
+		t.Errorf("summary line missing %q:\n%s", want, b.String())
+	}
+}
+
+func TestTableSummaryOmitsZeroMalicious(t *testing.T) {
+	f, s := build(t, entity.SeverityHigh)
+	var b bytes.Buffer
+	if err := WriteTable(&b, f, s); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), "malicious") {
+		t.Errorf("no malicious findings, but the table mentions them:\n%s", b.String())
+	}
+}
+
+func TestJSONReportsMalicious(t *testing.T) {
+	f, s := Build(maliciousResult(), nil, entity.SeverityHigh, fixedNow)
+	var b bytes.Buffer
+	if err := WriteJSON(&b, f, s, testTool); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Summary struct {
+			Malicious int `json:"malicious"`
+		} `json:"summary"`
+		Findings []struct {
+			ID        string `json:"id"`
+			Malicious bool   `json:"malicious"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal(b.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	type row struct {
+		id  string
+		mal bool
+	}
+	var got []row
+	for _, x := range doc.Findings {
+		got = append(got, row{x.ID, x.Malicious})
+	}
+	want := []row{{"CVE-2025-59144", true}, {"MAL-2025-46969", true}, {"GHSA-crit-0003", false}}
+	if !slices.Equal(got, want) || doc.Summary.Malicious != 2 {
+		t.Fatalf("findings = %v summary.malicious = %d, want %v and 2", got, doc.Summary.Malicious, want)
+	}
+	if !strings.Contains(b.String(), `"malicious": false`) {
+		t.Error(`"malicious" must be present on every finding, also when false`)
 	}
 }

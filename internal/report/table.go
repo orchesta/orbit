@@ -65,15 +65,11 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 	if len(f) > 0 {
 		rows := [][]string{{"SEVERITY", "ID", "PACKAGE", "FIXED", "MANIFEST"}}
 		for _, x := range f {
-			sev := strings.ToUpper(string(x.Vulnerability.Severity))
-			if x.Ignored {
-				sev += " (ignored)"
-			}
 			fixed := fixedIn(x.Vulnerability)
 			if fixed == "" {
 				fixed = "-"
 			}
-			rows = append(rows, []string{sev, singleLine(x.Vulnerability.OSVID),
+			rows = append(rows, []string{severityCell(x), singleLine(x.Vulnerability.OSVID),
 				singleLine(x.Dependency.Name + "@" + x.Dependency.CurrentVersion), singleLine(fixed),
 				singleLine(x.Dependency.ManifestFile)})
 		}
@@ -90,7 +86,11 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 			for i, c := range r {
 				cell := c
 				if i == 0 && ri > 0 && color && !f[ri-1].Ignored {
-					cell = colorize(c, f[ri-1].Vulnerability.Severity)
+					sev := f[ri-1].Vulnerability.Severity
+					if f[ri-1].Malicious {
+						sev = entity.SeverityCritical
+					}
+					cell = colorize(c, sev)
 				}
 				line.WriteString(cell)
 				if i < len(r)-1 {
@@ -111,6 +111,9 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 	if len(parts) > 0 {
 		printf(" (%s)", strings.Join(parts, ", "))
 	}
+	if s.Malicious > 0 {
+		printf(", %d malicious", s.Malicious)
+	}
 	printf("\n")
 	if s.Threshold != "" {
 		status := "passed"
@@ -123,4 +126,21 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 		printf("warning: %s\n", singleLine(msg))
 	}
 	return err
+}
+
+// severityCell is the SEVERITY column: the severity in capitals, followed by
+// "(malicious)", "(ignored)" or both.
+func severityCell(x Finding) string {
+	sev := strings.ToUpper(string(x.Vulnerability.Severity))
+	var marks []string
+	if x.Malicious {
+		marks = append(marks, "malicious")
+	}
+	if x.Ignored {
+		marks = append(marks, "ignored")
+	}
+	if len(marks) > 0 {
+		sev += " (" + strings.Join(marks, ", ") + ")"
+	}
+	return sev
 }

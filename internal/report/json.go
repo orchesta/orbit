@@ -17,6 +17,7 @@ type jsonTool struct {
 type jsonSummary struct {
 	Dependencies int                     `json:"dependencies"`
 	Vulnerable   int                     `json:"vulnerable"`
+	Malicious    int                     `json:"malicious"`
 	BySeverity   map[entity.Severity]int `json:"by_severity"`
 	Threshold    string                  `json:"threshold"`
 	Failed       bool                    `json:"failed"`
@@ -37,6 +38,7 @@ type jsonFinding struct {
 	ID           string   `json:"id"`
 	Aliases      []string `json:"aliases"`
 	Severity     string   `json:"severity"`
+	Malicious    bool     `json:"malicious"`
 	Summary      string   `json:"summary"`
 	Package      string   `json:"package"`
 	Version      string   `json:"version"`
@@ -70,7 +72,7 @@ func WriteJSON(w io.Writer, f []Finding, s Summary, tool ToolInfo) error {
 		SchemaVersion: 1,
 		Tool:          jsonTool{tool.Name, tool.Version, tool.InformationURI},
 		Summary: jsonSummary{
-			Dependencies: s.Dependencies, Vulnerable: s.Vulnerable, BySeverity: s.BySeverity,
+			Dependencies: s.Dependencies, Vulnerable: s.Vulnerable, Malicious: s.Malicious, BySeverity: s.BySeverity,
 			Threshold: string(s.Threshold), Failed: s.Failed, Warnings: nonNil(s.Warnings),
 		},
 		Dependencies: []jsonDependency{},
@@ -91,7 +93,7 @@ func WriteJSON(w io.Writer, f []Finding, s Summary, tool ToolInfo) error {
 			fix = &fv
 		}
 		r.Findings = append(r.Findings, jsonFinding{
-			ID: v.OSVID, Aliases: nonNil(v.Aliases), Severity: string(v.Severity), Summary: v.Summary,
+			ID: v.OSVID, Aliases: nonNil(v.Aliases), Severity: string(v.Severity), Malicious: x.Malicious, Summary: v.Summary,
 			Package: d.Name, Version: d.CurrentVersion, Ecosystem: string(d.Ecosystem), Manifest: d.ManifestFile,
 			FixedVersion: fix, References: nonNil(v.References), Ignored: x.Ignored, IgnoreReason: x.IgnoreReason,
 		})
