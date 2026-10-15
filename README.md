@@ -223,7 +223,7 @@ orbit scan --baseline orbit-baseline.json                           # on a pull 
 - A finding is **existing** when the baseline has a finding on the same ecosystem and package that shares an advisory ID or alias with it. Package names are compared the way `.orbitignore` compares them (PEP 503 for PyPI, case-insensitive for NuGet, exact otherwise). Versions and manifests are not compared: upgrading a package that stays vulnerable does not make its finding new, and neither does the same advisory on the same package in another manifest of the repository.
 - Only new findings that are not ignored and reach `--fail-on` (or, with `--fail-on-kev`, are in CISA KEV) cause exit 1. Malicious packages are the exception: they fail the scan even when the baseline lists them. Every format shows which findings are new: `(new)` on new rows of the table and `N new` in its summary, `"new"` in JSON (without `--baseline` every finding is new), `baselineState` `new` or `unchanged` in SARIF, and in JUnit a skipped test case instead of a failure for an existing finding.
 - An advisory published after the baseline was written is new, even on a package the pull request did not touch. Refresh the baseline regularly, for example with a scheduled run on the default branch.
-- The baseline is any JSON report with `schema_version` 1, from any Orbit version; the version that wrote it is shown on stderr. A missing, empty or malformed file is an error (exit 2). On a first run, when there is no baseline yet, leave the flag out. `--out` cannot name the baseline file.
+- The baseline is any JSON report with `schema_version` 1, from any Orbit version; the version that wrote it is shown on stderr. A missing, empty or malformed file is an error (exit 2). On a first run, when there is no baseline yet, leave the flag out; the CI setups in [New findings only, in CI](#new-findings-only-in-ci) download and store the baseline and do that for you. `--out` cannot name the baseline file.
 - Whatever the baseline lists does not fail the build, so treat it as trusted input and take it only from runs of your protected default branch.
 
 ### Malicious packages
@@ -273,6 +273,32 @@ steps:
 `v1.0.0` is a placeholder for a real release tag. Pin it in both places: `version` is the tag of the `orchestalabs/orbit-cli` image the action runs, and a major ref such as `@v1` has no image tag. The action writes `orbit.sarif` by default. A complete workflow is in [`.github/examples/orbit-scan.yml`](.github/examples/orbit-scan.yml), and the action's inputs are in [`action.yml`](action.yml).
 
 The templates pull `orchestalabs/orbit-cli` from Docker Hub, which limits pulls by anonymous users. If many pipelines share one IP address, log in to Docker Hub in the job (`docker login`) or mirror the image to your own registry (`imageName` in the Azure template, the `image` of the GitLab job).
+
+### New findings only, in CI
+
+The GitHub Action has a baseline mode. Runs of the default branch scan as usual, also write `orbit-baseline.json` and store it. Their findings are reported but do not fail the run: on the default branch every finding is an existing one, so the action turns exit 1 into a warning when it writes `baseline-output`. Errors (exit 2) still fail it. Pull requests fetch the newest stored baseline and fail only on new findings. When there is none yet (the first run, or it expired) they warn and every finding counts. Schedule a daily run of the default branch so advisories published since the last merge are part of the baseline.
+
+**GitHub Actions** uses the cache: a pull request can restore caches of its base branch, also from forks, and caches written by pull requests stay scoped to them, so a pull request cannot replace the baseline. GitHub removes caches nobody used for 7 days. The full workflow is [`.github/examples/orbit-scan-baseline.yml`](.github/examples/orbit-scan-baseline.yml); the parts that matter:
+
+```yaml
+- if: github.event_name == 'pull_request'
+  uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+  with:
+    path: orbit-baseline.json
+    key: orbit-baseline-${{ github.run_id }}
+    restore-keys: orbit-baseline-
+- uses: orchesta/orbit@v1.0.0
+  with:
+    version: v1.0.0
+    fail-on: high
+    baseline: ${{ github.event_name == 'pull_request' && 'orbit-baseline.json' || '' }}
+    baseline-output: ${{ github.event_name != 'pull_request' && 'orbit-baseline.json' || '' }}
+- if: always() && github.event_name != 'pull_request' && hashFiles('orbit-baseline.json') != ''
+  uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+  with:
+    path: orbit-baseline.json
+    key: orbit-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+```
 
 ### GitLab CI and Azure Pipelines
 
@@ -572,8 +598,9 @@ To serve the UI from the Go server instead, run `npm run build` in `ui/` and sta
 ### Tests
 
 ```bash
-# Go unit tests (./internal/... ./cmd/... skips ui/node_modules once the UI is installed)
-go test -race ./internal/... ./cmd/...
+# Go unit tests (listing packages skips ui/node_modules once the UI is installed).
+# ./ci/... runs the CI template scripts with fake docker, orbit and wget; it needs bash.
+go test -race ./internal/... ./cmd/... ./ci/...
 
 # Integration tests (build tag "integration"). Each test creates and drops its own database.
 docker run -d --name orbit-test-postgres -p 5433:5432 -e POSTGRES_PASSWORD=test postgres:18-alpine
@@ -607,7 +634,7 @@ internal/
 ui/                        React UI (Vite, Tailwind, React Router, TanStack Query)
 deploy/docker/             Dockerfiles, Compose file, PostgreSQL upgrade script
 deploy/k8s/                Kubernetes manifest
-ci/                        GitLab CI and Azure Pipelines templates
+ci/                        GitLab CI and Azure Pipelines templates, tests of all CI templates
 action.yml                 GitHub Action
 ```
 
