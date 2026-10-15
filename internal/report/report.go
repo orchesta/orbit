@@ -35,12 +35,16 @@ type Summary struct {
 	// Failed is true when a finding trips the gate (see failsGate): it is
 	// not ignored and, with a Threshold set, at or above it or malicious,
 	// or with FailOnKEV listed in CISA KEV.
-	Failed      bool
-	Warnings    []string
-	FailOnKEV   bool          // a non-ignored KEV finding fails, whatever its severity
-	KEVFindings int           // non-ignored findings listed in CISA KEV
-	KEVFailed   bool          // the --fail-on-kev gate failed (see kevGateFailed)
-	Exploit     ExploitStatus // where the exploit data came from
+	Failed bool
+	// ThresholdFailed is the severity and malicious part of Failed, without
+	// the --fail-on-kev gate (see thresholdGateFailed). The table names it
+	// on its "threshold" line; KEVFailed has a line of its own.
+	ThresholdFailed bool
+	Warnings        []string
+	FailOnKEV       bool          // a non-ignored KEV finding fails, whatever its severity
+	KEVFindings     int           // non-ignored findings listed in CISA KEV
+	KEVFailed       bool          // the --fail-on-kev gate failed (see kevGateFailed)
+	Exploit         ExploitStatus // where the exploit data came from
 
 	// Deps lists every dependency (sorted), including those without findings.
 	// The JSON report needs it because WriteJSON only receives findings.
@@ -138,6 +142,19 @@ func failsGate(f Finding, s Summary) bool {
 		return true
 	}
 	return kevGate(f, s)
+}
+
+// thresholdGateFailed reports whether a finding trips the severity and
+// malicious part of the gate: failsGate with FailOnKEV off, so the gate
+// keeps one definition.
+func thresholdGateFailed(f []Finding, s Summary) bool {
+	s.FailOnKEV = false
+	for _, x := range f {
+		if failsGate(x, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // maliciousID is the first MAL- ID among v's IDs, or v.OSVID if none is.
@@ -281,6 +298,7 @@ func BuildWithOptions(res *engine.Result, ignores *IgnoreList, opts BuildOptions
 		}
 	}
 	s.KEVFailed = kevGateFailed(findings, s)
+	s.ThresholdFailed = thresholdGateFailed(findings, s)
 	s.Vulnerable = len(vulnerable)
 	return findings, s
 }

@@ -826,3 +826,35 @@ func TestScanExploitDataFailureIsOnlyAWarning(t *testing.T) {
 		t.Fatalf("JSON lacks exploit_data.kev failed:\n%s", stdout)
 	}
 }
+
+// The threshold line covers the severity gate only: two medium findings
+// pass --fail-on high even though the KEV one fails --fail-on-kev.
+func TestScanThresholdLineIgnoresTheKEVGate(t *testing.T) {
+	res := kevResult()
+	more := resultWith(entity.SeverityMedium, entity.SeverityMedium).Vulnerabilities[1]
+	more.DependencyID = res.Dependencies[0].ID
+	res.Vulnerabilities = append(res.Vulnerabilities, more)
+	code, stdout, stderr := runFake(t, &fakeEngine{res: res}, "--path", t.TempDir(), "--fail-on", "high", "--fail-on-kev")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1; stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "(2 medium)") || !strings.Contains(stdout, "threshold high: passed\nfail on KEV: FAILED\n") {
+		t.Fatalf("table:\n%s", stdout)
+	}
+}
+
+// With the KEV catalog the --fail-on-kev gate can be checked, so a failed
+// EPSS lookup is only a warning: exit 1 for the KEV finding, not 2.
+func TestScanFailOnKEVWithoutEPSSStillChecksTheGate(t *testing.T) {
+	res := kevResult()
+	res.Vulnerabilities[0].EPSS, res.Vulnerabilities[0].EPSSPercentile = nil, nil
+	res.Exploit.EPSS = exploit.SourceResult{Status: exploit.StatusFailed, Err: errors.New("query EPSS: HTTP 429, rate limited by api.first.org")}
+	res.Warnings = res.Exploit.Warnings()
+	code, stdout, stderr := runFake(t, &fakeEngine{res: res}, "--path", t.TempDir(), "--fail-on-kev")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1; stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "fail on KEV: FAILED") || !strings.Contains(stdout+stderr, "warning: exploit data: FIRST EPSS scores could not be loaded") {
+		t.Fatalf("stdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+}

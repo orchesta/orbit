@@ -142,8 +142,10 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 		printf("%d known exploited (CISA KEV)\n", s.KEVFindings)
 	}
 	if s.Threshold != "" {
+		// Only the severity and malicious gate: the KEV gate has its own
+		// line below. The exit code follows s.Failed, which covers both.
 		status := "passed"
-		if s.Failed {
+		if s.ThresholdFailed {
 			status = "FAILED"
 		}
 		printf("threshold %s: %s\n", s.Threshold, status)
