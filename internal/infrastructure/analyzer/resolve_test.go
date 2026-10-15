@@ -529,3 +529,23 @@ func TestResolveMergesVia(t *testing.T) {
 		t.Fatalf("via = %v, want %v", via, want)
 	}
 }
+
+func TestResolveKeepsLockfileLicenses(t *testing.T) {
+	licensed := func(name, version, license string) ParsedDependency {
+		return ParsedDependency{Name: name, CurrentVersion: version, License: license}
+	}
+	got := Resolve([]ParsedFile{
+		manifest(fakeNpm, "package.json", d("a", "^1.0.0")),
+		// The same entry twice, once without a license: the license is kept.
+		lockfile(fakeNpm, "package-lock.json", d("a", "1.0.0"), licensed("a", "1.0.0", "MIT"), licensed("b", "2.0.0", "ISC")),
+	})
+	if len(got) != 2 {
+		t.Fatalf("Resolve = %+v, want a and b", got)
+	}
+	if got[0].Name != "a" || got[0].License != "MIT" || !got[0].IsDirect {
+		t.Errorf("a = %+v, want direct with MIT", got[0])
+	}
+	if got[1].Name != "b" || got[1].License != "ISC" {
+		t.Errorf("b = %+v, want ISC", got[1])
+	}
+}

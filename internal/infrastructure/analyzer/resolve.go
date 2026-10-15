@@ -318,6 +318,9 @@ func (c *collector) add(eco entity.Ecosystem, file string, dep ParsedDependency)
 		c.deps[i].Dev = c.deps[i].Dev && dep.Dev
 		c.deps[i].Resolved = c.deps[i].Resolved || dep.Resolved
 		c.deps[i].Via = MergeNames(c.deps[i].Via, dep.Via)
+		if c.deps[i].License == "" {
+			c.deps[i].License = dep.License
+		}
 		return
 	}
 	c.index[key] = len(c.deps)

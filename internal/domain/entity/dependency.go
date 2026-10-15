@@ -43,9 +43,12 @@ type Dependency struct {
 	// Via names the direct dependencies that pull a dependency in, when the
 	// lockfile records the graph (npm package-lock.json v2 and v3). The
 	// engine sets it; the server does not store it.
-	Via           []string   `json:"via,omitempty"`
-	UpdateType    UpdateType `json:"update_type"`
-	LastCheckedAt time.Time  `json:"last_checked_at"`
+	Via        []string   `json:"via,omitempty"`
+	UpdateType UpdateType `json:"update_type"`
+	// License is the package's license as a normalised SPDX expression,
+	// or "" when it is not known.
+	License       string    `json:"license"`
+	LastCheckedAt time.Time `json:"last_checked_at"`
 }
 
 // NewDependency creates a new Dependency.

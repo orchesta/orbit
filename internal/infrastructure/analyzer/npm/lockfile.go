@@ -15,6 +15,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/orchesta/orbit/internal/infrastructure/analyzer"
+	"github.com/orchesta/orbit/internal/spdx"
 )
 
 // Lockfile parsers report every entry with IsDirect false: none of these
@@ -93,11 +94,13 @@ type depSet struct {
 	deps  []analyzer.ParsedDependency
 }
 
-func (s *depSet) add(name, version string, dev bool) { s.addVia(name, version, dev, nil) }
+func (s *depSet) add(name, version string, dev bool) { s.addVia(name, version, dev, nil, "") }
 
-// addVia is add with the direct dependencies that pull the entry in. A
-// repeated name/version pair keeps the union of them.
-func (s *depSet) addVia(name, version string, dev bool, via []string) {
+// addVia is add with the direct dependencies that pull the entry in and the
+// license the lockfile records for it (a normalised SPDX expression or "").
+// A repeated name/version pair keeps the union of the Via names and the first
+// license it was given.
+func (s *depSet) addVia(name, version string, dev bool, via []string, license string) {
 	if name == "" || !isRegistryVersion(version) {
 		return
 	}
@@ -108,11 +111,14 @@ func (s *depSet) addVia(name, version string, dev bool, via []string) {
 	if i, ok := s.index[key]; ok {
 		s.deps[i].Dev = s.deps[i].Dev && dev
 		s.deps[i].Via = analyzer.MergeNames(s.deps[i].Via, via)
+		if s.deps[i].License == "" {
+			s.deps[i].License = license
+		}
 		return
 	}
 	s.index[key] = len(s.deps)
 	s.deps = append(s.deps, analyzer.ParsedDependency{
-		Name: name, CurrentVersion: version, Resolved: true, Dev: dev, Via: analyzer.MergeNames(nil, via),
+		Name: name, CurrentVersion: version, Resolved: true, Dev: dev, Via: analyzer.MergeNames(nil, via), License: license,
 	})
 }
 
@@ -170,18 +176,40 @@ type packageLock struct {
 }
 
 type lockPackage struct {
-	Name        string `json:"name"`
-	Version     string `json:"version"`
-	Resolved    string `json:"resolved"`
-	Link        bool   `json:"link"`
-	Dev         bool   `json:"dev"`
-	DevOptional bool   `json:"devOptional"`
+	Name        string          `json:"name"`
+	Version     string          `json:"version"`
+	Resolved    string          `json:"resolved"`
+	Link        bool            `json:"link"`
+	Dev         bool            `json:"dev"`
+	DevOptional bool            `json:"devOptional"`
+	License     json.RawMessage `json:"license"`
 	// Dependency maps, kept raw: only their keys are used, and a value of
 	// an unexpected shape must not fail the whole lockfile.
 	Dependencies         json.RawMessage `json:"dependencies"`
 	DevDependencies      json.RawMessage `json:"devDependencies"`
 	OptionalDependencies json.RawMessage `json:"optionalDependencies"`
 	PeerDependencies     json.RawMessage `json:"peerDependencies"`
+}
+
+// lockLicense returns the license npm copied from a package's package.json
+// into the lockfile, normalised: usually an SPDX string, in old packages an
+// object {"type": "MIT", "url": ...}. Anything else, or a value that is not
+// SPDX ("SEE LICENSE IN ...", "UNLICENSED"), is "".
+func lockLicense(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return spdx.Normalize(s)
+	}
+	var obj struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &obj) == nil {
+		return spdx.Normalize(obj.Type)
+	}
+	return ""
 }
 
 // requiredNames returns the names a packages entry depends on: its
@@ -402,7 +430,7 @@ func parsePackageLock(content []byte, opts analyzer.ParseOptions) ([]analyzer.Pa
 			if pkg.Name != "" {
 				name = pkg.Name // an aliased install: the real package
 			}
-			set.addVia(name, pkg.Version, pkg.Dev || pkg.DevOptional, via[key])
+			set.addVia(name, pkg.Version, pkg.Dev || pkg.DevOptional, via[key], lockLicense(pkg.License))
 		}
 		return set.sorted(), warnings, nil
 	}

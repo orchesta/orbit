@@ -53,6 +53,10 @@ type ParsedDependency struct {
 	// package-lock.json v2 and v3). Sorted and without repeats; nil when
 	// unknown or when the project declares the entry itself.
 	Via []string
+	// License is the license the lockfile records for the entry, as a
+	// normalised SPDX expression (see spdx.Normalize), or "". Only npm's
+	// package-lock.json v2/v3 records one.
+	License string
 }
 
 // ParseOptions tunes a parse; the zero value parses everything.

@@ -383,3 +383,47 @@ func TestPackageLockViaStartsAtWorkspaceFolders(t *testing.T) {
 		t.Fatalf("got %+v\nwant %+v", deps, want)
 	}
 }
+
+func TestPackageLockLicenses(t *testing.T) {
+	got, err := NewAnalyzer().ParseDependencies(readFixture(t, "lock-licenses/package-lock.json"), "package-lock.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	licenses := make(map[string]string)
+	for _, d := range got {
+		if !d.Internal {
+			licenses[d.Name+"@"+d.CurrentVersion] = d.License
+		}
+	}
+	want := map[string]string{
+		"plain@1.0.0":         "MIT",
+		"lower@1.0.0":         "ISC",
+		"dual@1.0.0":          "MIT OR Apache-2.0",
+		"legacy-object@1.0.0": "BSD-3-Clause",
+		"see-file@1.0.0":      "",
+		"private@1.0.0":       "",
+		"deprecated@1.0.0":    "GPL-2.0-or-later",
+		"weird-array@1.0.0":   "",
+		"weird-number@1.0.0":  "",
+		"none@1.0.0":          "",
+		"dup@2.0.0":           "Zlib", // the copy that records a license wins
+	}
+	if !reflect.DeepEqual(licenses, want) {
+		t.Errorf("licenses = %v\nwant       %v", licenses, want)
+	}
+}
+
+func TestOtherLockfilesCarryNoLicense(t *testing.T) {
+	a := NewAnalyzer()
+	for _, fixture := range []string{"lock-v1/package-lock.json", "yarn-v1/yarn.lock", "yarn-berry/yarn.lock", "pnpm-v9/pnpm-lock.yaml"} {
+		got, err := a.ParseDependencies(readFixture(t, fixture), fixture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range got {
+			if d.License != "" {
+				t.Errorf("%s: %s has license %q, want none", fixture, d.Name, d.License)
+			}
+		}
+	}
+}
