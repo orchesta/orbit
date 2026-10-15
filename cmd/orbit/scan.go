@@ -129,7 +129,7 @@ func parseScanFlags(args []string, stderr io.Writer) (scanConfig, error) {
 	flags.StringVar(&c.format, "format", "table", "report format: "+strings.Join(scanFormats, "|"))
 	flags.StringVar(&c.out, "out", "-", `report file, or "-" for stdout`)
 	flags.StringVar(&c.ignoreFile, "ignore-file", "", "ignore file (default <path>/"+ignoreFileName+" if it exists)")
-	flags.StringVar(&c.baseline, "baseline", "", "earlier orbit JSON report; only findings not in it fail the scan (malicious packages always do)")
+	flags.StringVar(&c.baseline, "baseline", "", "earlier orbit JSON report; only findings not in it fail the scan (malicious packages always do, unless --fail-on none)")
 	flags.BoolVar(&c.outdated, "outdated", false, "also ask the package registries for the latest versions")
 	flags.BoolVar(&c.failOnKEV, "fail-on-kev", false, "also exit 1 on any finding in the CISA KEV catalog, whatever its severity")
 	flags.BoolVar(&c.noExploitData, "no-exploit-data", false, "do not download the CISA KEV catalog or send CVE IDs to api.first.org for EPSS scores")

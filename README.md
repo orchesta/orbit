@@ -174,11 +174,11 @@ After the findings, the table recommends one upgrade per installed package: the 
 
 | Code | Meaning |
 | --- | --- |
-| 0 | No finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV. With `--baseline`, only findings that are not in the baseline count, except malicious packages, which always count |
-| 1 | At least one finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV. With `--baseline`, only findings that are not in the baseline count, except malicious packages, which always count |
+| 0 | No finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV. With `--baseline`, only findings that are not in the baseline count, except malicious packages, which count even when the baseline lists them |
+| 1 | At least one finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV. With `--baseline`, only findings that are not in the baseline count, except malicious packages, which count even when the baseline lists them |
 | 2 | The scan could not complete: osv.dev unreachable, timeout, bad flag, missing or invalid ignore file or baseline, or `--fail-on-kev` without the KEV catalog |
 
-On exit 2 nothing is written to stdout and an existing `--out` file is deleted, so a stale report is never uploaded. An osv.dev failure never counts as "no vulnerabilities".
+On exit 2 nothing is written to stdout. A command-line error (an unknown flag or argument, an invalid `--fail-on`, `--format` or `--timeout`, flags that conflict, or `--out` naming the `--baseline` file) leaves `--out` alone, because a mistyped command line may name any file. Every other exit 2 is a scan that started and could not complete (a missing `--path`, ignore file or baseline included); it deletes an existing `--out` file, so a stale report is never uploaded. An osv.dev failure never counts as "no vulnerabilities".
 
 ### Exploit signals: CISA KEV and FIRST EPSS
 
@@ -224,7 +224,7 @@ orbit scan --baseline orbit-baseline.json                           # on a pull 
 - Only new findings that are not ignored and reach `--fail-on` (or, with `--fail-on-kev`, are in CISA KEV) cause exit 1. Malicious packages are the exception: they fail the scan even when the baseline lists them. Every format shows which findings are new: `(new)` on new rows of the table and `N new` in its summary, `"new"` in JSON (without `--baseline` every finding is new), `baselineState` `new` or `unchanged` in SARIF, and in JUnit a skipped test case instead of a failure for an existing finding.
 - An advisory published after the baseline was written is new, even on a package the pull request did not touch. Refresh the baseline regularly, for example with a scheduled run on the default branch.
 - The baseline is any JSON report with `schema_version` 1, from any Orbit version; the version that wrote it is shown on stderr. A missing, empty or malformed file is an error (exit 2). On a first run, when there is no baseline yet, leave the flag out; the CI setups in [New findings only, in CI](#new-findings-only-in-ci) download and store the baseline and do that for you. `--out` cannot name the baseline file.
-- Whatever the baseline lists does not fail the build, so treat it as trusted input and take it only from runs of your protected default branch.
+- Findings the baseline lists do not fail the build (malicious packages still do), so treat it as trusted input and take it only from runs of your protected default branch.
 
 ### Malicious packages
 
