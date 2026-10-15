@@ -24,6 +24,9 @@ type Finding struct {
 	// Malicious marks a known malicious package: a MAL- advisory is among the
 	// finding's IDs. It fails every threshold and is never ignored.
 	Malicious bool
+	// New is false only when ApplyBaseline found the finding in a baseline.
+	// Without a baseline every finding is new.
+	New bool
 }
 
 // Summary aggregates a scan.
@@ -32,9 +35,9 @@ type Summary struct {
 	BySeverity               map[entity.Severity]int // not counting ignored findings
 	Malicious                int                     // malicious findings (never ignored)
 	Threshold                entity.Severity         // "" for none
-	// Failed is true when a finding trips the gate (see failsGate): it is
-	// not ignored and, with a Threshold set, at or above it or malicious,
-	// or with FailOnKEV listed in CISA KEV.
+	// Failed is true when a finding gates (see gates): it trips failsGate
+	// (not ignored and, with a Threshold set, at or above it or malicious,
+	// or with FailOnKEV listed in CISA KEV) and is new or malicious.
 	Failed bool
 	// ThresholdFailed is the severity and malicious part of Failed, without
 	// the --fail-on-kev gate (see thresholdGateFailed). The table names it
@@ -45,6 +48,12 @@ type Summary struct {
 	KEVFindings     int           // non-ignored findings listed in CISA KEV
 	KEVFailed       bool          // the --fail-on-kev gate failed (see kevGateFailed)
 	Exploit         ExploitStatus // where the exploit data came from
+
+	// Baseline reports whether ApplyBaseline compared the findings with a
+	// baseline. New counts the findings that are not ignored and not in the
+	// baseline (without a baseline, every finding that is not ignored).
+	Baseline bool
+	New      int
 
 	// Deps lists every dependency (sorted), including those without findings.
 	// The JSON report needs it because WriteJSON only receives findings.
@@ -148,17 +157,46 @@ func failsGate(f Finding, s Summary) bool {
 	return kevGate(f, s)
 }
 
-// thresholdGateFailed reports whether a finding trips the severity and
-// malicious part of the gate: failsGate with FailOnKEV off, so the gate
-// keeps one definition.
-func thresholdGateFailed(f []Finding, s Summary) bool {
-	s.FailOnKEV = false
+// counts reports whether f counts toward the gates: it is new (not in the
+// baseline) or malicious. A malicious package counts even when the baseline
+// lists it: "it was there before" is no reason to keep one.
+func counts(f Finding) bool {
+	return f.New || f.Malicious
+}
+
+// gates reports whether f fails the build: it trips failsGate (not ignored;
+// the threshold, a malicious package or --fail-on-kev) and counts (see
+// counts). failsGate decides what trips the gate; gates only adds whether
+// the finding is new.
+func gates(f Finding, s Summary) bool {
+	return failsGate(f, s) && counts(f)
+}
+
+// anyGates reports whether any finding gates.
+func anyGates(f []Finding, s Summary) bool {
 	for _, x := range f {
-		if failsGate(x, s) {
+		if gates(x, s) {
 			return true
 		}
 	}
 	return false
+}
+
+// thresholdGateFailed reports whether a finding gates on the severity and
+// malicious part of the gate: gates with FailOnKEV off, so the gate keeps
+// one definition.
+func thresholdGateFailed(f []Finding, s Summary) bool {
+	s.FailOnKEV = false
+	return anyGates(f, s)
+}
+
+// setGateResults sets s.Failed, s.ThresholdFailed and s.KEVFailed from f.
+// BuildWithOptions and ApplyBaseline both call it, so the three always
+// follow the same findings and the same New marks.
+func setGateResults(f []Finding, s *Summary) {
+	s.Failed = anyGates(f, *s)
+	s.ThresholdFailed = thresholdGateFailed(f, *s)
+	s.KEVFailed = kevGateFailed(f, *s)
 }
 
 // maliciousID is the first MAL- ID among v's IDs, or v.OSVID if none is.
@@ -184,7 +222,8 @@ func Build(res *engine.Result, ignores *IgnoreList, threshold entity.Severity, n
 // ecosystem) and summarizes. A merged finding is ignored when any of its
 // IDs matches an entry; every matching entry counts as used. A malicious
 // finding is never ignored: each entry that matches it is reported in a
-// warning instead. The report fails when a finding trips failsGate.
+// warning instead. Every finding is new (see ApplyBaseline). The report
+// fails when a finding gates (see gates).
 func BuildWithOptions(res *engine.Result, ignores *IgnoreList, opts BuildOptions, now time.Time) ([]Finding, Summary) {
 	byID := make(map[uuid.UUID]*entity.Dependency, len(res.Dependencies))
 	for _, d := range res.Dependencies {
@@ -207,7 +246,7 @@ func BuildWithOptions(res *engine.Result, ignores *IgnoreList, opts BuildOptions
 	var notApplied []string
 	for _, v := range mergeAliases(matched) {
 		d := byID[v.DependencyID]
-		f := Finding{Dependency: d, Vulnerability: v, Malicious: v.IsMalicious()}
+		f := Finding{Dependency: d, Vulnerability: v, Malicious: v.IsMalicious(), New: true}
 		if m := ignores.matchAll(v.OSVID, v.Aliases, d.Name, d.Ecosystem, now); len(m) > 0 {
 			for _, i := range m {
 				used[i] = true
@@ -297,12 +336,9 @@ func BuildWithOptions(res *engine.Result, ignores *IgnoreList, opts BuildOptions
 		if f.Vulnerability.KEV {
 			s.KEVFindings++
 		}
-		if failsGate(f, s) {
-			s.Failed = true
-		}
+		s.New++
 	}
-	s.KEVFailed = kevGateFailed(findings, s)
-	s.ThresholdFailed = thresholdGateFailed(findings, s)
+	setGateResults(findings, &s)
 	s.Vulnerable = len(vulnerable)
 	s.Recommendations = Recommend(findings)
 	return findings, s

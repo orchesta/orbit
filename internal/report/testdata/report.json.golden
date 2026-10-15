@@ -18,6 +18,8 @@
     },
     "threshold": "high",
     "failed": true,
+    "new": 4,
+    "baseline": false,
     "warnings": [
       "go.mod: unresolved version",
       "ignore entry GHSA-high-0002 expired on 2026-10-15"
@@ -78,7 +80,8 @@
       "kev": false,
       "kev_date_added": null,
       "epss": null,
-      "epss_percentile": null
+      "epss_percentile": null,
+      "new": true
     },
     {
       "id": "GHSA-esc-0005",
@@ -97,7 +100,8 @@
       "kev": false,
       "kev_date_added": null,
       "epss": null,
-      "epss_percentile": null
+      "epss_percentile": null,
+      "new": true
     },
     {
       "id": "GHSA-high-0002",
@@ -120,7 +124,8 @@
       "kev": false,
       "kev_date_added": null,
       "epss": null,
-      "epss_percentile": null
+      "epss_percentile": null,
+      "new": true
     },
     {
       "id": "GHSA-medium-0001",
@@ -143,7 +148,8 @@
       "kev": false,
       "kev_date_added": null,
       "epss": null,
-      "epss_percentile": null
+      "epss_percentile": null,
+      "new": true
     },
     {
       "id": "GHSA-low-0004",
@@ -164,7 +170,8 @@
       "kev": false,
       "kev_date_added": null,
       "epss": null,
-      "epss_percentile": null
+      "epss_percentile": null,
+      "new": true
     }
   ],
   "recommendations": [

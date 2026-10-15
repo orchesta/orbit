@@ -117,3 +117,24 @@ func (b *Baseline) Contains(eco entity.Ecosystem, pkg, id string, aliases []stri
 func packageKey(eco entity.Ecosystem, name string) string {
 	return analyzer.NameKey(eco, name)
 }
+
+// ApplyBaseline marks every finding that b contains as not new, ignored ones
+// included, and recomputes s.New, s.Failed, s.ThresholdFailed and
+// s.KEVFailed, so only new findings fail the build (a malicious package
+// fails anyway, see gates). Severity counts and the findings themselves are
+// unchanged: existing findings are still reported. A nil b changes nothing.
+func ApplyBaseline(f []Finding, s *Summary, b *Baseline) {
+	if b == nil {
+		return
+	}
+	s.Baseline = true
+	s.New = 0
+	for i := range f {
+		x := &f[i]
+		x.New = !b.Contains(x.Dependency.Ecosystem, x.Dependency.Name, x.Vulnerability.OSVID, x.Vulnerability.Aliases)
+		if x.New && !x.Ignored {
+			s.New++
+		}
+	}
+	setGateResults(f, s)
+}

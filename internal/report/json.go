@@ -22,6 +22,8 @@ type jsonSummary struct {
 	BySeverity   map[entity.Severity]int `json:"by_severity"`
 	Threshold    string                  `json:"threshold"`
 	Failed       bool                    `json:"failed"`
+	New          int                     `json:"new"`
+	Baseline     bool                    `json:"baseline"`
 	Warnings     []string                `json:"warnings"`
 	KEVFindings  int                     `json:"kev_findings"`
 	FailOnKEV    bool                    `json:"fail_on_kev"`
@@ -63,6 +65,7 @@ type jsonFinding struct {
 	KEVDateAdded   *string  `json:"kev_date_added"`
 	EPSS           *float64 `json:"epss"`
 	EPSSPercentile *float64 `json:"epss_percentile"`
+	New            bool     `json:"new"`
 }
 
 type jsonReport struct {
@@ -89,8 +92,8 @@ func WriteJSON(w io.Writer, f []Finding, s Summary, tool ToolInfo) error {
 		Tool:          jsonTool{tool.Name, tool.Version, tool.InformationURI},
 		Summary: jsonSummary{
 			Dependencies: s.Dependencies, Vulnerable: s.Vulnerable, Malicious: s.Malicious, BySeverity: s.BySeverity,
-			Threshold: string(s.Threshold), Failed: s.Failed, Warnings: nonNil(s.Warnings),
-			KEVFindings: s.KEVFindings, FailOnKEV: s.FailOnKEV,
+			Threshold: string(s.Threshold), Failed: s.Failed, New: s.New, Baseline: s.Baseline,
+			Warnings: nonNil(s.Warnings), KEVFindings: s.KEVFindings, FailOnKEV: s.FailOnKEV,
 			ExploitData: jsonExploitData{s.Exploit.KEV, s.Exploit.KEVCatalogVersion, s.Exploit.EPSS, s.Exploit.EPSSDate},
 		},
 		Dependencies: []jsonDependency{},
@@ -120,6 +123,7 @@ func WriteJSON(w io.Writer, f []Finding, s Summary, tool ToolInfo) error {
 			Package: d.Name, Version: d.CurrentVersion, Ecosystem: string(d.Ecosystem), Manifest: d.ManifestFile,
 			FixedVersion: fix, References: nonNil(v.References), Ignored: x.Ignored, IgnoreReason: x.IgnoreReason,
 			KEV: v.KEV, KEVDateAdded: added, EPSS: v.EPSS, EPSSPercentile: v.EPSSPercentile,
+			New: x.New,
 		})
 	}
 	r.Recommendations = s.Recommendations

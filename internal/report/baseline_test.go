@@ -2,10 +2,12 @@ package report
 
 import (
 	"bytes"
+	"maps"
 	"strings"
 	"testing"
 
 	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/engine"
 )
 
 // fixtureBaselineJSON is a report from an older orbit on older versions:
@@ -157,5 +159,142 @@ func TestBaselineRoundTripsWriteJSON(t *testing.T) {
 		if !b.Contains(x.Dependency.Ecosystem, x.Dependency.Name, x.Vulnerability.OSVID, x.Vulnerability.Aliases) {
 			t.Errorf("%s on %s missing from its own baseline", x.Vulnerability.OSVID, x.Dependency.Name)
 		}
+	}
+}
+
+func TestBuildWithoutBaselineMarksEveryFindingNew(t *testing.T) {
+	f, s := build(t, entity.SeverityHigh)
+	for _, x := range f {
+		if !x.New {
+			t.Errorf("%s: New = false without a baseline", x.Vulnerability.OSVID)
+		}
+	}
+	if s.Baseline || s.New != 4 { // five findings, one ignored
+		t.Errorf("Baseline = %v, New = %d; want false, 4", s.Baseline, s.New)
+	}
+}
+
+func TestApplyBaselineMarksExistingFindings(t *testing.T) {
+	f, s := build(t, entity.SeverityHigh)
+	ApplyBaseline(f, &s, fixtureBaseline(t))
+	got := map[string]bool{}
+	for _, x := range f {
+		got[x.Vulnerability.OSVID] = x.New
+	}
+	want := map[string]bool{
+		"GHSA-crit-0003": false, "GHSA-esc-0005": true, "GHSA-high-0002": false,
+		"GHSA-medium-0001": true, "GHSA-low-0004": true,
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("New = %v, want %v", got, want)
+	}
+	if !s.Baseline || s.New != 2 || !s.Failed {
+		t.Errorf("Baseline %v, New %d, Failed %v; want true, 2 (esc, medium), true (esc is high and new)", s.Baseline, s.New, s.Failed)
+	}
+	// Existing findings are still counted and reported.
+	if s.Vulnerable != 3 || s.BySeverity[entity.SeverityCritical] != 1 || s.BySeverity[entity.SeverityHigh] != 2 {
+		t.Errorf("counts changed: %+v", s)
+	}
+}
+
+func TestApplyBaselineExistingFindingsDoNotFail(t *testing.T) {
+	f, s := build(t, entity.SeverityCritical)
+	if !s.Failed || !s.ThresholdFailed {
+		t.Fatal("without a baseline the critical finding fails")
+	}
+	ApplyBaseline(f, &s, fixtureBaseline(t))
+	if s.Failed || s.ThresholdFailed {
+		t.Errorf("Failed %v, ThresholdFailed %v: the only critical finding is in the baseline; must not fail", s.Failed, s.ThresholdFailed)
+	}
+}
+
+func TestApplyBaselineIgnoredNewFindingDoesNotFail(t *testing.T) {
+	res := fixtureResult()
+	res.Vulnerabilities = res.Vulnerabilities[3:4] // GHSA-low-0004, ignored
+	f, s := Build(res, fixtureIgnores(), entity.SeverityLow, fixedNow)
+	ApplyBaseline(f, &s, fixtureBaseline(t))
+	if !f[0].New || s.Failed || s.New != 0 {
+		t.Errorf("New %v, Failed %v, s.New %d; want true, false, 0", f[0].New, s.Failed, s.New)
+	}
+}
+
+func TestApplyBaselineNilChangesNothing(t *testing.T) {
+	f, s := build(t, entity.SeverityHigh)
+	before := s
+	ApplyBaseline(f, &s, nil)
+	if s.Baseline || s.New != before.New || s.Failed != before.Failed ||
+		s.ThresholdFailed != before.ThresholdFailed || s.KEVFailed != before.KEVFailed {
+		t.Errorf("summary changed: %+v", s)
+	}
+	for _, x := range f {
+		if !x.New {
+			t.Errorf("%s: New = false after a nil baseline", x.Vulnerability.OSVID)
+		}
+	}
+}
+
+// --fail-on-kev also counts only new findings.
+func TestApplyBaselineExistingKEVFindingDoesNotFail(t *testing.T) {
+	res := fixtureResult()
+	res.Vulnerabilities = res.Vulnerabilities[2:3] // GHSA-crit-0003 on lodash
+	res.Vulnerabilities[0].Severity = entity.SeverityLow
+	res.Vulnerabilities[0].KEV = true
+	f, s := BuildWithOptions(res, nil, BuildOptions{FailOnKEV: true}, fixedNow)
+	if !s.Failed || !s.KEVFailed {
+		t.Fatalf("Failed %v, KEVFailed %v: a new KEV finding must fail with --fail-on-kev", s.Failed, s.KEVFailed)
+	}
+	ApplyBaseline(f, &s, fixtureBaseline(t))
+	if s.Failed || s.KEVFailed {
+		t.Errorf("Failed %v, KEVFailed %v: a KEV finding in the baseline must not fail", s.Failed, s.KEVFailed)
+	}
+}
+
+// A new KEV finding below the threshold fails --fail-on-kev only: the
+// threshold part stays false after ApplyBaseline, the KEV part true.
+func TestApplyBaselineNewKEVFindingKeepsGateParts(t *testing.T) {
+	res := fixtureResult()
+	res.Vulnerabilities = res.Vulnerabilities[0:1] // GHSA-medium-0001 on lodash, not in the baseline
+	res.Vulnerabilities[0].KEV = true
+	f, s := BuildWithOptions(res, nil, BuildOptions{Threshold: entity.SeverityHigh, FailOnKEV: true}, fixedNow)
+	ApplyBaseline(f, &s, fixtureBaseline(t))
+	if !f[0].New || !s.Failed || !s.KEVFailed || s.ThresholdFailed {
+		t.Errorf("New %v, Failed %v, KEVFailed %v, ThresholdFailed %v; want true, true, true, false",
+			f[0].New, s.Failed, s.KEVFailed, s.ThresholdFailed)
+	}
+}
+
+// A malicious package fails even when the baseline lists it: "it was there
+// before" is no reason to keep one. --fail-on none still turns it off.
+func TestApplyBaselineMaliciousFindingAlwaysFails(t *testing.T) {
+	malicious := func() *engine.Result {
+		res := fixtureResult()
+		res.Vulnerabilities = res.Vulnerabilities[2:3] // GHSA-crit-0003 on lodash, in the baseline
+		res.Vulnerabilities[0].Aliases = []string{"MAL-2025-0003"}
+		return res
+	}
+	f, s := Build(malicious(), nil, entity.SeverityHigh, fixedNow)
+	ApplyBaseline(f, &s, fixtureBaseline(t))
+	if f[0].New || !f[0].Malicious || s.New != 0 || !s.Failed || !s.ThresholdFailed {
+		t.Errorf("New %v, Malicious %v, s.New %d, Failed %v, ThresholdFailed %v; want false, true, 0, true, true",
+			f[0].New, f[0].Malicious, s.New, s.Failed, s.ThresholdFailed)
+	}
+	f, s = Build(malicious(), nil, "", fixedNow)
+	ApplyBaseline(f, &s, fixtureBaseline(t))
+	if s.Failed {
+		t.Error("--fail-on none must not fail, even on a malicious package")
+	}
+}
+
+// A malicious package listed in CISA KEV fails --fail-on-kev even when the
+// baseline lists it, like it fails the threshold.
+func TestApplyBaselineMaliciousKEVFindingFailsKEVGate(t *testing.T) {
+	res := fixtureResult()
+	res.Vulnerabilities = res.Vulnerabilities[2:3] // GHSA-crit-0003 on lodash, in the baseline
+	res.Vulnerabilities[0].Aliases = []string{"MAL-2025-0003"}
+	res.Vulnerabilities[0].KEV = true
+	f, s := BuildWithOptions(res, nil, BuildOptions{FailOnKEV: true}, fixedNow)
+	ApplyBaseline(f, &s, fixtureBaseline(t))
+	if f[0].New || !s.Failed || !s.KEVFailed {
+		t.Errorf("New %v, Failed %v, KEVFailed %v; want false, true, true", f[0].New, s.Failed, s.KEVFailed)
 	}
 }

@@ -414,3 +414,36 @@ func TestJUnitEscapingRoundTrip(t *testing.T) {
 	}
 	t.Error("escaping case missing")
 }
+
+func TestJSONBaselineFields(t *testing.T) {
+	f, s := build(t, entity.SeverityHigh)
+	ApplyBaseline(f, &s, fixtureBaseline(t))
+	var b bytes.Buffer
+	if err := WriteJSON(&b, f, s, testTool); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Summary struct {
+			New      int  `json:"new"`
+			Baseline bool `json:"baseline"`
+		} `json:"summary"`
+		Findings []struct {
+			ID  string `json:"id"`
+			New *bool  `json:"new"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal(b.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.Summary.Baseline || doc.Summary.New != 2 {
+		t.Errorf("summary = %+v", doc.Summary)
+	}
+	for _, x := range doc.Findings {
+		if x.New == nil {
+			t.Fatalf("%s has no \"new\" field", x.ID)
+		}
+		if want := x.ID != "GHSA-crit-0003" && x.ID != "GHSA-high-0002"; *x.New != want {
+			t.Errorf("%s: new = %v, want %v", x.ID, *x.New, want)
+		}
+	}
+}
