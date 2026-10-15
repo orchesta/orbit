@@ -123,7 +123,7 @@ func resolveEcosystem(eco entity.Ecosystem, files []ParsedFile, out *collector) 
 			declared[dir] = make(map[string]bool)
 		}
 		for _, dep := range f.Deps {
-			declared[dir][nameKey(eco, dep.Name)] = true
+			declared[dir][NameKey(eco, dep.Name)] = true
 		}
 	}
 
@@ -134,7 +134,7 @@ func resolveEcosystem(eco entity.Ecosystem, files []ParsedFile, out *collector) 
 		for _, lock := range locks {
 			knowsDirect := slices.ContainsFunc(lock.Deps, func(dep ParsedDependency) bool { return dep.IsDirect })
 			for _, dep := range lock.Deps {
-				key := nameKey(eco, dep.Name)
+				key := NameKey(eco, dep.Name)
 				if dep.Internal {
 					if dep.Name != "" {
 						internal[key] = true
@@ -160,7 +160,7 @@ func resolveEcosystem(eco entity.Ecosystem, files []ParsedFile, out *collector) 
 		for _, m := range covered[dir] {
 			inWorkspace := workspaces[path.Dir(m.Path)]
 			for _, dep := range m.Deps {
-				key := nameKey(eco, dep.Name)
+				key := NameKey(eco, dep.Name)
 				if inWorkspace && internal[key] {
 					continue
 				}
@@ -189,8 +189,8 @@ func applyVersions(eco entity.Ecosystem, files []ParsedFile) []ParsedFile {
 			versions[dir] = make(map[string]string)
 		}
 		for _, dep := range f.Deps {
-			if _, dup := versions[dir][nameKey(eco, dep.Name)]; !dup {
-				versions[dir][nameKey(eco, dep.Name)] = dep.CurrentVersion
+			if _, dup := versions[dir][NameKey(eco, dep.Name)]; !dup {
+				versions[dir][NameKey(eco, dep.Name)] = dep.CurrentVersion
 			}
 		}
 	}
@@ -205,7 +205,7 @@ func applyVersions(eco entity.Ecosystem, files []ParsedFile) []ParsedFile {
 				f.Deps = slices.Clone(f.Deps)
 				for i, dep := range f.Deps {
 					if dep.CurrentVersion == "" {
-						f.Deps[i].CurrentVersion = byName[nameKey(eco, dep.Name)]
+						f.Deps[i].CurrentVersion = byName[NameKey(eco, dep.Name)]
 					}
 				}
 			}
@@ -277,10 +277,10 @@ func coveringDir(manifestDir string, lockfiles map[string][]ParsedFile) (string,
 	}
 }
 
-// nameKey returns the form of a package name that the ecosystem treats as
+// NameKey returns the form of a package name that the ecosystem treats as
 // identical: PyPI names are normalized as in PEP 503, NuGet IDs are
 // case-insensitive, and other names are compared as written.
-func nameKey(eco entity.Ecosystem, name string) string {
+func NameKey(eco entity.Ecosystem, name string) string {
 	switch eco {
 	case entity.EcosystemPyPI:
 		return strings.Join(strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
