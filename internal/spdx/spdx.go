@@ -70,11 +70,40 @@ func gnuForm(id string, plus bool) (string, bool) {
 	return "", false
 }
 
+// gnuWithException maps the deprecated "GPL-x.y-with-<name>-exception"
+// identifiers, in lower case, to the GNU family and the exception from
+// exceptions.txt that replace them: "GPL-2.0-with-classpath-exception" is
+// "GPL-2.0-only WITH Classpath-exception-2.0".
+var gnuWithException = map[string]struct{ family, exception string }{
+	"gpl-2.0-with-gcc-exception":       {"GPL-2.0", "GCC-exception-2.0"},
+	"gpl-2.0-with-autoconf-exception":  {"GPL-2.0", "Autoconf-exception-2.0"},
+	"gpl-2.0-with-bison-exception":     {"GPL-2.0", "Bison-exception-2.2"},
+	"gpl-2.0-with-classpath-exception": {"GPL-2.0", "Classpath-exception-2.0"},
+	"gpl-2.0-with-font-exception":      {"GPL-2.0", "Font-exception-2.0"},
+	"gpl-3.0-with-gcc-exception":       {"GPL-3.0", "GCC-exception-3.1"},
+	"gpl-3.0-with-autoconf-exception":  {"GPL-3.0", "Autoconf-exception-3.0"},
+}
+
+// withException returns the license and exception that a deprecated
+// "GPL-x.y-with-<name>-exception" identifier stands for, with a trailing
+// "+" selecting "-or-later".
+func withException(tok string) (id, exception string, ok bool) {
+	plus := strings.HasSuffix(tok, "+")
+	w, ok := gnuWithException[strings.ToLower(strings.TrimSuffix(tok, "+"))]
+	if !ok {
+		return "", "", false
+	}
+	id, _ = gnuForm(w.family, plus)
+	return id, w.exception, true
+}
+
 // CanonicalID returns the canonical spelling of one license identifier:
 // the SPDX list's case, the current form of a deprecated GNU identifier
 // ("GPL-2.0" is "GPL-2.0-only", "GPL-2.0+" is "GPL-2.0-or-later"), a
 // LicenseRef- or DocumentRef- as written, and a trailing "+" kept on other
-// licenses. ok is false for anything else.
+// licenses. ok is false for anything else, including the deprecated
+// "GPL-x.y-with-<name>-exception" identifiers, which stand for a license
+// WITH an exception rather than one identifier.
 func CanonicalID(tok string) (id string, ok bool) {
 	plus := strings.HasSuffix(tok, "+")
 	base := strings.TrimSuffix(tok, "+")
@@ -83,6 +112,9 @@ func CanonicalID(tok string) (id string, ok bool) {
 			ref += "+"
 		}
 		return ref, true
+	}
+	if _, _, ok := withException(tok); ok {
+		return "", false
 	}
 	canon, ok := licenseIDs[strings.ToLower(base)]
 	if !ok {
@@ -294,6 +326,13 @@ func (p *parser) term() (*expr, error) {
 		return nil, fmt.Errorf("%w: unexpected %q", errSyntax, tok)
 	}
 	p.pos++
+	if id, exc, ok := withException(tok); ok {
+		// The identifier carries its exception, so it takes no other.
+		if strings.EqualFold(p.peek(), "WITH") {
+			return nil, fmt.Errorf("%w: %q already has an exception", errSyntax, tok)
+		}
+		return &expr{id: id, exception: exc}, nil
+	}
 	id, ok := CanonicalID(tok)
 	if !ok {
 		return nil, fmt.Errorf("%w: unknown license %q", errSyntax, tok)
@@ -312,17 +351,23 @@ func (p *parser) term() (*expr, error) {
 }
 
 // Normalize returns s as a canonical SPDX expression: identifiers in the
-// SPDX list's case, deprecated GNU identifiers in their current form,
-// operators in upper case, and parentheses only where AND and OR mix. It
-// returns "" for an empty value, for anything that is not a valid
-// expression over the known identifiers and for input longer than
-// MaxExpressionLen.
+// SPDX list's case, deprecated GNU identifiers in their current form
+// ("GPL-2.0-with-classpath-exception" becomes "GPL-2.0-only WITH
+// Classpath-exception-2.0"), operators in upper case, and parentheses only
+// where AND and OR mix. It returns "" for an empty value, for anything
+// that is not a valid expression over the known identifiers, and when the
+// input or the result is longer than MaxExpressionLen. The current forms
+// are longer than the deprecated ones, so the limit applies to the result
+// as well, and every non-empty result parses again.
 func Normalize(s string) string {
 	e, err := parse(s)
 	if err != nil {
 		return ""
 	}
-	return e.String()
+	if out := e.String(); len(out) <= MaxExpressionLen {
+		return out
+	}
+	return ""
 }
 
 // Join combines expressions that all apply to one package, such as the
@@ -363,6 +408,9 @@ func ParseIDs(list string) ([]string, error) {
 		item = strings.TrimSpace(item)
 		if item == "" {
 			continue
+		}
+		if lic, exc, ok := withException(item); ok {
+			return nil, fmt.Errorf("license identifier %q is deprecated and means %s WITH %s: name %s (an exception is not part of the identifier)", item, lic, exc, lic)
 		}
 		id, ok := CanonicalID(item)
 		if !ok || strings.ContainsFunc(item, unicode.IsSpace) {
