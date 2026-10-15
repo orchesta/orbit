@@ -11,22 +11,75 @@ inputs:
     required: false
     default: "."
   fail-on:
-    description: Fail (exit 1) on a finding at or above this severity - critical, high, medium, low, unknown or none.
+    description: Fail (exit 1) on a finding at or above this severity - critical, high, medium, low, unknown or none. A known malicious package always fails, except with none.
     required: false
     default: high
   format:
-    description: Report format - table, json, sarif or junit.
+    description: >-
+      Report format - table, json, sarif, junit, cyclonedx (CycloneDX 1.6 SBOM) or
+      spdx (SPDX 2.3 SBOM).
     required: false
     default: sarif
   output:
     description: >-
       Report file, relative to the workspace. Use "-" to print the report to the log.
-      Empty picks a name from format - orbit.sarif, orbit.json, orbit.xml (junit) or
-      orbit.txt (table).
+      Empty picks a name from format - orbit.sarif, orbit.json, orbit.xml (junit),
+      orbit.txt (table), orbit.cdx.json (cyclonedx) or orbit.spdx.json (spdx).
+    required: false
+    default: ""
+  sbom-name:
+    description: >-
+      Project name written into a cyclonedx or spdx report. Empty uses the repository
+      (owner/name). Ignored for the other formats.
     required: false
     default: ""
   ignore-file:
     description: Ignore file, relative to the workspace. Empty uses <path>/.orbitignore when it exists.
+    required: false
+    default: ""
+  baseline:
+    description: >-
+      Earlier Orbit JSON report, relative to the workspace. Only findings that are not in it
+      fail the step (a malicious package does even when it lists it, unless fail-on is none);
+      all findings are still reported. If the file does not exist (a first run, or an expired
+      cache) the action warns and every finding counts. Empty compares with nothing.
+    required: false
+    default: ""
+  baseline-output:
+    description: >-
+      Also write a JSON report to this path, relative to the workspace, for later runs to use as
+      their baseline. This is a second scan with fail-on none, skipped when the first one errored
+      (exit 2) or when the report itself is that JSON file. A run that writes it records the
+      baseline, so its findings and denied licenses do not fail the step (exit 1 becomes a
+      warning); errors (exit 2) still do. A file already at that path is removed first, so a
+      run whose scans fail leaves none behind for a cache save step to store. Empty skips it.
+    required: false
+    default: ""
+  fail-on-kev:
+    description: >-
+      Also fail (exit 1) on any finding listed in the CISA Known Exploited Vulnerabilities
+      catalog, whatever its severity - true or false. If the catalog cannot be downloaded,
+      the scan exits 2.
+    required: false
+    default: "false"
+  exploit-data:
+    description: >-
+      Add CISA KEV and FIRST EPSS data to findings - true or false. When true, the CLI
+      downloads the KEV catalog from www.cisa.gov and sends the CVE IDs it found to
+      api.first.org. false passes --no-exploit-data.
+    required: false
+    default: "true"
+  licenses:
+    description: >-
+      Look up on deps.dev the licenses that the lockfiles do not record - true or false.
+      This sends package names and versions to api.deps.dev.
+    required: false
+    default: "false"
+  deny-license:
+    description: >-
+      Comma-separated SPDX license IDs, for example GPL-3.0-only,AGPL-3.0-only. A dependency
+      that can only be used under one of them fails the step (exit 1), whatever fail-on says.
+      With licenses true, a failed deps.dev lookup is an error (exit 2). Empty disables the policy.
     required: false
     default: ""
   version:
@@ -49,6 +102,13 @@ runs:
         INPUT_FORMAT: ${{ inputs.format }}
         INPUT_OUTPUT: ${{ inputs.output }}
         INPUT_IGNORE_FILE: ${{ inputs.ignore-file }}
+        INPUT_FAIL_ON_KEV: ${{ inputs.fail-on-kev }}
+        INPUT_EXPLOIT_DATA: ${{ inputs.exploit-data }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_BASELINE_OUTPUT: ${{ inputs.baseline-output }}
+        INPUT_LICENSES: ${{ inputs.licenses }}
+        INPUT_DENY_LICENSE: ${{ inputs.deny-license }}
+        INPUT_SBOM_NAME: ${{ inputs.sbom-name }}
         INPUT_VERSION: ${{ inputs.version }}
         ACTION_REF: ${{ github.action_ref }}
       run: |
@@ -64,34 +124,120 @@ runs:
           fi
         fi
 
-        case "$INPUT_PATH" in
-          /*) echo "::error::Orbit: 'path' must be relative to the workspace, got '$INPUT_PATH'"; exit 2 ;;
-        esac
+        relative() {
+          case "$2" in
+            /*) echo "::error::Orbit: '$1' must be relative to the workspace, got '$2'"; exit 2 ;;
+          esac
+        }
+        relative path "$INPUT_PATH"
+        relative baseline "$INPUT_BASELINE"
+        relative baseline-output "$INPUT_BASELINE_OUTPUT"
+
+        # The CLI reads --format in any case; match it here with one lowercase copy.
+        fmt=$(printf '%s' "$INPUT_FORMAT" | tr '[:upper:]' '[:lower:]')
 
         output="${INPUT_OUTPUT:-}"
         if [ -z "$output" ]; then
-          case "$INPUT_FORMAT" in
+          case "$fmt" in
             json) output=orbit.json ;;
             junit) output=orbit.xml ;;
             table) output=orbit.txt ;;
+            cyclonedx) output=orbit.cdx.json ;;
+            spdx) output=orbit.spdx.json ;;
             *) output=orbit.sarif ;;
           esac
         fi
 
         # The container sees the workspace as /src. Paths stay workspace-relative.
-        args=(scan --path "/src/${INPUT_PATH}" --fail-on "$INPUT_FAIL_ON" --format "$INPUT_FORMAT")
+        args=(scan --path "/src/${INPUT_PATH}" --fail-on "$INPUT_FAIL_ON" --format "$fmt")
+        # The baseline-output scan: every finding as JSON, failing on nothing.
+        record=(scan --path "/src/${INPUT_PATH}" --fail-on none --format json --out "/src/${INPUT_BASELINE_OUTPUT}" --quiet)
         if [ "$output" != "-" ]; then
           args+=(--out "/src/${output}")
         fi
         if [ -n "$INPUT_IGNORE_FILE" ]; then
           args+=(--ignore-file "/src/${INPUT_IGNORE_FILE}")
+          record+=(--ignore-file "/src/${INPUT_IGNORE_FILE}")
+        fi
+        # Only the SBOM formats take --sbom-name, so an older pinned image still runs the
+        # others. Without it the project would be named after the mount point, "src". The
+        # baseline-output scan writes JSON and does not get it.
+        case "$fmt" in
+          cyclonedx|spdx)
+            sbom_name="${INPUT_SBOM_NAME:-${GITHUB_REPOSITORY:-}}"
+            if [ -n "$sbom_name" ]; then
+              args+=(--sbom-name "$sbom_name")
+            fi
+            ;;
+        esac
+        # The KEV gate applies to the first scan only.
+        case "$INPUT_FAIL_ON_KEV" in
+          true) args+=(--fail-on-kev) ;;
+          false|"") ;;
+          *) echo "::error::Orbit: 'fail-on-kev' must be true or false, got '$INPUT_FAIL_ON_KEV'"; exit 2 ;;
+        esac
+        case "$INPUT_EXPLOIT_DATA" in
+          false) args+=(--no-exploit-data); record+=(--no-exploit-data) ;;
+          true|"") ;;
+          *) echo "::error::Orbit: 'exploit-data' must be true or false, got '$INPUT_EXPLOIT_DATA'"; exit 2 ;;
+        esac
+        # Licenses, like the KEV gate, apply to the first scan only: the baseline-output
+        # scan records findings, and a denied license must not make it fail.
+        case "$INPUT_LICENSES" in
+          true) args+=(--licenses) ;;
+          false|"") ;;
+          *) echo "::error::Orbit: 'licenses' must be true or false, got '$INPUT_LICENSES'"; exit 2 ;;
+        esac
+        if [ -n "$INPUT_DENY_LICENSE" ]; then
+          args+=(--deny-license "$INPUT_DENY_LICENSE")
+        fi
+        # A file already at baseline-output (committed, or left by an earlier step) must not
+        # be stored as this run's baseline when the scans below do not write one. When it is
+        # also the baseline input, the first scan reads it and it is removed after that.
+        if [ -n "$INPUT_BASELINE_OUTPUT" ] && [ "$INPUT_BASELINE_OUTPUT" != "$INPUT_BASELINE" ]; then
+          rm -f -- "$GITHUB_WORKSPACE/$INPUT_BASELINE_OUTPUT"
+        fi
+        if [ -n "$INPUT_BASELINE" ]; then
+          if [ -f "$GITHUB_WORKSPACE/$INPUT_BASELINE" ]; then
+            args+=(--baseline "/src/${INPUT_BASELINE}")
+          else
+            echo "::warning::Orbit: no baseline at '$INPUT_BASELINE' (a first run, or the cache expired); every finding counts."
+          fi
         fi
 
-        # Exit 0 = clean, 1 = finding at or above fail-on, 2 = error (no report is left behind).
+        orbit() {
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -v "$GITHUB_WORKSPACE":/src \
+            -w /src \
+            "orchestalabs/orbit-cli:${version}" \
+            "$@"
+        }
+
+        # Exit 0 = clean, 1 = finding at or above fail-on, a malicious package (unless fail-on is none), in KEV with fail-on-kev, or a license that deny-license denies, 2 = error (no report is left behind).
+        # With baseline, only findings that are not in it count, except malicious packages; it does not filter denied licenses.
         # A non-zero exit fails this step; use `if: always()` on a later upload step.
-        exec docker run --rm \
-          --user "$(id -u):$(id -g)" \
-          -v "$GITHUB_WORKSPACE":/src \
-          -w /src \
-          "orchestalabs/orbit-cli:${version}" \
-          "${args[@]}"
+        rc=0
+        orbit "${args[@]}" || rc=$?
+
+        if [ -n "$INPUT_BASELINE_OUTPUT" ]; then
+          if [ "$INPUT_BASELINE_OUTPUT" = "$INPUT_BASELINE" ]; then
+            rm -f -- "$GITHUB_WORKSPACE/$INPUT_BASELINE_OUTPUT"
+          fi
+          # A JSON report for later runs to compare with, unless the scan errored or its
+          # report already is that file. A failed baseline scan only warns: it leaves no
+          # file, so a cache save step guarded by hashFiles is skipped and the previous
+          # cache keeps serving the baseline.
+          if [ "$rc" -ne 2 ] && ! { [ "$fmt" = json ] && [ "$output" = "$INPUT_BASELINE_OUTPUT" ]; }; then
+            orbit "${record[@]}" \
+              || echo "::warning::Orbit: could not write the baseline report '$INPUT_BASELINE_OUTPUT'"
+          fi
+          # This run records the baseline: every finding it has is an existing one. Its
+          # findings, and denied licenses, are reported but do not fail the step; errors
+          # (exit 2) still do.
+          if [ "$rc" -eq 1 ]; then
+            echo "::warning::Orbit: findings or denied licenses would fail this scan (exit 1), but this run records the baseline (baseline-output), so they are reported without failing the step."
+            rc=0
+          fi
+        fi
+        exit "$rc"

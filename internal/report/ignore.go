@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/spdx"
 )
 
 const ignoreDateLayout = "2006-01-02"
@@ -17,7 +18,11 @@ const ignoreDateLayout = "2006-01-02"
 // line is
 //
 //	<advisory-id> [expires=YYYY-MM-DD] [package=<name>] reason...
+//	license:<SPDX-ID> package=<name> [expires=YYYY-MM-DD] reason...
 //
+// The second form accepts one license for one package under the license
+// policy (see ApplyLicensePolicy); package= is required and the identifier
+// must be on the SPDX list. It never suppresses an advisory.
 // key=value options come right after the ID; the first token that is not
 // key=value starts the reason, so a reason that itself begins with key=value
 // is parsed as an option (and rejected if the key is unknown). A leading UTF-8
@@ -41,6 +46,16 @@ func ParseIgnoreFile(r io.Reader) (*IgnoreList, error) {
 			return nil, fmt.Errorf(".orbitignore line %d: expected an advisory ID, got %q", n, clip(fields[0]))
 		}
 		e := IgnoreEntry{ID: fields[0]}
+		if prefix, rest, ok := strings.Cut(fields[0], ":"); ok && strings.EqualFold(prefix, "license") {
+			if hint, ok := spdx.ExceptionHint(rest); ok {
+				return nil, fmt.Errorf(".orbitignore line %d: license identifier %q %s", n, clip(rest), hint)
+			}
+			id, known := spdx.CanonicalID(rest)
+			if !known || strings.HasSuffix(id, "+") {
+				return nil, fmt.Errorf(".orbitignore line %d: unknown SPDX license identifier %q", n, clip(rest))
+			}
+			e.ID, e.License = "license:"+id, id
+		}
 		seen := map[string]bool{}
 		i := 1
 		for ; i < len(fields) && isOption(fields[i]); i++ {
@@ -64,6 +79,12 @@ func ParseIgnoreFile(r io.Reader) (*IgnoreList, error) {
 			default:
 				return nil, fmt.Errorf(".orbitignore line %d: unknown option %q", n, clip(key))
 			}
+		}
+		if e.License != "" {
+			if e.Package == "" {
+				return nil, fmt.Errorf(".orbitignore line %d: %s needs package=<name>", n, e.ID)
+			}
+			e.ID += " package=" + e.Package // how warnings name the entry
 		}
 		e.Reason = strings.Join(fields[i:], " ")
 		list.Entries = append(list.Entries, e)
@@ -100,14 +121,19 @@ func (e IgnoreEntry) expiryWarning(now time.Time) string {
 	return fmt.Sprintf("ignore entry %s expired on %s", e.ID, last)
 }
 
-// ignoreWarnings lists expired entries and active entries that matched no
-// finding (used[i] reports whether Entries[i] matched). Sorted by the caller.
-func (l *IgnoreList) ignoreWarnings(used []bool, now time.Time) []string {
+// ignoreWarnings lists expired entries and active entries that were not
+// used (used[i] reports whether Entries[i] matched a finding or cleared a
+// license violation). It lists only advisory entries (License "") or only
+// license entries, as licenses says. Sorted by the caller.
+func (l *IgnoreList) ignoreWarnings(used []bool, now time.Time, licenses bool) []string {
 	if l == nil {
 		return nil
 	}
 	var out []string
 	for i, e := range l.Entries {
+		if (e.License != "") != licenses {
+			continue
+		}
 		if w := e.expiryWarning(now); w != "" {
 			out = append(out, w)
 		} else if !used[i] {

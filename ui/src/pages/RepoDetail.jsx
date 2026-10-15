@@ -6,6 +6,8 @@ import { useScanTracker } from '../hooks/useScanTracker';
 import Spinner from '../components/Spinner';
 import ErrorState from '../components/ErrorState';
 import MaliciousBadge from '../components/MaliciousBadge';
+import ExploitSignals from '../components/ExploitSignals';
+import { licenseBreakdown } from '../licenses';
 
 const isActive = (scan) => scan?.status === 'pending' || scan?.status === 'running';
 
@@ -15,6 +17,10 @@ const approximateVersionHint = (ecosystem) =>
   ecosystem === 'Go'
     ? 'Version from go.mod (minimum version selection)'
     : 'Version taken from a manifest range; add a lockfile for exact results';
+
+// LICENSE_BREAKDOWN_LIMIT is how many licenses the breakdown names before
+// it sums the rest into "Other".
+const LICENSE_BREAKDOWN_LIMIT = 8;
 
 export default function RepoDetail() {
   const { id } = useParams();
@@ -42,6 +48,12 @@ export default function RepoDetail() {
     queryKey: ['scan', latestScan?.id, 'vulnerabilities'],
     queryFn: () => scanApi.getVulnerabilities(latestScan.id),
     enabled: !!latestScan,
+  });
+  // Only on the vulnerabilities tab, and only when there is something to fix.
+  const recsQuery = useQuery({
+    queryKey: ['scan', latestScan?.id, 'recommendations'],
+    queryFn: () => scanApi.getRecommendations(latestScan.id),
+    enabled: !!latestScan && activeTab === 'vulnerabilities' && (vulnsQuery.data?.length ?? 0) > 0,
   });
   const tracker = useScanTracker({
     onFinished: (repoId) => {
@@ -101,21 +113,24 @@ export default function RepoDetail() {
               <span>{repo.url}</span>
             </div>
           </div>
-          <button 
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2 min-w-[120px] shadow-sm disabled:opacity-50"
-            onClick={() => tracker.start(id)
-              // Show the queued scan in the history right away.
-              .then(() => queryClient.invalidateQueries({ queryKey: ['repository', id, 'scans'] }))
-              .catch((e) => alert('Scan error: ' + e.message))}
-            disabled={scanning}
-          >
-           {scanning ? (
-              <>
-                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
-                <span className="sr-only">Scanning…</span>
-              </>
-            ) : "Scan Now"}
-          </button>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+            <SbomDownload scan={latestScan} />
+            <button
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2 min-w-[120px] shadow-sm disabled:opacity-50"
+              onClick={() => tracker.start(id)
+                // Show the queued scan in the history right away.
+                .then(() => queryClient.invalidateQueries({ queryKey: ['repository', id, 'scans'] }))
+                .catch((e) => alert('Scan error: ' + e.message))}
+              disabled={scanning}
+            >
+             {scanning ? (
+                <>
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
+                  <span className="sr-only">Scanning…</span>
+                </>
+              ) : "Scan Now"}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -175,6 +190,7 @@ export default function RepoDetail() {
               <EmptyState icon="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" message={noScanMsg('No dependencies found')} />
             ) : (
               <>
+                <LicenseBreakdown deps={deps} />
                 <div className="flex items-center justify-end gap-2 px-6 py-3 border-b border-gray-200 text-sm text-gray-500">
                   <label htmlFor="dep-filter">Dependency type</label>
                   <select
@@ -195,6 +211,7 @@ export default function RepoDetail() {
                       <th className="px-6 py-3 font-medium">Ecosystem</th>
                       <th className="px-6 py-3 font-medium">Current</th>
                       <th className="px-6 py-3 font-medium">Latest</th>
+                      <th className="px-6 py-3 font-medium">License</th>
                       <th className="px-6 py-3 font-medium text-center">Status</th>
                     </tr>
                   </thead>
@@ -220,6 +237,7 @@ export default function RepoDetail() {
                           )}
                         </td>
                         <td className="px-6 py-4 text-gray-500 font-mono text-xs">{dep.latest_version || '-'}</td>
+                        <td className="px-6 py-4 text-gray-500 text-xs" data-testid="dep-license">{dep.license || '-'}</td>
                         <td className="px-6 py-4 text-center">
                           {dep.is_outdated ? (
                             <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium capitalize 
@@ -255,49 +273,54 @@ export default function RepoDetail() {
             ) : vulns.length === 0 ? (
               <EmptyState icon="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.040L3 5.618a11.986 11.986 0 001.274 13.92 11.987 11.987 0 0015.452 0c.935-1.12 1.587-2.43 1.944-3.834l-1.07-.356z" message={noScanMsg('No vulnerabilities detected')} />
             ) : (
-              <table className="w-full text-left text-sm">
-                <thead className="bg-gray-50 text-gray-500 border-b border-gray-200">
-                  <tr>
-                    <th className="px-6 py-3 font-medium">Vulnerability</th>
-                    <th className="px-6 py-3 font-medium">Package</th>
-                    <th className="px-6 py-3 font-medium text-center">Severity</th>
-                    <th className="px-6 py-3 font-medium text-right">Fixed In</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {vulns.map(vuln => {
-                    const dep = deps.find(d => d.id === vuln.dependency_id);
-                    return (
-                      <tr key={vuln.id} className="hover:bg-gray-50">
-                        <td className="px-6 py-4">
-                          <div className="font-medium text-gray-900 mb-1">{vuln.summary || 'Summary unavailable'}</div>
-                          <div className="flex items-center gap-2">
-                             <a href={`https://osv.dev/vulnerability/${vuln.osv_id}`} target="_blank" rel="noopener" className="text-blue-600 hover:underline text-xs">
-                               {vuln.osv_id}
-                             </a>
-                             {vuln.malicious && <MaliciousBadge />}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="font-medium text-gray-900">{dep ? dep.name : 'Unknown'}</div>
-                          <div className="text-xs text-gray-500 font-mono">{dep ? dep.current_version : ''}</div>
-                        </td>
-                        <td className="px-6 py-4 text-center">
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize
-                            ${vuln.severity === 'critical' ? 'bg-red-100 text-red-800' :
-                              vuln.severity === 'high' ? 'bg-orange-100 text-orange-800' :
-                              vuln.severity === 'medium' ? 'bg-yellow-100 text-yellow-800' :
-                              vuln.severity === 'low' ? 'bg-green-100 text-green-800' :
-                              'bg-gray-100 text-gray-800'}`}>
-                            {vuln.severity}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-gray-500 font-mono text-xs text-right">{vuln.fixed_version || '-'}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <>
+                <Recommendations query={recsQuery} />
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-gray-50 text-gray-500 border-b border-gray-200">
+                    <tr>
+                      <th className="px-6 py-3 font-medium">Vulnerability</th>
+                      <th className="px-6 py-3 font-medium">Package</th>
+                      <th className="px-6 py-3 font-medium text-center">Severity</th>
+                      <th className="px-6 py-3 font-medium">Exploit</th>
+                      <th className="px-6 py-3 font-medium text-right">Fixed In</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {vulns.map(vuln => {
+                      const dep = deps.find(d => d.id === vuln.dependency_id);
+                      return (
+                        <tr key={vuln.id} className="hover:bg-gray-50">
+                          <td className="px-6 py-4">
+                            <div className="font-medium text-gray-900 mb-1">{vuln.summary || 'Summary unavailable'}</div>
+                            <div className="flex items-center gap-2">
+                               <a href={`https://osv.dev/vulnerability/${vuln.osv_id}`} target="_blank" rel="noopener" className="text-blue-600 hover:underline text-xs">
+                                 {vuln.osv_id}
+                               </a>
+                               {vuln.malicious && <MaliciousBadge />}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="font-medium text-gray-900">{dep ? dep.name : 'Unknown'}</div>
+                            <div className="text-xs text-gray-500 font-mono">{dep ? dep.current_version : ''}</div>
+                          </td>
+                          <td className="px-6 py-4 text-center">
+                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize
+                              ${vuln.severity === 'critical' ? 'bg-red-100 text-red-800' :
+                                vuln.severity === 'high' ? 'bg-orange-100 text-orange-800' :
+                                vuln.severity === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                                vuln.severity === 'low' ? 'bg-green-100 text-green-800' :
+                                'bg-gray-100 text-gray-800'}`}>
+                              {vuln.severity}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4"><ExploitSignals vuln={vuln} /></td>
+                          <td className="px-6 py-4 text-gray-500 font-mono text-xs text-right">{vuln.fixed_version || '-'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </>
             )}
            </div>
         )}
@@ -344,6 +367,42 @@ export default function RepoDetail() {
   );
 }
 
+// LicenseBreakdown summarises the licenses of the shown scan. It is hidden
+// when no dependency has a known license (older scans, or lookups off).
+function LicenseBreakdown({ deps }) {
+  const rows = licenseBreakdown(deps);
+  if (!rows.some((r) => r.license)) return null;
+  const known = rows.filter((r) => r.license);
+  const shown = known.slice(0, LICENSE_BREAKDOWN_LIMIT);
+  const other = known.slice(LICENSE_BREAKDOWN_LIMIT).reduce((n, r) => n + r.count, 0);
+  const unknown = rows.find((r) => !r.license);
+  return (
+    <section aria-label="License breakdown" className="px-6 py-3 border-b border-gray-200 text-sm">
+      <h3 className="text-xs font-medium uppercase tracking-wide text-gray-500 mb-2">Licenses</h3>
+      <ul className="flex flex-wrap gap-2">
+        {shown.map((r) => (
+          <li key={r.license} className="inline-flex items-center gap-1.5 rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-700">
+            <span className="font-medium">{r.license}</span>
+            <span className="text-gray-500">{r.count}</span>
+          </li>
+        ))}
+        {other > 0 && (
+          <li className="inline-flex items-center gap-1.5 rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-700">
+            <span className="font-medium">Other</span>
+            <span className="text-gray-500">{other}</span>
+          </li>
+        )}
+        {unknown && (
+          <li className="inline-flex items-center gap-1.5 rounded bg-gray-50 px-2 py-0.5 text-xs text-gray-500" title="No SPDX license in the lockfile or from deps.dev">
+            <span className="font-medium">Unknown</span>
+            <span>{unknown.count}</span>
+          </li>
+        )}
+      </ul>
+    </section>
+  );
+}
+
 function StatCard({ label, value, icon, color, subtext }) {
   return (
     <div data-testid={`stat-${label.toLowerCase().replace(/\s+/g, '-')}`} className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm flex items-center justify-between">
@@ -359,6 +418,40 @@ function StatCard({ label, value, icon, color, subtext }) {
           {icon}
         </svg>
       </div>
+    </div>
+  );
+}
+
+const sbomFormats = [['cyclonedx', 'CycloneDX'], ['spdx', 'SPDX']];
+
+// SbomDownload offers the SBOM of the last completed scan in both formats.
+function SbomDownload({ scan }) {
+  const [busy, setBusy] = useState(false);
+  const save = (format) => {
+    setBusy(true);
+    scanApi.downloadSbom(scan.id, format)
+      .catch((e) => alert('SBOM download failed: ' + e.message))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <div
+      role="group"
+      aria-label="Download SBOM"
+      className="flex items-center gap-2"
+      title={scan ? 'Software bill of materials of the last completed scan' : 'No completed scan yet'}
+    >
+      <span className="text-sm text-gray-500">SBOM</span>
+      {sbomFormats.map(([format, label]) => (
+        <button
+          key={format}
+          type="button"
+          className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+          disabled={!scan || busy}
+          onClick={() => save(format)}
+        >
+          {label}
+        </button>
+      ))}
     </div>
   );
 }
@@ -384,4 +477,46 @@ function EmptyState({ icon, message }) {
       <p className="font-medium text-gray-900">{message}</p>
     </div>
   )
+}
+
+// Recommendations lists the smallest upgrade per vulnerable package. It is
+// advice: an upgrade can still break a build.
+function Recommendations({ query }) {
+  if (query.isPending) return null;
+  if (query.isError) {
+    return <p className="px-6 py-3 border-b border-gray-200 text-sm text-gray-500">Upgrade recommendations could not be loaded.</p>;
+  }
+  const recs = query.data || [];
+  if (recs.length === 0) return null;
+  return (
+    <section aria-labelledby="recs-title" className="px-6 py-4 border-b border-gray-200 bg-gray-50">
+      <h3 id="recs-title" className="text-sm font-semibold text-gray-900 mb-2">Recommended upgrades</h3>
+      <ul className="space-y-1 text-sm text-gray-700">
+        {recs.map((r) => (
+          <li key={`${r.ecosystem}|${r.manifest}|${r.package}|${r.current}`}>
+            <span className="font-medium">{r.package}</span>{' '}
+            <span className="font-mono text-xs">{r.current}</span>
+            {r.malicious ? (
+              <span>
+                {' '}— reported as malicious; remove it
+                {r.upgrade && <span className="text-gray-500"> (a non-malicious advisory names {r.upgrade} as fixed)</span>}
+              </span>
+            ) : (
+              <>
+                {r.upgrade && (
+                  <span> → <span className="font-mono text-xs">{r.upgrade}</span> fixes {r.fixes.length} {r.fixes.length === 1 ? 'advisory' : 'advisories'}</span>
+                )}
+                {r.no_fix.length > 0 && (
+                  <span className="text-gray-500">{r.upgrade ? '; ' : ' — '}no known fix for {r.no_fix.join(', ')}</span>
+                )}
+              </>
+            )}
+            {r.via && <span className="text-gray-500"> (pulled in by {r.via})</span>}
+            <span className="text-xs text-gray-400"> · {r.manifest}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-xs text-gray-500">Each upgrade is the lowest version at or above every known fix. It can still break your build; check the release notes. Orbit does not check that the version exists or that no other advisory affects it.</p>
+    </section>
+  );
 }

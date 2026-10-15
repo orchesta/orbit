@@ -5,14 +5,20 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/orchesta/orbit/internal/domain/entity"
 	"github.com/orchesta/orbit/internal/engine"
+	"github.com/orchesta/orbit/internal/infrastructure/exploit"
 )
 
 // lodashAdvisories answers like vulnerability.Lookup does for
@@ -41,16 +47,24 @@ func (lodashAdvisories) Lookup(_ context.Context, deps []*entity.Dependency) ([]
 
 func ptr(s string) *string { return &s }
 
-// realDeps runs the production engine (all analyzers, no registry lookups)
-// with lookup in place of osv.dev.
-func realDeps(lookup engine.VulnLookup) scanDeps {
+// realDepsWith runs the production engine (all analyzers, no registry or
+// deps.dev lookups, so licenses come from the lockfiles only) with lookup
+// in place of osv.dev and enricher, when exploit data is on, in place of
+// cisa.gov and api.first.org.
+func realDepsWith(lookup engine.VulnLookup, enricher engine.ExploitEnricher) scanDeps {
 	return scanDeps{
-		newEngine: func(checkLatest bool, logger *slog.Logger) analyzerEngine {
-			return engine.New(newAnalyzerRegistry(), lookup, engine.Options{CheckLatest: checkLatest, Logger: logger})
+		newEngine: func(ec engineConfig, logger *slog.Logger) analyzerEngine {
+			opts := engine.Options{CheckLatest: ec.checkLatest, Logger: logger}
+			if ec.exploitData && enricher != nil {
+				opts.Exploit = enricher
+			}
+			return engine.New(newAnalyzerRegistry(), lookup, opts)
 		},
 		now: func() time.Time { return testNow },
 	}
 }
+
+func realDeps(lookup engine.VulnLookup) scanDeps { return realDepsWith(lookup, nil) }
 
 // writeLodashProject writes an npm project pinning lodash@4.17.15 with a
 // lockfile v3.
@@ -86,6 +100,13 @@ type jsonReport struct {
 		FixedVersion *string  `json:"fixed_version"`
 		Ignored      bool     `json:"ignored"`
 	} `json:"findings"`
+	Recommendations []struct {
+		Package string   `json:"package"`
+		Current string   `json:"current"`
+		Upgrade string   `json:"upgrade"`
+		Fixes   []string `json:"fixes"`
+		Via     string   `json:"via"`
+	} `json:"recommendations"`
 }
 
 // The real engine and report path: aliased advisories become one finding,
@@ -166,5 +187,144 @@ func TestScanEmptyDirectoryWarnsAndPasses(t *testing.T) {
 	// The default table on stdout carries the warnings.
 	if !strings.Contains(stdout, "warning: no manifest or lockfile found under ") {
 		t.Fatalf("output lacks the empty-tree warning:\n%s", stdout)
+	}
+}
+
+// jqueryAdvisory answers like vulnerability.Lookup for jquery@3.4.1's
+// CVE-2020-11023, which CISA added to KEV on 2025-01-23.
+type jqueryAdvisory struct{}
+
+func (jqueryAdvisory) Lookup(_ context.Context, deps []*entity.Dependency) ([]*entity.Vulnerability, int, error) {
+	var vulns []*entity.Vulnerability
+	for _, d := range deps {
+		if d.Name == "jquery" {
+			v := entity.NewVulnerability(d.ID, "CVE-2020-11023", "Potential XSS vulnerability in jQuery", entity.SeverityMedium)
+			v.Aliases = []string{"BIT-drupal-2020-11023", "GHSA-jpcq-cgw6-v4j6"}
+			v.FixedVersion = ptr("3.5.0")
+			vulns = append(vulns, v)
+		}
+	}
+	return vulns, len(vulns), nil
+}
+
+func writeJQueryProject(t *testing.T, dir string) {
+	t.Helper()
+	writeFile(t, dir, "package.json", `{"name":"e2e","version":"1.0.0","dependencies":{"jquery":"3.4.1"}}`)
+	writeFile(t, dir, "package-lock.json", `{
+  "name": "e2e", "version": "1.0.0", "lockfileVersion": 3, "requires": true,
+  "packages": {
+    "": {"name": "e2e", "version": "1.0.0", "dependencies": {"jquery": "3.4.1"}},
+    "node_modules/jquery": {"version": "3.4.1", "resolved": "https://registry.npmjs.org/jquery/-/jquery-3.4.1.tgz"}
+  }
+}`)
+}
+
+// exploitServer answers like cisa.gov and api.first.org and counts requests.
+func exploitServer(t *testing.T) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var hits atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/kev.json", func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{"title":"CISA Catalog of Known Exploited Vulnerabilities","catalogVersion":"2026.10.14","count":1,
+"vulnerabilities":[{"cveID":"CVE-2020-11023","vendorProject":"JQuery","product":"JQuery","dateAdded":"2025-01-23","dueDate":"2025-02-13","knownRansomwareCampaignUse":"Unknown","cwes":["CWE-79"]}]}`))
+	})
+	mux.HandleFunc("/epss", func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{"status":"OK","status-code":200,"version":"1.0","total":1,"offset":0,"limit":1,
+"data":[{"cve":"CVE-2020-11023","epss":"0.848870000","percentile":"0.997100000","date":"2026-10-14"}]}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, &hits
+}
+
+func TestScanRealEngineAddsExploitData(t *testing.T) {
+	srv, hits := exploitServer(t)
+	enricher := exploit.NewEnricher(exploit.Config{KEVURL: srv.URL + "/kev.json", EPSSURL: srv.URL + "/epss"})
+	dir := t.TempDir()
+	writeJQueryProject(t, dir)
+
+	var out, errOut bytes.Buffer
+	code := runScan(context.Background(), []string{"--path", dir, "--format", "json", "--fail-on-kev"}, &out, &errOut, realDepsWith(jqueryAdvisory{}, enricher))
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (medium, but in KEV); stderr:\n%s", code, errOut.String())
+	}
+	var doc struct {
+		Findings []struct {
+			ID           string   `json:"id"`
+			KEV          bool     `json:"kev"`
+			KEVDateAdded *string  `json:"kev_date_added"`
+			EPSS         *float64 `json:"epss"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Findings) != 1 || !doc.Findings[0].KEV || *doc.Findings[0].KEVDateAdded != "2025-01-23" || *doc.Findings[0].EPSS != 0.84887 {
+		t.Fatalf("findings = %+v", doc.Findings)
+	}
+
+	before := hits.Load()
+	out.Reset()
+	code = runScan(context.Background(), []string{"--path", dir, "--format", "json", "--no-exploit-data"}, &out, &errOut, realDepsWith(jqueryAdvisory{}, enricher))
+	if code != 0 || hits.Load() != before || !strings.Contains(out.String(), `"kev": "disabled"`) {
+		t.Fatalf("--no-exploit-data: exit %d, %d requests; want 0 and none", code, hits.Load()-before)
+	}
+}
+
+// qsAdvisories answers for qs@6.7.0 with two advisories fixed in different
+// versions.
+type qsAdvisories struct{}
+
+func (qsAdvisories) Lookup(_ context.Context, deps []*entity.Dependency) ([]*entity.Vulnerability, int, error) {
+	var vulns []*entity.Vulnerability
+	n := 0
+	for _, d := range deps {
+		if d.Name != "qs" || d.CurrentVersion != "6.7.0" {
+			continue
+		}
+		n++
+		a := entity.NewVulnerability(d.ID, "CVE-2022-24999", "qs prototype poisoning", entity.SeverityHigh)
+		a.FixedVersion = ptr("6.7.3")
+		b := entity.NewVulnerability(d.ID, "GHSA-test-qs02", "test advisory", entity.SeverityMedium)
+		b.FixedVersion = ptr("6.9.0")
+		vulns = append(vulns, a, b)
+	}
+	return vulns, n, nil
+}
+
+// The real engine on the npm graph fixture: one upgrade for both advisories
+// of the nested qs, named with the direct dependency that pulls it in.
+func TestScanRecommendsTheSmallestUpgradeWithVia(t *testing.T) {
+	dir := t.TempDir()
+	lock, err := os.ReadFile(filepath.Join("..", "..", "internal", "infrastructure", "analyzer", "npm", "testdata", "lock-v3-graph", "package-lock.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "package-lock.json", string(lock))
+	writeFile(t, dir, "package.json", `{"name":"graph-app","version":"1.0.0","dependencies":{"express":"^4.17.1","qs":"^6.11.0"},"devDependencies":{"mocha":"^10.0.0"}}`)
+
+	code, stdout, stderr := runReal(t, qsAdvisories{}, "--path", dir, "--format", "json")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1; stderr:\n%s", code, stderr)
+	}
+	var rep jsonReport
+	if err := json.Unmarshal([]byte(stdout), &rep); err != nil {
+		t.Fatalf("%v\n%s", err, stdout)
+	}
+	if len(rep.Recommendations) != 1 {
+		t.Fatalf("recommendations = %+v, want one", rep.Recommendations)
+	}
+	r := rep.Recommendations[0]
+	if r.Package != "qs" || r.Current != "6.7.0" || r.Upgrade != "6.9.0" || r.Via != "express" ||
+		!slices.Equal(r.Fixes, []string{"CVE-2022-24999", "GHSA-test-qs02"}) {
+		t.Fatalf("recommendation = %+v", r)
+	}
+
+	_, stdout, _ = runReal(t, qsAdvisories{}, "--path", dir)
+	if !regexp.MustCompile(`qs@6\.7\.0\s+6\.9\.0\s+2\s+express\s+package-lock\.json`).MatchString(stdout) ||
+		!strings.Contains(stdout, "VIA is the direct dependency") {
+		t.Fatalf("table:\n%s", stdout)
 	}
 }

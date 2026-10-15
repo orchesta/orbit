@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"path"
 	"slices"
@@ -14,13 +15,17 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/orchesta/orbit/internal/infrastructure/analyzer"
+	"github.com/orchesta/orbit/internal/spdx"
 )
 
 // Lockfile parsers report every entry with IsDirect false: none of these
 // formats records directness for every entry, so Resolve derives it from the
 // package.json files the lockfile covers (which also handles workspaces).
 // Workspace packages and other linked folders are reported as Internal
-// entries, with their directories.
+// entries, with their directories. package-lock.json v2 and v3 entries also
+// carry Via, the direct dependencies that pull them in (see lockVia); the
+// other formats leave it nil. Via is also nil when the caller asks to skip
+// it (analyzer.ParseOptions) or the graph is too large (a warning).
 
 func isLockfile(p string) bool {
 	switch path.Base(p) {
@@ -89,7 +94,13 @@ type depSet struct {
 	deps  []analyzer.ParsedDependency
 }
 
-func (s *depSet) add(name, version string, dev bool) {
+func (s *depSet) add(name, version string, dev bool) { s.addVia(name, version, dev, nil, "") }
+
+// addVia is add with the direct dependencies that pull the entry in and the
+// license the lockfile records for it (a normalised SPDX expression or "").
+// A repeated name/version pair keeps the union of the Via names and the first
+// license it was given.
+func (s *depSet) addVia(name, version string, dev bool, via []string, license string) {
 	if name == "" || !isRegistryVersion(version) {
 		return
 	}
@@ -99,10 +110,16 @@ func (s *depSet) add(name, version string, dev bool) {
 	key := [2]string{name, version}
 	if i, ok := s.index[key]; ok {
 		s.deps[i].Dev = s.deps[i].Dev && dev
+		s.deps[i].Via = analyzer.MergeNames(s.deps[i].Via, via)
+		if s.deps[i].License == "" {
+			s.deps[i].License = license
+		}
 		return
 	}
 	s.index[key] = len(s.deps)
-	s.deps = append(s.deps, analyzer.ParsedDependency{Name: name, CurrentVersion: version, Resolved: true, Dev: dev})
+	s.deps = append(s.deps, analyzer.ParsedDependency{
+		Name: name, CurrentVersion: version, Resolved: true, Dev: dev, Via: analyzer.MergeNames(nil, via), License: license,
+	})
 }
 
 // addInternal records a package of the project itself (a workspace or a
@@ -159,13 +176,215 @@ type packageLock struct {
 }
 
 type lockPackage struct {
-	Name        string `json:"name"`
-	Version     string `json:"version"`
-	Resolved    string `json:"resolved"`
-	Link        bool   `json:"link"`
-	Dev         bool   `json:"dev"`
-	DevOptional bool   `json:"devOptional"`
+	Name        string          `json:"name"`
+	Version     string          `json:"version"`
+	Resolved    string          `json:"resolved"`
+	Link        bool            `json:"link"`
+	Dev         bool            `json:"dev"`
+	DevOptional bool            `json:"devOptional"`
+	License     json.RawMessage `json:"license"`
+	// Dependency maps, kept raw: only their keys are used, and a value of
+	// an unexpected shape must not fail the whole lockfile.
+	Dependencies         json.RawMessage `json:"dependencies"`
+	DevDependencies      json.RawMessage `json:"devDependencies"`
+	OptionalDependencies json.RawMessage `json:"optionalDependencies"`
+	PeerDependencies     json.RawMessage `json:"peerDependencies"`
 }
+
+// lockLicense returns the license npm copied from a package's package.json
+// into the lockfile, normalised: usually an SPDX string, in old packages an
+// object {"type": "MIT", "url": ...}. Anything else, or a value that is not
+// SPDX ("SEE LICENSE IN ...", "UNLICENSED"), is "".
+func lockLicense(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return spdx.Normalize(s)
+	}
+	var obj struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &obj) == nil {
+		return spdx.Normalize(obj.Type)
+	}
+	return ""
+}
+
+// requiredNames returns the names a packages entry depends on: its
+// dependencies, optionalDependencies and peerDependencies, and for a
+// project folder its devDependencies. A map that is not a JSON object is
+// ignored.
+func (p lockPackage) requiredNames(projectFolder bool) []string {
+	fields := []json.RawMessage{p.Dependencies, p.OptionalDependencies, p.PeerDependencies}
+	if projectFolder {
+		fields = append(fields, p.DevDependencies)
+	}
+	var names []string
+	for _, raw := range fields {
+		if len(raw) == 0 {
+			continue
+		}
+		var m map[string]json.RawMessage
+		if json.Unmarshal(raw, &m) != nil {
+			continue
+		}
+		for n := range m {
+			names = append(names, n)
+		}
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
+// isProjectFolder reports whether a packages key is the root ("") or a
+// workspace folder, rather than an installed package under node_modules.
+func isProjectFolder(key string) bool {
+	return key == "" || !(strings.HasPrefix(key, "node_modules/") || strings.Contains(key, "/node_modules/"))
+}
+
+// resolveLockDep finds the packages key that name resolves to when required
+// from the entry at from, as Node does: from's own node_modules first, then
+// each parent folder's, up to the root.
+func resolveLockDep(pkgs map[string]lockPackage, from, name string) (string, bool) {
+	dir := from
+	if dir == "" {
+		dir = "."
+	}
+	for {
+		if path.Base(dir) != "node_modules" {
+			key := path.Join(dir, "node_modules", name)
+			if _, ok := pkgs[key]; ok {
+				return key, true
+			}
+		}
+		parent := path.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+// lockVia returns, for each packages key of a lockfile v2 or v3, the
+// sorted names of the direct dependencies that pull it in. Direct
+// dependencies are the names the root and the workspace folders declare;
+// the walk follows the dependency maps of each entry (see requiredNames)
+// and resolves names with resolveLockDep. An entry a project folder
+// declares gets no names, since it is direct; links (workspaces) are not
+// followed, since their folders are project folders themselves. Entries
+// nothing reaches are left out.
+//
+// Each edge is resolved once. The walk runs once per distinct direct
+// dependency name, starting from every entry that name resolves to (the
+// root and a workspace may each have their own copy), so the work is
+// O(names x reachable edges): a shared transitive dependency is visited
+// once per name that reaches it, which is also the size of its Via. The
+// walks share one visit stamp per entry instead of a set per walk.
+//
+// That work is quadratic in the size of the lockfile, so it is bounded:
+// past maxViaNames names in all, or maxViaSteps edges followed, lockVia
+// stops and returns ok false and no names at all, since a partial Via
+// would leave out paths.
+func lockVia(pkgs map[string]lockPackage) (via map[string][]string, ok bool) {
+	return lockViaWithin(pkgs, maxViaNames, maxViaSteps)
+}
+
+// The bounds of lockVia. A lockfile at the names bound already holds about
+// 16 MB of Via. The steps bound stops walks that record few names but cross
+// a large graph many times, such as one whose entries are mostly direct;
+// npm entries have a handful of dependencies each, so a lockfile within
+// the names bound rarely comes near it.
+const (
+	maxViaNames = 1_000_000
+	maxViaSteps = 20_000_000
+)
+
+// lockViaWithin is lockVia with its bounds.
+func lockViaWithin(pkgs map[string]lockPackage, maxNames, maxSteps int) (map[string][]string, bool) {
+	keys := make([]string, 0, len(pkgs))
+	for key := range pkgs {
+		keys = append(keys, key)
+	}
+	index := make(map[string]int, len(keys))
+	for i, key := range keys {
+		index[key] = i
+	}
+
+	edges := make([][]int, len(keys))
+	direct := make([]bool, len(keys))
+	starts := make(map[string][]int) // direct dependency name -> entries it resolves to
+	for i, key := range keys {
+		pkg := pkgs[key]
+		if pkg.Link {
+			continue
+		}
+		project := isProjectFolder(key)
+		for _, name := range pkg.requiredNames(project) {
+			target, ok := resolveLockDep(pkgs, key, name)
+			if !ok || pkgs[target].Link {
+				continue
+			}
+			t := index[target]
+			if project {
+				starts[name] = append(starts[name], t)
+				direct[t] = true
+			} else {
+				edges[i] = append(edges[i], t)
+			}
+		}
+	}
+
+	// Names are walked in order and each walk reaches an entry at most
+	// once, so every via list comes out sorted and without repeats.
+	via := make([][]string, len(keys))
+	stamp := make([]int, len(keys)) // the last walk (1-based) that reached each entry
+	var stack []int
+	names, steps := 0, 0
+	for i, name := range slices.Sorted(maps.Keys(starts)) {
+		walk := i + 1
+		stack = stack[:0]
+		for _, s := range starts[name] {
+			if stamp[s] != walk {
+				stamp[s] = walk
+				stack = append(stack, s)
+			}
+		}
+		for len(stack) > 0 {
+			k := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			steps += len(edges[k])
+			if steps > maxSteps {
+				return nil, false
+			}
+			for _, t := range edges[k] {
+				if stamp[t] == walk {
+					continue
+				}
+				stamp[t] = walk
+				stack = append(stack, t)
+				if !direct[t] {
+					if names++; names > maxNames {
+						return nil, false
+					}
+					via[t] = append(via[t], name)
+				}
+			}
+		}
+	}
+	out := make(map[string][]string)
+	for i, v := range via {
+		if v != nil {
+			out[keys[i]] = v
+		}
+	}
+	return out, true
+}
+
+// viaSkipped is the warning for a lockfile whose graph is too large for
+// lockVia.
+const viaSkipped = "dependency paths (VIA) skipped: the lockfile graph is too large"
 
 type lockV1Dep struct {
 	Version      string               `json:"version"`
@@ -173,15 +392,25 @@ type lockV1Dep struct {
 	Dependencies map[string]lockV1Dep `json:"dependencies"`
 }
 
-func parsePackageLock(content []byte) ([]analyzer.ParsedDependency, error) {
+// parsePackageLock reads package-lock.json and npm-shrinkwrap.json. Via is
+// left out with opts.SkipVia, or with a warning when the graph is too large.
+func parsePackageLock(content []byte, opts analyzer.ParseOptions) ([]analyzer.ParsedDependency, []string, error) {
 	var lock packageLock
 	if err := json.Unmarshal(content, &lock); err != nil {
-		return nil, fmt.Errorf("failed to parse package-lock.json: %w", err)
+		return nil, nil, fmt.Errorf("failed to parse package-lock.json: %w", err)
 	}
 
 	var set depSet
 	if len(lock.Packages) > 0 {
 		// lockfileVersion 2 and 3.
+		var via map[string][]string
+		var warnings []string
+		if !opts.SkipVia {
+			var ok bool
+			if via, ok = lockVia(lock.Packages); !ok {
+				warnings = append(warnings, viaSkipped)
+			}
+		}
 		const marker = "node_modules/"
 		for key, pkg := range lock.Packages {
 			i := strings.LastIndex(key, marker)
@@ -201,9 +430,9 @@ func parsePackageLock(content []byte) ([]analyzer.ParsedDependency, error) {
 			if pkg.Name != "" {
 				name = pkg.Name // an aliased install: the real package
 			}
-			set.add(name, pkg.Version, pkg.Dev || pkg.DevOptional)
+			set.addVia(name, pkg.Version, pkg.Dev || pkg.DevOptional, via[key], lockLicense(pkg.License))
 		}
-		return set.sorted(), nil
+		return set.sorted(), warnings, nil
 	}
 
 	// lockfileVersion 1.
@@ -219,7 +448,7 @@ func parsePackageLock(content []byte) ([]analyzer.ParsedDependency, error) {
 		}
 	}
 	walk(lock.Dependencies)
-	return set.sorted(), nil
+	return set.sorted(), nil, nil
 }
 
 // ---- yarn.lock ----

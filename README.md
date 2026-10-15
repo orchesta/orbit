@@ -30,9 +30,11 @@ The backend is Go, the UI is React, and the database is PostgreSQL. Orbit is an 
 - Go modules, npm (npm, yarn v1 and berry, pnpm), Python (requirements files, Pipfile, Poetry, uv, `pyproject.toml`) and NuGet.
 - Uses lockfiles for exact versions, including transitive dependencies. Manifest-only projects get an estimated version and a warning.
 - Vulnerability data from osv.dev. Outdated-version checks against npm, PyPI, NuGet and the Go module proxy.
+- Exploit signals: each finding with a CVE ID is marked when it is in CISA's Known Exploited Vulnerabilities (KEV) catalog and carries its FIRST EPSS score, so you can see what to fix first.
 - Server: imports repositories from GitHub, GitLab and Azure DevOps (Services and Server), scans them on a cron schedule per repository with a bounded worker pool, and shows a dashboard, a vulnerability list and scan history.
-- CLI: `orbit scan` with `table`, `json`, `sarif` and `junit` output, a severity threshold, documented exit codes, and an `.orbitignore` file for accepted findings with optional expiry dates.
+- CLI: `orbit scan` with `table`, `json`, `sarif`, `junit`, `cyclonedx` and `spdx` output, a severity threshold, documented exit codes, an upgrade recommendation per vulnerable package, and an `.orbitignore` file for accepted findings with optional expiry dates.
 - Flags known malicious packages (OpenSSF Malicious Packages, `MAL-` advisories on osv.dev) separately. They fail `orbit scan` at every `--fail-on` level except `none`.
+- Dependency licenses as SPDX expressions, from npm lockfiles and optionally from deps.dev, with a `--deny-license` policy in the CLI.
 - Ready-made CI templates for GitHub Actions, GitLab CI and Azure Pipelines (Azure DevOps Services and Server 2020+).
 - Access tokens are encrypted at rest (AES-256-GCM). First-run setup is protected by a setup token. Failed logins are rate-limited.
 
@@ -42,7 +44,7 @@ The backend is Go, the UI is React, and the database is PostgreSQL. Orbit is an 
 | --- | --- | --- |
 | Use it for | Continuous monitoring of many repositories | Checking a build in CI, or a local checkout |
 | What it scans | Clones each repository's configured branch | A directory that is already on disk |
-| Needs | PostgreSQL, a JWT secret, an encryption key | Nothing except outbound HTTPS to `api.osv.dev` |
+| Needs | PostgreSQL, a JWT secret, an encryption key | Outbound HTTPS to `api.osv.dev`; also `www.cisa.gov` and `api.first.org` for exploit data unless `--no-exploit-data`, and `api.deps.dev` with `--licenses` |
 | Interface | Web UI on port 8080, REST API under `/api/v1` | Report on stdout or in a file, exit code 0/1/2 |
 | Triggers | Cron schedule per repository, or **Scan Now** in the UI | Every pipeline run |
 | Outdated versions | Always checked | Only with `--outdated` |
@@ -129,32 +131,49 @@ chmod +x "$ASSET" && sudo mv "$ASSET" /usr/local/bin/orbit
 ### Usage
 
 ```bash
-orbit scan                                   # current directory, table on stdout, fail on high or critical
+orbit scan                                   # current directory, table on stdout, fail on high or critical (and malicious packages)
 orbit scan --path services/api               # one part of a monorepo
-orbit scan --fail-on critical                # fail only on critical findings
+orbit scan --fail-on critical                # fail only on critical findings (and malicious packages)
 orbit scan --format sarif --out orbit.sarif  # also: json, junit
+orbit scan --format cyclonedx --out orbit.cdx.json --fail-on none  # SBOM; also: spdx
 orbit scan --outdated                        # also check for newer versions
+orbit scan --fail-on-kev                     # also fail on anything CISA lists as exploited
+orbit scan --no-exploit-data                 # no requests to cisa.gov or api.first.org
+orbit scan --licenses                        # look up missing licenses on deps.dev and show them
+orbit scan --deny-license GPL-3.0-only,AGPL-3.0-only   # fail on a dependency that can only be used under these
 ```
 
 ```
-SEVERITY  ID              PACKAGE         FIXED    MANIFEST
-HIGH      CVE-2020-8203   lodash@4.17.15  4.17.19  package-lock.json
-HIGH      CVE-2021-23337  lodash@4.17.15  4.18.0   package-lock.json
-MEDIUM    CVE-2020-28500  lodash@4.17.15  4.17.21  package-lock.json
-MEDIUM    CVE-2025-13465  lodash@4.17.15  4.18.0   package-lock.json
+SEVERITY  KEV  EPSS   ID              PACKAGE         FIXED    MANIFEST
+HIGH      -    21.3%  CVE-2021-23337  lodash@4.17.15  4.18.0   package-lock.json
+HIGH      -    5.2%   CVE-2020-8203   lodash@4.17.15  4.17.19  package-lock.json
+MEDIUM    -    7.3%   CVE-2020-28500  lodash@4.17.15  4.17.21  package-lock.json
+MEDIUM    -    1.9%   CVE-2025-13465  lodash@4.17.15  4.18.0   package-lock.json
+
+PACKAGE         UPGRADE TO  FIXES  VIA  MANIFEST
+lodash@4.17.15  4.18.0      4      -    package-lock.json
+Each upgrade is the lowest version at or above every known fix for that package. It can still break your build; check the release notes. Orbit does not check that the version exists or that no other advisory affects it.
 
 1 dependencies, 1 vulnerable (2 high, 2 medium)
 threshold high: FAILED
 ```
 
+After the findings, the table recommends one upgrade per installed package: the lowest version at or above the fixed versions of all its advisories. Advisories without a known fix are listed by ID, and a package reported as malicious is marked for removal. For npm `package-lock.json` (lockfile versions 2 and 3), `VIA` names the direct dependency that pulls a transitive package in; other lockfiles leave it empty, and so does a lockfile whose dependency graph is too large to walk, with a warning. The JSON report has the same data under `recommendations`; ignored findings are not included. These are hints, not tested upgrades: Orbit does not check that the version exists, that no other advisory affects it, or that your other dependencies accept it.
+
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--path` | `.` | Directory to scan |
 | `--fail-on` | `high` | `critical`, `high`, `medium`, `low`, `unknown` or `none`; a known malicious package fails at every value except `none` |
-| `--format` | `table` | `table`, `json`, `sarif` or `junit` |
+| `--format` | `table` | `table`, `json`, `sarif`, `junit`, `cyclonedx` or `spdx` |
+| `--sbom-name` | the `--path` directory name | Project name in a `cyclonedx` or `spdx` report |
 | `--out` | `-` (stdout) | Report file |
 | `--ignore-file` | `<path>/.orbitignore` if it exists | Accepted findings; `""` disables it |
+| `--baseline` | none | Earlier `orbit scan --format json` report; only findings that are not in it fail the scan (see [below](#only-new-findings---baseline)) |
 | `--outdated` | off | Also ask the registries for the latest versions |
+| `--licenses` | off | Look up on deps.dev the licenses that the lockfiles do not record, and add a LICENSE column to the findings table |
+| `--deny-license` | none | Comma-separated SPDX license IDs. A dependency whose license expression cannot be satisfied without one of them fails the scan (exit 1); an empty value means no policy; see [Licenses](#licenses) |
+| `--fail-on-kev` | off | Also exit 1 on any finding in the CISA KEV catalog, whatever its severity |
+| `--no-exploit-data` | off | Do not download the KEV catalog or ask api.first.org for EPSS scores |
 | `--timeout` | `10m` | Give up after this long |
 | `--quiet` / `--verbose` | off | Less or more progress on stderr |
 
@@ -162,11 +181,39 @@ threshold high: FAILED
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Clean, or every finding is below `--fail-on` or ignored, and none is a malicious package (or `--fail-on none`) |
-| 1 | At least one finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`) |
-| 2 | The scan could not complete: osv.dev unreachable, timeout, bad flag, missing or invalid ignore file |
+| 0 | No finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV (with `--baseline`, only findings that are not in the baseline count, except malicious packages, which count even when the baseline lists them); and no dependency has a license that `--deny-license` denies and `.orbitignore` does not accept |
+| 1 | At least one finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV (with `--baseline`, only findings that are not in the baseline count, except malicious packages, which count even when the baseline lists them); or a dependency has a license that `--deny-license` denies and `.orbitignore` does not accept |
+| 2 | The scan could not complete: osv.dev unreachable, timeout, bad flag, missing or invalid ignore file or baseline, `--fail-on-kev` without the KEV catalog, or, with `--deny-license`, a failed license lookup |
 
-On exit 2 nothing is written to stdout and an existing `--out` file is deleted, so a stale report is never uploaded. An osv.dev failure never counts as "no vulnerabilities".
+On exit 2 nothing is written to stdout. A command-line error (an unknown flag or argument, an invalid `--fail-on`, `--format`, `--timeout` or `--deny-license`, flags that conflict, or `--out` naming the `--baseline` file) leaves `--out` alone, because a mistyped command line may name any file. Every other exit 2 is a scan that started and could not complete (a missing `--path`, ignore file or baseline included); it deletes an existing `--out` file, so a stale report is never uploaded. An osv.dev failure never counts as "no vulnerabilities".
+
+### Licenses
+
+Orbit reports each dependency's license as an SPDX expression in the JSON report (`dependencies[].license`, `""` when unknown). In table format, `--licenses` adds a LICENSE column to the findings table only, so a scan with no vulnerable dependencies shows no licenses apart from license policy violations. Use `--format json` to see the license of every dependency.
+
+- npm `package-lock.json` (v2 and v3) records licenses, so npm projects get them without any network request. Other lockfiles (yarn, pnpm, Poetry, uv, Pipfile.lock, NuGet `packages.lock.json`) and `go.mod` do not.
+- `--licenses` looks up the rest on [deps.dev](https://deps.dev) (Open Source Insights), for exact versions only: lockfile entries, `go.mod`, `==` pins and NuGet references with a plain version. Manifest ranges stay unknown. deps.dev reports `non-standard` for licenses without an SPDX identifier; Orbit shows those as unknown too. A lockfile license that is not SPDX counts as not recorded, so npm packages whose lockfile says `UNLICENSED` or `SEE LICENSE IN ...` (often private packages) are looked up as well, and their names and versions are sent to deps.dev.
+- Values that are not SPDX, such as `SEE LICENSE IN LICENSE.md`, `UNLICENSED` or `BSD`, are unknown. Deprecated GNU identifiers are normalised to their current form: `GPL-3.0` is `GPL-3.0-only`, `GPL-3.0+` is `GPL-3.0-or-later`, and the seven `GPL-x.y-with-<name>-exception` identifiers become a license with an exception (`GPL-2.0-with-classpath-exception` is `GPL-2.0-only WITH Classpath-exception-2.0`).
+- `--deny-license` takes identifiers from the [SPDX License List](https://spdx.org/licenses/) (3.29.0) and `LicenseRef-` identifiers. A trailing `+` is allowed only on GNU identifiers, where it means "or later" (`LGPL-2.1+` is `LGPL-2.1-or-later`). The deprecated `GPL-x.y-with-<name>-exception` identifiers are refused; name the license, such as `GPL-2.0-only`. An empty value means no policy. `A OR B` is denied only when both A and B are denied, because you may use the package under either; `A AND B` is denied when either is. An exception does not change the verdict: denying `GPL-2.0-only` denies `GPL-2.0-only WITH Classpath-exception-2.0`. `GPL-3.0-only` and `GPL-3.0-or-later` are different identifiers: list both if you mean both.
+- A dependency with an unknown license cannot be checked. It is counted in a warning, and does not fail the scan.
+- License data is what the package authors declared. It is not legal advice.
+
+`--deny-license` alone sends nothing to deps.dev: it checks the licenses the lockfiles record. With `--licenses` as well, a failed deps.dev lookup stops the scan with exit 2, because a license that could not be looked up would otherwise pass as allowed. The policy is separate from `--fail-on`, so it applies with `--fail-on none` too, and `--baseline` does not filter it. The table lists the violations and reports the verdict on a `license policy (deny ...)` line that says `passed` or `FAILED`; JSON has `license_violations` and `summary.license_failed`, SARIF a `license/<ID>` rule per denied license, and JUnit a test case per violation.
+
+The server stores each dependency's license with the scan and returns it from `GET /api/v1/scans/{id}/dependencies`. Licenses from npm lockfiles are always stored. deps.dev lookups are off by default; set `scanner.licenses: true` (`ORBIT_SCANNER_LICENSES=true`) to turn them on. The server has no license policy: it shows licenses but does not fail or flag scans because of them.
+
+### Exploit signals: CISA KEV and FIRST EPSS
+
+For every finding with a CVE ID (as its ID or an alias), Orbit adds:
+
+- **KEV**: the CVE is in CISA's [Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) catalog, which means exploitation in the wild has been reported, and the date CISA listed it.
+- **EPSS**: FIRST's [Exploit Prediction Scoring System](https://www.first.org/epss/) estimate of the probability of exploitation activity in the next 30 days, with its percentile.
+
+Severity and `--fail-on` do not change. Within one severity, findings in KEV come first, then higher EPSS. `--fail-on-kev` adds a second gate: any finding in KEV that is not ignored fails the build, even a low one. The table reports the two gates on separate lines, `threshold <level>` for `--fail-on` and malicious packages and `fail on KEV` for `--fail-on-kev`; the build fails if either says `FAILED`.
+
+If cisa.gov or api.first.org cannot be reached, the scan still completes and prints a warning, and the findings lack that signal; `summary.exploit_data` in the JSON report says which source answered, and without the catalog the table's KEV column shows `?`. The exception is `--fail-on-kev`: without the catalog that gate cannot be checked, so the scan exits 2.
+
+Advisories without a CVE ID (some GHSA-only advisories, all `MAL-` records) have no exploit signals. EPSS is a probability, not a verdict; a low score does not mean a vulnerability is safe to ignore.
 
 ### `.orbitignore`
 
@@ -176,6 +223,8 @@ Accept a finding on purpose, with a reason, instead of lowering the threshold:
 # <advisory-id> [expires=YYYY-MM-DD] [package=<name>] reason...
 GHSA-xxxx-yyyy-zzzz  expires=2026-12-31  Not reachable: only used in tests
 CVE-2024-1234        package=lodash      Accepted until the upgrade, see JIRA-12
+# license:<SPDX-ID> package=<name> [expires=YYYY-MM-DD] reason...
+license:GPL-3.0-only  package=readline  expires=2027-06-30  Legal approved, LEGAL-42
 ```
 
 - Put the file at the root of the scanned directory, or pass it with `--ignore-file`. Blank lines and lines starting with `#` are ignored.
@@ -185,6 +234,22 @@ CVE-2024-1234        package=lodash      Accepted until the upgrade, see JIRA-12
 - Entries do not apply to malicious packages (see below). A matching entry produces a `not applied` warning instead.
 - A malformed line is an error (exit 2) that names the line. Entries that never matched produce an `unused ignore entry` warning.
 - Ignored findings still appear in the reports, marked as ignored.
+- `license:<SPDX-ID> package=<name>` accepts one license for one package under `--deny-license`. `package=` is required. The violation still appears in the reports, marked as ignored. If the expression also needs denied licenses that no entry accepts, the violation stays active and names only the licenses that are still denied. License entries never suppress advisories.
+
+### Only new findings: `--baseline`
+
+On a project that already has known vulnerabilities, `--baseline` lets a pull request fail only on the findings it introduces, while every finding is still reported. The baseline is an earlier JSON report, usually from the default branch:
+
+```bash
+orbit scan --format json --fail-on none --out orbit-baseline.json   # on the default branch
+orbit scan --baseline orbit-baseline.json                           # on a pull request
+```
+
+- A finding is **existing** when the baseline has a finding on the same ecosystem and package that shares an advisory ID or alias with it. Package names are compared the way `.orbitignore` compares them (PEP 503 for PyPI, case-insensitive for NuGet, exact otherwise). Versions and manifests are not compared: upgrading a package that stays vulnerable does not make its finding new, and neither does the same advisory on the same package in another manifest of the repository.
+- Only new findings that are not ignored and reach `--fail-on` (or, with `--fail-on-kev`, are in CISA KEV) cause exit 1. Malicious packages are the exception: they fail the scan even when the baseline lists them. The table, JSON, SARIF and JUnit formats show which findings are new (CycloneDX and SPDX do not): `(new)` on new rows of the table and `N new` in its summary, `"new"` in JSON (without `--baseline` every finding is new), `baselineState` `new` or `unchanged` in SARIF, and in JUnit a skipped test case instead of a failure for an existing finding.
+- An advisory published after the baseline was written is new, even on a package the pull request did not touch. Refresh the baseline regularly, for example with a scheduled run on the default branch.
+- The baseline is any JSON report with `schema_version` 1, from any Orbit version; the version that wrote it is shown on stderr. A missing, empty or malformed file is an error (exit 2). On a first run, when there is no baseline yet, leave the flag out; the CI setups in [New findings only, in CI](#new-findings-only-in-ci) download and store the baseline and do that for you. `--out` cannot name the baseline file.
+- Findings the baseline lists do not fail the build (malicious packages still do), so treat it as trusted input and take it only from runs of your protected default branch.
 
 ### Malicious packages
 
@@ -199,11 +264,34 @@ osv.dev also serves the [OpenSSF Malicious Packages](https://github.com/ossf/mal
 SEVERITY              ID              PACKAGE      FIXED  MANIFEST
 CRITICAL (malicious)  MAL-2025-46969  chalk@5.6.1  -      package-lock.json
 
+remove chalk@5.6.1: reported as malicious (MAL-2025-46969)
+
 1 dependencies, 1 vulnerable (1 critical), 1 malicious
 threshold high: FAILED
 ```
 
 A malicious package version was published with harmful code on purpose. Upgrading may not be enough: remove it, and treat machines and CI runners that installed it as compromised.
+
+### SBOM: CycloneDX and SPDX
+
+`--format cyclonedx` writes a [CycloneDX 1.6](https://cyclonedx.org/docs/1.6/json/) JSON BOM and `--format spdx` an [SPDX 2.3](https://spdx.github.io/spdx-spec/v2.3/) JSON document:
+
+```bash
+orbit scan --format cyclonedx --out orbit.cdx.json --fail-on none
+orbit scan --format spdx --out orbit.spdx.json --fail-on none --sbom-name acme/shop
+```
+
+- Each dependency becomes one component (CycloneDX) or package (SPDX) with a [package URL](https://github.com/package-url/purl-spec), for example `pkg:npm/%40types/node@20.1.0`, `pkg:pypi/django@3.0.0`, `pkg:nuget/Newtonsoft.Json@13.0.1` or `pkg:golang/github.com/BurntSushi/toml@v1.6.0`. A package found in several manifests appears once; the manifests are listed as evidence (CycloneDX) or in `sourceInfo` (SPDX).
+- A version that is a range or a wildcard, as in a manifest without a lockfile, stays the component version but is left out of the purl. In CycloneDX, the `orbit:resolved` property says whether a lockfile pinned the version.
+- Dev-only dependencies have the scope `optional` in CycloneDX. In SPDX, a direct dev-only dependency has a `DEV_DEPENDENCY_OF` relationship; a transitive one has none (see below).
+- Licenses are included when Orbit knows them: from npm lockfiles, or from deps.dev with `--licenses`. When some dependencies have no license, the run says how many on stderr and suggests `--licenses`; the lookup stays off unless you ask for it, because it sends package names and versions to deps.dev (see [Licenses](#licenses)). SPDX gets only expressions built from SPDX license list IDs; anything else becomes `NOASSERTION`. CycloneDX also keeps expressions with `LicenseRef-` identifiers.
+- The dependency graph lists only the project's direct dependencies. Orbit does not record which package pulled in a transitive one, so transitive packages have no edges.
+- CycloneDX includes the vulnerabilities, each with its osv.dev source, severity, aliases, advisory links, the affected component and the fixed version. A known malicious package gets a recommendation to remove or replace it instead of an upgrade, in each of its advisories. Findings ignored by `.orbitignore` are kept with `analysis.state` `exploitable` and `response` `will_not_fix`, with the `.orbitignore` reason in `detail`. KEV and EPSS signals, `--baseline` results and license policy violations are not included; use JSON or SARIF for them.
+- SPDX 2.3 has no vulnerability section, so the SPDX document has none; use CycloneDX, JSON or SARIF for them.
+- An SBOM run still looks up vulnerabilities and applies `--fail-on`, `--fail-on-kev`, `--baseline` and `--deny-license`, with the same exit codes, so one step can write the SBOM and gate the build. `--baseline` changes only the exit code; the SBOM lists every vulnerability. Pass `--fail-on none` and no `--deny-license` when you only want the file. If osv.dev cannot be reached the run exits 2 and writes no file, for SPDX as well, and an existing `--out` file is removed.
+- The document goes to stdout or `--out`; the summary and warnings go to stderr.
+- The project is named after the `--path` directory. In a container that is the mount point (for example `src`), so pass `--sbom-name`.
+- Every run gets a new serial number and timestamp, so two SBOMs of the same tree differ in those fields.
 
 ## Quick start: CI
 
@@ -220,6 +308,7 @@ steps:
   - uses: orchesta/orbit@v1.0.0
     with:
       fail-on: high
+      fail-on-kev: "true"   # optional: also fail on anything CISA lists as exploited
       version: v1.0.0
   - if: always() && hashFiles('orbit.sarif') != ''
     uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
@@ -229,12 +318,84 @@ steps:
 
 `v1.0.0` is a placeholder for a real release tag. Pin it in both places: `version` is the tag of the `orchestalabs/orbit-cli` image the action runs, and a major ref such as `@v1` has no image tag. The action writes `orbit.sarif` by default. A complete workflow is in [`.github/examples/orbit-scan.yml`](.github/examples/orbit-scan.yml), and the action's inputs are in [`action.yml`](action.yml).
 
+For an SBOM instead of SARIF, set `format: cyclonedx` (writes `orbit.cdx.json`) or `format: spdx` (writes `orbit.spdx.json`). The project in the SBOM is named after the repository unless `sbom-name` is set. The SBOM comes from the action's main scan, so `fail-on` and the other inputs apply to it as usual; `baseline-output` adds a second scan that writes only the JSON baseline. To get both SARIF and an SBOM, use the action twice:
+
+```yaml
+  - uses: orchesta/orbit@v1.0.0
+    with:
+      format: cyclonedx
+      fail-on: none
+      version: v1.0.0
+  - if: always() && hashFiles('orbit.cdx.json') != ''
+    uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+    with:
+      name: sbom
+      path: orbit.cdx.json
+```
+
+To check licenses as well, add `deny-license: GPL-3.0-only,AGPL-3.0-only` (the SPDX IDs to fail on) and, to look up on deps.dev the licenses that lockfiles do not record, `licenses: "true"`. See [Licenses](#licenses) for how the policy is evaluated.
+
 The templates pull `orchestalabs/orbit-cli` from Docker Hub, which limits pulls by anonymous users. If many pipelines share one IP address, log in to Docker Hub in the job (`docker login`) or mirror the image to your own registry (`imageName` in the Azure template, the `image` of the GitLab job).
+
+### New findings only, in CI
+
+The GitHub Action, the GitLab template and the Azure Pipelines template have a baseline mode. Runs of the default branch scan as usual, also write `orbit-baseline.json` and store it. Their findings are reported but do not fail the run: on the default branch every finding is an existing one, so exit 1 becomes a warning there (the action does this whenever it writes `baseline-output`). That includes exit 1 for a denied license. Errors (exit 2) still fail it, and on GitLab and Azure Pipelines so does a failed `orbit-baseline.json` scan: a failed job leaves the previous successful run's baseline in place, while a passing job without the file would become the latest successful run and leave pull requests with no baseline. The GitHub Action only warns then: without the file the save step is skipped and the previous cache keeps serving. Pull and merge requests fetch the newest stored baseline and fail only on new findings, on malicious packages and on denied licenses (the baseline does not filter license violations). When there is none yet (the first run, or it expired) they warn and every finding counts. Schedule a daily run of the default branch so advisories published since the last merge are part of the baseline.
+
+**GitHub Actions** uses the cache: a pull request can restore caches of its base branch, also from forks, and caches written by pull requests stay scoped to them, so a pull request cannot replace the baseline. Any workflow that runs in the default branch's cache scope, such as `pull_request_target` or `workflow_run`, can save an `orbit-baseline-*` key, and `restore-keys` takes the newest one, so do not run such workflows on untrusted input. GitHub removes caches nobody used for 7 days. The full workflow is [`.github/examples/orbit-scan-baseline.yml`](.github/examples/orbit-scan-baseline.yml); the parts that matter:
+
+```yaml
+- env:
+    ORBIT_BASELINE_FILE: orbit-baseline.json
+  run: rm -f -- "$ORBIT_BASELINE_FILE"   # only the cache may provide the baseline
+- if: github.event_name == 'pull_request'
+  uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+  with:
+    path: orbit-baseline.json
+    key: orbit-baseline-${{ github.run_id }}
+    restore-keys: orbit-baseline-
+- uses: orchesta/orbit@v1.0.0
+  with:
+    version: v1.0.0
+    fail-on: high
+    baseline: ${{ github.event_name == 'pull_request' && 'orbit-baseline.json' || '' }}
+    baseline-output: ${{ github.event_name != 'pull_request' && 'orbit-baseline.json' || '' }}
+- if: always() && github.event_name != 'pull_request' && hashFiles('orbit-baseline.json') != ''
+  uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+  with:
+    path: orbit-baseline.json
+    key: orbit-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+```
+
+**GitLab CI**: set `ORBIT_BASELINE: auto`. The default branch keeps `orbit-baseline.json` as a job artifact, written by a third scan. Other pipelines download it from the latest successful pipeline of the merge request's target branch (outside merge requests: the default branch) through the job artifacts API with `CI_JOB_TOKEN`; this works on every tier and needs no `needs:project`. GitLab keeps the artifacts of a branch's latest successful pipeline regardless of `expire_in` (unless "Keep artifacts from most recent successful jobs" is turned off). If your job has another name on the default branch, set `ORBIT_BASELINE_JOB`. `ORBIT_BASELINE` can also be a path to a report you provide yourself.
+
+```yaml
+include:
+  - remote: 'https://raw.githubusercontent.com/orchesta/orbit/v1.0.0/ci/gitlab/orbit.gitlab-ci.yml'
+variables:
+  ORBIT_VERSION: v1.0.0
+  ORBIT_BASELINE: auto
+```
+
+**Azure Pipelines**: set `baseline: true` and, if your default branch is not `main`, `baselineBranch` (a full ref such as `refs/heads/develop`). Builds of that branch publish `orbit-baseline.json` as the build artifact `orbit-baseline`; other builds download it from the latest successful or partially succeeded build of the same pipeline on that branch. Build artifacts are used because pipeline artifacts are not available on Azure DevOps Server. A first run has nothing to download, so that step fails softly and the build shows as partially succeeded. [`example.yml`](ci/azure-pipelines/example.yml) also schedules the daily build.
+
+```yaml
+- template: ci/azure-pipelines/orbit-scan.yml
+  parameters:
+    version: v1.0.0
+    baseline: true
+    baselineBranch: refs/heads/main
+```
 
 ### GitLab CI and Azure Pipelines
 
-- GitLab CI: include [`ci/gitlab/orbit.gitlab-ci.yml`](ci/gitlab/orbit.gitlab-ci.yml). It writes a JUnit report for the merge request and a SARIF artifact.
-- Azure Pipelines: use the step template [`ci/azure-pipelines/orbit-scan.yml`](ci/azure-pipelines/orbit-scan.yml) (example: [`example.yml`](ci/azure-pipelines/example.yml)). It works on Azure DevOps Services and on Azure DevOps Server 2020 and later, in a container or with a downloaded, checksum-verified binary (Windows agents too).
+- GitLab CI: include [`ci/gitlab/orbit.gitlab-ci.yml`](ci/gitlab/orbit.gitlab-ci.yml). It writes a JUnit report for the merge request and a SARIF artifact, and has a [baseline mode](#new-findings-only-in-ci) (`ORBIT_BASELINE`).
+- Azure Pipelines: use the step template [`ci/azure-pipelines/orbit-scan.yml`](ci/azure-pipelines/orbit-scan.yml) (example: [`example.yml`](ci/azure-pipelines/example.yml)). It works on Azure DevOps Services and on Azure DevOps Server 2020 and later, in a container or with a downloaded, checksum-verified binary (Windows agents too). It has a [baseline mode](#new-findings-only-in-ci) (`baseline`).
+
+Both take a KEV gate (`ORBIT_FAIL_ON_KEV` / `failOnKev`) and can turn exploit data off (`ORBIT_EXPLOIT_DATA` / `exploitData`); the SARIF run never applies the KEV gate.
+
+Both also take the license options: `ORBIT_LICENSES` / `licenses` turns on deps.dev lookups (`--licenses`), and `ORBIT_DENY_LICENSE` / `denyLicense` sets the denied SPDX IDs (`--deny-license`). The SARIF run applies the license policy too, so the SARIF report lists the violations; the run that records the baseline does not.
+
+Both can also write an SBOM in a third run with `--fail-on none`: set `ORBIT_SBOM_FORMAT` (GitLab) or `sbomFormat` (Azure, default `none`) to `cyclonedx` or `spdx`. GitLab keeps `orbit.cdx.json` or `orbit.spdx.json` as a job artifact; Azure publishes it as the `orbit-sbom` build artifact. The project is named after the repository unless `ORBIT_SBOM_NAME` / `sbomName` is set. The SBOM run keeps the ignore file, the exploit-data setting and the license lookups, but not the KEV gate, the license policy or the baseline. If it fails, the job only warns. An unknown `ORBIT_SBOM_FORMAT` stops the GitLab job with exit 2 before any scan.
 
 Parameters and caveats for both are in the comment at the top of each template.
 
@@ -289,12 +450,15 @@ The server reads `orbit.yaml` (or `orbit.yml` and other formats viper supports) 
 | `ORBIT_SCANNER_MAX_CONCURRENT_SCANS` | `3` | Size of the background scan worker pool |
 | `ORBIT_SCANNER_SCAN_TIMEOUT` | `900` | Seconds a whole scan may take |
 | `ORBIT_SCANNER_RETAIN_SCANS` | `10` | Finished scans kept per repository; `0` keeps all |
+| `ORBIT_SCANNER_LICENSES` | `false` | `true` looks up on deps.dev the licenses that lockfiles do not record. Licenses from npm lockfiles are stored either way. The server shows licenses but applies no license policy |
+| `ORBIT_EXPLOIT_ENABLED` | `true` | Adds CISA KEV and FIRST EPSS data to findings. `false` sends nothing to www.cisa.gov or api.first.org |
+| `ORBIT_EXPLOIT_KEV_URL` / `ORBIT_EXPLOIT_EPSS_URL` | empty (public services) | Mirrors of the KEV JSON feed and the EPSS API, for restricted networks |
 
-Compose-only variables, set in `deploy/docker/.env`: `ORBIT_DATABASE_PASSWORD` (also used for the PostgreSQL container), `ORBIT_SERVER_TRUST_PROXY_HEADERS`, `ORBIT_SERVER_CORS_ALLOWED_ORIGINS`, `ORBIT_TMP_SIZE` (size of the `/tmp` tmpfs that holds clones, default `1g`) and `COMPOSE_PROJECT_NAME`.
+Compose-only variables, set in `deploy/docker/.env`: `ORBIT_DATABASE_PASSWORD` (also used for the PostgreSQL container), `ORBIT_SERVER_TRUST_PROXY_HEADERS`, `ORBIT_SERVER_CORS_ALLOWED_ORIGINS`, `ORBIT_EXPLOIT_ENABLED`, `ORBIT_EXPLOIT_KEV_URL`, `ORBIT_EXPLOIT_EPSS_URL`, `ORBIT_SCANNER_LICENSES`, `ORBIT_TMP_SIZE` (size of the `/tmp` tmpfs that holds clones, default `1g`) and `COMPOSE_PROJECT_NAME`.
 
 `orbit.yaml` also contains `log.level`, `log.format` and `scanner.default_schedule`. The current server does not apply them: it always logs JSON at `info` level, and new repositories get the schedule `0 */6 * * *` unless one is given when they are added.
 
-The CLI reads no configuration file and is configured with flags. It honours `NO_COLOR`, and its HTTP client uses Go's default transport, so the standard `HTTPS_PROXY`/`NO_PROXY` variables apply.
+The CLI reads no configuration file and is configured with flags; it always uses the public KEV and EPSS services unless `--no-exploit-data` is given. It honours `NO_COLOR`, and its HTTP client uses Go's default transport, so the standard `HTTPS_PROXY`/`NO_PROXY` variables apply.
 
 ## REST API
 
@@ -358,7 +522,9 @@ Paginated responses carry `data`, `total`, `page`, `per_page` and `total_pages` 
 | `POST` | `/repositories/{id}/scan` | Queue a scan (202 Accepted) |
 | `GET` | `/repositories/{id}/scans` | Scan history |
 | `GET` | `/scans/{id}` | Scan result |
-| `GET` | `/scans/{id}/dependencies` | Dependencies found by a scan |
+| `GET` | `/scans/{id}/dependencies` | Dependencies found by a scan, each with its license (SPDX expression, "" when unknown) |
+| `GET` | `/scans/{id}/recommendations` | Smallest upgrade per vulnerable package of a completed scan (`via` is always empty on the server); 409 while the scan is not completed or after it failed |
+| `GET` | `/scans/{id}/sbom?format=cyclonedx\|spdx` | SBOM of a completed scan as a file download: CycloneDX 1.6 (default, with vulnerabilities) or SPDX 2.3; 409 while the scan is not completed or after it failed |
 
 **Vulnerabilities**
 
@@ -369,7 +535,7 @@ Paginated responses carry `data`, `total`, `page`, `per_page` and `total_pages` 
 | `GET` | `/scans/{id}/vulnerabilities` | Vulnerabilities of a scan |
 | `GET` | `/repositories/{id}/vulnerabilities` | Vulnerabilities of a repository |
 
-`GET /vulnerabilities` takes `page` (max 1,000,000), `per_page` (default 25, max 100) and `severity` (`critical`, `high`, `medium`, `low`, `unknown`). Besides the pagination fields it returns `counts` (findings per severity, ignoring the `severity` filter) and `unverified_repositories` (repositories without a successful vulnerability check).
+`GET /vulnerabilities` takes `page` (max 1,000,000), `per_page` (default 25, max 100), `severity` (`critical`, `high`, `medium`, `low`, `unknown`), `kev` (`true` for findings in CISA KEV only), `min_epss` (0 to 1, for example `0.1` for an EPSS of 10% or more) and `sort` (`severity`, the default, or `epss`). Besides the pagination fields it returns `counts` (findings per severity and `kev`, the number in KEV, ignoring the filters) and `unverified_repositories` (repositories without a successful vulnerability check). Every vulnerability in the API carries `kev`, `kev_date_added`, `epss` and `epss_percentile`; they are `false` or `null` when the data was not available at scan time.
 
 Every vulnerability these endpoints return also has `malicious`: true when its ID or one of its aliases starts with `MAL-` (OpenSSF Malicious Packages). The flag is derived from the stored IDs, so it also covers scans stored before Orbit rated such advisories `critical`. `counts.malicious` counts such findings across all severities; they are also counted under their severity.
 
@@ -452,7 +618,7 @@ The release binaries are mainly for the CLI. The server serves the UI from `./ui
 
 ## Security notes
 
-- **What leaves your network.** To find vulnerabilities, Orbit sends package coordinates (ecosystem, name, version) to `api.osv.dev`. Source code, file paths and repository details are not sent. The server also asks the public registries (npm, PyPI, NuGet, the Go module proxy) for the latest versions of every package; the CLI does that only with `--outdated`. Private feeds such as Azure Artifacts are not queried.
+- **What leaves your network.** To find vulnerabilities, Orbit sends package coordinates (ecosystem, name, version) to `api.osv.dev`. Source code, file paths and repository details are not sent. The server also asks the public registries (npm, PyPI, NuGet, the Go module proxy) for the latest versions of every package; the CLI does that only with `--outdated`. Private feeds such as Azure Artifacts are not queried. For exploit data, Orbit downloads the whole CISA KEV catalog from `www.cisa.gov` (nothing about your project is sent) and sends the CVE IDs of its findings to `api.first.org` in the query string to get their EPSS scores; this tells FIRST which CVEs affect the scanned project. Both requests carry a User-Agent naming Orbit and its version. Turn them off with `--no-exploit-data`, or `ORBIT_EXPLOIT_ENABLED=false` on the server. License lookups send the ecosystem, name and version of every package they look up to `api.deps.dev` (Open Source Insights, run by Google), to find licenses that lockfiles do not record. No private feed is queried for this, but the names of private packages are sent as well, for example private Go modules, packages from a private NuGet or PyPI feed, and npm packages whose lockfile license is not SPDX, such as `UNLICENSED`. The lookups are off unless you pass `--licenses` (`licenses` / `ORBIT_LICENSES` in the CI templates), or set `scanner.licenses: true` in `orbit.yaml` (`ORBIT_SCANNER_LICENSES=true`) on the server.
 - **Access tokens** for GitHub, GitLab and Azure DevOps, including tokens stored on repositories, are encrypted at rest with AES-256-GCM using `ORBIT_CRYPTO_ENCRYPTION_KEY`. Losing the key means re-adding the tokens.
 - **First-run setup** requires `ORBIT_SETUP_TOKEN` when it is set, so only someone who has the token can create the first admin account.
 - **Logins** are limited to 5 failures per email and 20 per client IP in 15 minutes. Behind a reverse proxy, set `ORBIT_SERVER_TRUST_PROXY_HEADERS=true` so the limit applies per real client.
@@ -466,11 +632,15 @@ Orbit reports known vulnerabilities for the versions it can see. Please keep the
 
 - It finds only advisories that are published in osv.dev. A clean result means no known advisory matched, not that the dependencies are free of problems.
 - Malicious packages are found only when they are in the OpenSSF Malicious Packages data on osv.dev, matched by package name and version. A private package with the same name as a public malicious one is reported too, and `.orbitignore` cannot suppress that finding.
+- Exploit signals match CVE IDs only. KEV and EPSS cover CVEs, not every advisory; a finding without a signal is not known to be safe. The server stores them at scan time, so a CVE that CISA lists later appears after the next scan.
+- Upgrade recommendations compare fixed versions only. The direct dependency that pulls a package in is known only for npm `package-lock.json` v2 and v3, and only in the CLI; the server does not store the dependency graph.
 - It does not analyse whether vulnerable code is actually reached by your application.
+- Licenses are the ones package authors declared (in npm lockfiles or as reported by deps.dev). Values without an SPDX identifier are shown as unknown, and the server does not apply a license policy.
 - Without a lockfile, versions are estimated from manifest ranges and can be wrong in either direction.
 - Supported ecosystems are Go, npm, Python and NuGet. Other ecosystems (for example Maven, Gradle, Cargo or Composer) are not scanned.
 - GitHub and GitLab are supported on github.com and gitlab.com only; GitHub Enterprise Server and self-managed GitLab are not.
 - The server stores one row per advisory, so two advisories for the same CVE are counted twice in the UI. The CLI merges them into one finding.
+- SBOMs list the dependencies Orbit found in manifests and lockfiles. They have no hashes, suppliers or download locations, and their dependency graph stops at the project's direct dependencies.
 - The CI templates and Azure DevOps Server support have been tested with stubs and local servers. Please report problems you see on real installations.
 
 ## Development
@@ -522,8 +692,9 @@ To serve the UI from the Go server instead, run `npm run build` in `ui/` and sta
 ### Tests
 
 ```bash
-# Go unit tests (./internal/... ./cmd/... skips ui/node_modules once the UI is installed)
-go test -race ./internal/... ./cmd/...
+# Go unit tests (listing packages skips ui/node_modules once the UI is installed).
+# ./ci/... runs the CI template scripts with fake docker, orbit and wget; it needs bash.
+go test -race ./internal/... ./cmd/... ./ci/...
 
 # Integration tests (build tag "integration"). Each test creates and drops its own database.
 docker run -d --name orbit-test-postgres -p 5433:5432 -e POSTGRES_PASSWORD=test postgres:18-alpine
@@ -545,7 +716,7 @@ internal/
   domain/                  entities and repository interfaces
   usecase/                 repository management, scan queue, scheduler and workers
   engine/                  DB-free analysis engine shared by the server and the CLI
-  report/                  CLI reports (table, JSON, SARIF, JUnit) and .orbitignore
+  report/                  CLI reports (table, JSON, SARIF, JUnit, CycloneDX, SPDX) and .orbitignore
   adapter/
     handler/               HTTP handlers
     persistence/postgres/  PostgreSQL repositories and embedded migrations
@@ -557,7 +728,7 @@ internal/
 ui/                        React UI (Vite, Tailwind, React Router, TanStack Query)
 deploy/docker/             Dockerfiles, Compose file, PostgreSQL upgrade script
 deploy/k8s/                Kubernetes manifest
-ci/                        GitLab CI and Azure Pipelines templates
+ci/                        GitLab CI and Azure Pipelines templates, tests of all CI templates
 action.yml                 GitHub Action
 ```
 

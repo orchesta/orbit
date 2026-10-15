@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"strings"
 )
 
 type junitFailure struct {
@@ -33,10 +34,16 @@ type junitSuite struct {
 	Cases    []junitCase `xml:"testcase"`
 }
 
+// junitBaselineMessage marks a finding that would fail but is in the baseline.
+const junitBaselineMessage = "existing finding (in the baseline)"
+
 // WriteJUnit writes one testsuite "orbit". Each finding is a testcase: a
-// failure when it fails the threshold (see failsGate; a malicious package
-// fails every threshold and has the failure type "malicious"), skipped when
-// ignored.
+// failure when it gates (see gates: it trips failsGate, the threshold, a
+// malicious package or KEV with FailOnKEV, and it is new or malicious), so
+// the failures agree with the exit code. It is skipped when ignored, or when
+// it trips failsGate but is in the baseline; passing otherwise. A malicious
+// package has the failure type "malicious". Each license violation is a
+// testcase too: a failure, or skipped when accepted in the ignore file.
 func WriteJUnit(w io.Writer, f []Finding, s Summary) error {
 	suite := junitSuite{Name: "orbit"}
 	for _, x := range f {
@@ -46,8 +53,11 @@ func WriteJUnit(w io.Writer, f []Finding, s Summary) error {
 		case x.Ignored:
 			c.Skipped = &junitSkipped{Message: x.IgnoreReason}
 			suite.Skipped++
-		case failsGate(x, s):
+		case gates(x, s):
 			msg := fmt.Sprintf("%s: %s", v.Severity, v.Summary)
+			if v.KEV {
+				msg = "[KEV] " + msg
+			}
 			typ := string(v.Severity)
 			if x.Malicious {
 				typ = "malicious"
@@ -56,7 +66,28 @@ func WriteJUnit(w io.Writer, f []Finding, s Summary) error {
 			if fv := fixedIn(v); fv != "" {
 				body += " (fixed in " + fv + ")"
 			}
+			body += exploitLines(v)
 			c.Failure = &junitFailure{Message: msg, Type: typ, Body: body}
+			suite.Failures++
+		case failsGate(x, s):
+			c.Skipped = &junitSkipped{Message: junitBaselineMessage}
+			suite.Skipped++
+		}
+		suite.Cases = append(suite.Cases, c)
+	}
+	for _, v := range s.LicenseViolations {
+		d := v.Dependency
+		c := junitCase{Name: fmt.Sprintf("%s@%s: license %s", d.Name, d.CurrentVersion, d.License), ClassName: d.ManifestFile}
+		if v.Ignored {
+			c.Skipped = &junitSkipped{Message: v.IgnoreReason}
+			suite.Skipped++
+		} else {
+			denied := strings.Join(v.Denied, ", ")
+			c.Failure = &junitFailure{
+				Message: "denied license: " + denied,
+				Type:    "license",
+				Body:    fmt.Sprintf("%s@%s is licensed under %s; the license policy denies %s", d.Name, d.CurrentVersion, d.License, denied),
+			}
 			suite.Failures++
 		}
 		suite.Cases = append(suite.Cases, c)

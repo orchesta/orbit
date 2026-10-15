@@ -1,4 +1,5 @@
-# Complete example: scan on every push to main and on pull requests.
+# Complete example: scan on every push to main, daily, and on pull requests. Pull requests
+# fail only on findings that main does not have yet (baseline: true).
 # Copy this file next to the template, or reference the template from a repository resource.
 
 trigger:
@@ -8,6 +9,15 @@ trigger:
 pr:
   branches:
     include: [main]
+
+# Daily build of main, even without new commits: advisories published since the last merge
+# become part of the baseline.
+schedules:
+  - cron: "17 3 * * *"
+    displayName: Refresh the Orbit baseline
+    branches:
+      include: [main]
+    always: true
 
 pool:
   vmImage: ubuntu-latest   # self-hosted works too; Windows agents need useContainer: false
@@ -19,5 +29,8 @@ steps:
     parameters:
       path: $(Build.SourcesDirectory)
       failOn: high
+      failOnKev: false
       version: v1.0.0
       useContainer: true
+      baseline: true
+      baselineBranch: refs/heads/main

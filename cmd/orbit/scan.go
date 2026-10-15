@@ -17,22 +17,31 @@ import (
 	"strings"
 	"time"
 
-	"github.com/orchesta/orbit/internal/buildinfo"
+	"github.com/google/uuid"
+
 	"github.com/orchesta/orbit/internal/domain/entity"
 	"github.com/orchesta/orbit/internal/engine"
+	"github.com/orchesta/orbit/internal/infrastructure/depsdev"
+	"github.com/orchesta/orbit/internal/infrastructure/exploit"
 	"github.com/orchesta/orbit/internal/infrastructure/git"
 	"github.com/orchesta/orbit/internal/infrastructure/vulnerability/osv"
 	"github.com/orchesta/orbit/internal/report"
+	"github.com/orchesta/orbit/internal/spdx"
 	vulnuc "github.com/orchesta/orbit/internal/usecase/vulnerability"
 )
 
 // Exit codes of orbit scan.
 const (
-	exitOK = 0 // no finding fails the --fail-on threshold
-	// exitFailed: a non-ignored finding at or above the threshold, or a known
-	// malicious package, which fails at every threshold except none.
+	exitOK = 0 // no finding gates and no license is denied (see exitFailed)
+	// exitFailed: a non-ignored finding gates (report.gates: it trips
+	// report.failsGate, that is the threshold, a malicious package, or KEV
+	// with --fail-on-kev, and with --baseline it is new or malicious), or a
+	// license is denied (--deny-license) and not ignored.
 	exitFailed = 1
-	exitError  = 2 // the scan could not be completed or the flags are wrong
+	// exitError: the scan could not be completed or the flags are wrong, or
+	// --fail-on-kev without the KEV catalog, or a missing or invalid
+	// --baseline, or --deny-license with a failed license lookup.
+	exitError = 2
 )
 
 const ignoreFileName = ".orbitignore"
@@ -42,27 +51,49 @@ type analyzerEngine interface {
 	Analyze(ctx context.Context, root string) (*engine.Result, error)
 }
 
-// scanDeps holds what runScan needs from the outside world, so tests can
-// replace the engine and the clock.
-type scanDeps struct {
-	newEngine func(checkLatest bool, logger *slog.Logger) analyzerEngine
-	now       func() time.Time
+// engineConfig is what the command line decides about the engine.
+type engineConfig struct {
+	checkLatest bool // --outdated
+	exploitData bool // not --no-exploit-data
+	licenses    bool // --licenses: look up missing licenses on deps.dev
 }
 
-// defaultScanDeps builds the production engine: all analyzers and a real
-// osv.dev lookup. It needs no configuration, database or secrets.
+// scanDeps holds what runScan needs from the outside world, so tests can
+// replace the engine, the clock and the SBOM serial number. A nil newUUID
+// means uuid.New.
+type scanDeps struct {
+	newEngine func(ec engineConfig, logger *slog.Logger) analyzerEngine
+	now       func() time.Time
+	newUUID   func() uuid.UUID
+}
+
+// defaultScanDeps builds the production engine: all analyzers, a real
+// osv.dev lookup, unless turned off CISA KEV and FIRST EPSS data, and with
+// --licenses deps.dev license lookups. It needs no configuration, database
+// or secrets.
 func defaultScanDeps() scanDeps {
 	return scanDeps{
-		newEngine: func(checkLatest bool, logger *slog.Logger) analyzerEngine {
+		newEngine: func(ec engineConfig, logger *slog.Logger) analyzerEngine {
 			osvClient := osv.NewClient()
 			osvClient.Logger = logger
-			return engine.New(newAnalyzerRegistry(), vulnuc.NewLookup(osvClient, logger), engine.Options{
-				CheckLatest: checkLatest,
-				Logger:      logger,
-			})
+			return engine.New(newAnalyzerRegistry(), vulnuc.NewLookup(osvClient, logger), cliEngineOptions(ec, logger))
 		},
-		now: time.Now,
+		now:     time.Now,
+		newUUID: uuid.New,
 	}
+}
+
+// cliEngineOptions is how orbit scan runs the engine. Unlike the server it
+// computes Via, which the reports show.
+func cliEngineOptions(ec engineConfig, logger *slog.Logger) engine.Options {
+	opts := engine.Options{CheckLatest: ec.checkLatest, Logger: logger}
+	if ec.exploitData {
+		opts.Exploit = exploit.NewEnricher(exploit.Config{Logger: logger})
+	}
+	if ec.licenses {
+		opts.Licenses = depsdev.NewClient()
+	}
+	return opts
 }
 
 // failOnLevels maps --fail-on values to report thresholds; "none" is "".
@@ -75,7 +106,11 @@ var failOnLevels = map[string]entity.Severity{
 	"none":     "",
 }
 
-var scanFormats = []string{"table", "json", "sarif", "junit"}
+var scanFormats = []string{"table", "json", "sarif", "junit", "cyclonedx", "spdx"}
+
+// sbomFormats are the formats that describe every dependency rather than
+// only the findings.
+var sbomFormats = []string{"cyclonedx", "spdx"}
 
 // scanConfig is the validated command line of orbit scan.
 type scanConfig struct {
@@ -85,11 +120,20 @@ type scanConfig struct {
 	format     string
 	out        string
 	ignoreFile string
-	ignoreSet  bool // --ignore-file was given explicitly
+	ignoreSet  bool   // --ignore-file was given explicitly
+	baseline   string // --baseline: earlier JSON report; "" compares with nothing
 	outdated   bool
 	timeout    time.Duration
 	quiet      bool
 	verbose    bool
+
+	failOnKEV     bool // --fail-on-kev
+	noExploitData bool // --no-exploit-data
+
+	licenses bool     // --licenses
+	deny     []string // --deny-license, canonical SPDX IDs; nil for no policy
+
+	sbomName string // --sbom-name; "" names the SBOM after the --path directory
 }
 
 // usageError is a problem with the command line.
@@ -105,8 +149,14 @@ func parseScanFlags(args []string, stderr io.Writer) (scanConfig, error) {
 	flags.StringVar(&c.failOn, "fail-on", "high", "exit 1 on a finding at or above: critical|high|medium|low|unknown|none (a known malicious package fails at every threshold except none)")
 	flags.StringVar(&c.format, "format", "table", "report format: "+strings.Join(scanFormats, "|"))
 	flags.StringVar(&c.out, "out", "-", `report file, or "-" for stdout`)
+	flags.StringVar(&c.sbomName, "sbom-name", "", "project name in a cyclonedx or spdx report (default: the --path directory name)")
 	flags.StringVar(&c.ignoreFile, "ignore-file", "", "ignore file (default <path>/"+ignoreFileName+" if it exists)")
+	flags.StringVar(&c.baseline, "baseline", "", "earlier orbit JSON report; only findings not in it fail the scan (malicious packages always do, unless --fail-on none)")
 	flags.BoolVar(&c.outdated, "outdated", false, "also ask the package registries for the latest versions")
+	flags.BoolVar(&c.licenses, "licenses", false, "look up licenses the lockfiles do not record on deps.dev, and show them")
+	denyLicense := flags.String("deny-license", "", "exit 1 on a dependency that can only be used under one of these comma-separated SPDX license IDs")
+	flags.BoolVar(&c.failOnKEV, "fail-on-kev", false, "also exit 1 on any finding in the CISA KEV catalog, whatever its severity")
+	flags.BoolVar(&c.noExploitData, "no-exploit-data", false, "do not download the CISA KEV catalog or send CVE IDs to api.first.org for EPSS scores")
 	flags.DurationVar(&c.timeout, "timeout", 10*time.Minute, "give up after this long")
 	flags.BoolVar(&c.quiet, "quiet", false, "write only the summary and warnings to stderr")
 	flags.BoolVar(&c.verbose, "verbose", false, "log progress details to stderr")
@@ -137,13 +187,29 @@ func parseScanFlags(args []string, stderr io.Writer) (scanConfig, error) {
 	if c.out == "" {
 		return c, usageError{`--out needs a file path or "-"`}
 	}
+	// A failed run removes --out (removeStaleReport), which would delete
+	// the baseline itself.
+	if c.baseline != "" && c.out != "-" && sameFile(c.baseline, c.out) {
+		return c, usageError{"--out and --baseline name the same file; write the new report to another path"}
+	}
+	if c.failOnKEV && c.noExploitData {
+		return c, usageError{"--fail-on-kev needs exploit data; it cannot be combined with --no-exploit-data"}
+	}
+	deny, err := spdx.ParseIDs(*denyLicense)
+	if err != nil {
+		return c, usageError{fmt.Sprintf("invalid --deny-license: %v", err)}
+	}
+	if len(deny) > 0 {
+		c.deny = deny
+	}
 	return c, nil
 }
 
 // runScan implements orbit scan and returns its exit code. stdout receives
 // only the report, and only when the scan succeeded; everything else goes
-// to stderr. Everything on stderr, and a table report on stdout, passes
-// through a ciLogWriter, so repository text cannot run CI log commands.
+// to stderr. Everything on stderr, and a table report on stdout or in the
+// --out file, passes through a ciLogWriter, so repository text cannot run
+// CI log commands.
 func runScan(ctx context.Context, args []string, stdout, stderr io.Writer, deps scanDeps) int {
 	safeErr := newCILogWriter(stderr)
 	code := runScanSafe(ctx, args, stdout, safeErr, deps)
@@ -151,6 +217,13 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer, deps 
 	return code
 }
 
+// runScanSafe is runScan with stderr already neutralised. It exits 1 when
+// a finding gates (threshold, malicious package, or KEV with --fail-on-kev;
+// with --baseline only new findings, and malicious ones, count) or a license
+// is denied (--deny-license), and 2 when the scan fails after the flags were
+// accepted, including --fail-on-kev without the KEV catalog, a bad
+// --baseline and --deny-license with a failed license lookup; then any --out
+// file is removed so no stale report survives.
 func runScanSafe(ctx context.Context, args []string, stdout, stderr io.Writer, deps scanDeps) int {
 	cfg, err := parseScanFlags(args, stderr)
 	if errors.Is(err, flag.ErrHelp) {
@@ -178,8 +251,9 @@ func runScanSafe(ctx context.Context, args []string, stdout, stderr io.Writer, d
 }
 
 // executeScan runs the analysis, writes the report and the stderr summary, and
-// reports whether a finding reached the threshold. Every error except a
-// failing stdout itself happens before anything is written to stdout.
+// reports whether a finding tripped the gate or a license was denied. Every
+// error except a failing stdout itself happens before anything is written
+// to stdout.
 func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, deps scanDeps) (failed bool, err error) {
 	// The engine does not follow symlinks, so a symlinked --path (a common
 	// CI checkout layout) is resolved first.
@@ -201,6 +275,10 @@ func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, 
 	if err != nil {
 		return false, err
 	}
+	baseline, err := loadBaseline(cfg.baseline)
+	if err != nil {
+		return false, err
+	}
 
 	level := slog.LevelWarn
 	if cfg.verbose {
@@ -209,11 +287,19 @@ func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, 
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
 	if !cfg.quiet {
 		fmt.Fprintf(stderr, "orbit: scanning %s\n", cfg.path)
+		if baseline != nil {
+			from := ""
+			if baseline.ToolVersion != "" {
+				from = ", written by orbit " + baseline.ToolVersion
+			}
+			fmt.Fprintf(stderr, "orbit: comparing with baseline %s (%d findings%s)\n", cfg.baseline, baseline.Len(), from)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, cfg.timeout)
 	defer cancel()
-	res, err := deps.newEngine(cfg.outdated, logger).Analyze(ctx, root)
+	ec := engineConfig{checkLatest: cfg.outdated, exploitData: !cfg.noExploitData, licenses: cfg.licenses}
+	res, err := deps.newEngine(ec, logger).Analyze(ctx, root)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return false, fmt.Errorf("scan did not finish within --timeout %s: %w", cfg.timeout, err)
@@ -223,16 +309,34 @@ func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, 
 	if res == nil {
 		return false, errors.New("scan failed: engine returned no result")
 	}
+	if cfg.failOnKEV {
+		if err := kevAvailable(res); err != nil {
+			return false, err
+		}
+	}
+	if len(cfg.deny) > 0 {
+		if err := licensesChecked(res); err != nil {
+			return false, err
+		}
+	}
 
-	findings, summary := report.Build(res, ignores, cfg.threshold, deps.now())
+	now := deps.now()
+	findings, summary := report.BuildWithOptions(res, ignores,
+		report.BuildOptions{Threshold: cfg.threshold, FailOnKEV: cfg.failOnKEV}, now)
+	report.ApplyBaseline(findings, &summary, baseline)
+	summary.ShowLicenses = cfg.licenses
+	// Also without --deny-license, so license: entries it does not need are
+	// warned about as unused.
+	report.ApplyLicensePolicy(&summary, cfg.deny, ignores, now)
+	sb := sbomOptions(cfg, root, now, deps.newUUID)
 
 	if cfg.out == "-" {
-		if err := writeStdout(stdout, cfg.format, findings, summary, sarifOptions(root)); err != nil {
+		if err := writeStdout(stdout, cfg.format, findings, summary, sarifOptions(root), sb); err != nil {
 			return false, fmt.Errorf("write report to stdout: %w", err)
 		}
 	} else {
 		var buf bytes.Buffer
-		if err := writeReport(&buf, cfg.format, findings, summary, false, sarifOptions(root)); err != nil {
+		if err := writeSafeReport(&buf, cfg.format, findings, summary, false, sarifOptions(root), sb); err != nil {
 			return false, fmt.Errorf("render %s report: %w", cfg.format, err)
 		}
 		if err := replaceFile(cfg.out, buf.Bytes()); err != nil {
@@ -248,7 +352,39 @@ func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, 
 	if cfg.out != "-" || cfg.format != "table" {
 		writeSummary(stderr, summary)
 	}
-	return summary.Failed, nil
+	if hint := licenseHint(cfg, summary); hint != "" && !cfg.quiet {
+		fmt.Fprintln(stderr, hint)
+	}
+	return summary.Failed || summary.LicenseFailed, nil
+}
+
+// kevAvailable stops --fail-on-kev when the KEV catalog could not be read:
+// the gate the user asked for cannot be checked, and passing it would read
+// as "nothing is known exploited". EPSS has no gate, so its failure stays
+// a warning.
+func kevAvailable(res *engine.Result) error {
+	switch {
+	case res.Exploit == nil:
+		return errors.New("--fail-on-kev: no exploit data was collected")
+	case res.Exploit.KEV.Status == exploit.StatusFailed:
+		return fmt.Errorf("--fail-on-kev: %w", res.Exploit.KEV.Err)
+	}
+	return nil
+}
+
+// licensesChecked stops --deny-license when a license lookup failed (only
+// --licenses makes any): like a failed advisory lookup, it must not pass as
+// "no denied license". Without --licenses the policy judges the lockfile
+// licenses alone, and unknown ones are a warning.
+func licensesChecked(res *engine.Result) error {
+	if n := res.LicenseLookupFailed; n > 0 {
+		noun := "packages"
+		if n == 1 {
+			noun = "package"
+		}
+		return fmt.Errorf("license check incomplete: the license lookup failed for %d %s", n, noun)
+	}
+	return nil
 }
 
 // replaceFile writes data to a temporary file next to path and renames it
@@ -337,6 +473,61 @@ func loadIgnores(cfg scanConfig, root string) (*report.IgnoreList, error) {
 	return list, nil
 }
 
+// maxBaselineBytes caps the size of a baseline report.
+const maxBaselineBytes = 64 << 20
+
+// loadBaseline reads and parses --baseline before the scan starts, so a bad
+// baseline fails fast (exit 2) without a network round trip. "" means no
+// baseline. A missing file is an error, like a missing --ignore-file: the CI
+// templates check for the file themselves and leave the flag out on a first
+// run. Like an explicit --ignore-file, it may be a symlink but must lead to a
+// regular file, so a directory or a FIFO is refused without blocking.
+func loadBaseline(path string) (*report.Baseline, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := readRegularFile(path, maxBaselineBytes)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("baseline %s does not exist; on a first run there is no baseline yet, so leave out --baseline", path)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("baseline: %w", err)
+	}
+	b, err := report.ParseBaseline(data)
+	if err != nil {
+		return nil, fmt.Errorf("baseline %s: %w", path, err)
+	}
+	return b, nil
+}
+
+// sameFile reports whether a and b name the same file: the same existing
+// file, whatever the spelling (relative or absolute, through a symlinked
+// directory or a symlink to the file), or, when one does not exist yet, the
+// same path once made absolute with its directory's symlinks resolved. It
+// only stats the paths, so a FIFO is not opened.
+func sameFile(a, b string) bool {
+	if ia, err := os.Stat(a); err == nil {
+		if ib, err := os.Stat(b); err == nil {
+			return os.SameFile(ia, ib)
+		}
+	}
+	ra, rb := resolvePath(a), resolvePath(b)
+	return ra != "" && ra == rb
+}
+
+// resolvePath makes p absolute and resolves the symlinks of its directory;
+// "" if p cannot be made absolute.
+func resolvePath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return ""
+	}
+	if dir, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		return filepath.Join(dir, filepath.Base(abs))
+	}
+	return abs
+}
+
 // readRegularFile reads path, following symlinks, if it is a regular file of
 // at most maxBytes. The type is checked before opening, because opening a
 // FIFO blocks, and again on the open file in case path was swapped.
@@ -370,18 +561,25 @@ func readRegularFile(path string, maxBytes int64) ([]byte, error) {
 	return data, nil
 }
 
-// writeStdout writes the report to stdout. A table goes through a
-// ciLogWriter, colored if stdout itself is a terminal; JSON, SARIF and JUnit
-// already escape log commands inside their strings.
-func writeStdout(stdout io.Writer, format string, f []report.Finding, s report.Summary, so report.SARIFOptions) error {
+// writeStdout writes the report to stdout, a table colored if stdout itself
+// is a terminal (see writeSafeReport).
+func writeStdout(stdout io.Writer, format string, f []report.Finding, s report.Summary, so report.SARIFOptions, sb report.SBOMOptions) error {
+	return writeSafeReport(stdout, format, f, s, format == "table" && report.UseColor(stdout), so, sb)
+}
+
+// writeSafeReport is writeReport with a table passed through a ciLogWriter,
+// on stdout or in an --out file alike: a CI job may print either. JSON,
+// SARIF, JUnit, CycloneDX and SPDX already escape log commands inside their
+// strings.
+func writeSafeReport(w io.Writer, format string, f []report.Finding, s report.Summary, color bool, so report.SARIFOptions, sb report.SBOMOptions) error {
 	if format != "table" {
-		return writeReport(stdout, format, f, s, false, so)
+		return writeReport(w, format, f, s, color, so, sb)
 	}
-	w := newCILogWriter(stdout)
-	if err := writeReport(w, format, f, s, report.UseColor(stdout), so); err != nil {
+	cw := newCILogWriter(w)
+	if err := writeReport(cw, format, f, s, color, so, sb); err != nil {
 		return err
 	}
-	return w.Flush()
+	return cw.Flush()
 }
 
 // sarifOptions makes SARIF URIs relative to the working directory when root
@@ -407,11 +605,15 @@ func sarifOptions(root string) report.SARIFOptions {
 	return report.SARIFOptions{RootURI: (&url.URL{Scheme: "file", Path: p}).String()}
 }
 
-func writeReport(w io.Writer, format string, f []report.Finding, s report.Summary, color bool, so report.SARIFOptions) error {
-	tool := report.ToolInfo{Name: "orbit", Version: buildinfo.Version, InformationURI: "https://github.com/orchesta/orbit"}
+func writeReport(w io.Writer, format string, f []report.Finding, s report.Summary, color bool, so report.SARIFOptions, sb report.SBOMOptions) error {
+	tool := report.OrbitTool()
 	switch format {
 	case "json":
 		return report.WriteJSON(w, f, s, tool)
+	case "cyclonedx":
+		return report.WriteCycloneDX(w, f, s, tool, sb)
+	case "spdx":
+		return report.WriteSPDX(w, f, s, tool, sb)
 	case "sarif":
 		return report.WriteSARIF(w, f, s, tool, so)
 	case "junit":
@@ -421,17 +623,53 @@ func writeReport(w io.Writer, format string, f []report.Finding, s report.Summar
 	}
 }
 
-// writeSummary prints the counts, the threshold verdict and the warnings,
-// each line prefixed "orbit: ", so the CI log shows the result whatever the
-// report format.
+// writeSummary prints the counts, the threshold and license policy verdicts
+// and the warnings, each line prefixed "orbit: ", so the CI log shows the
+// result whatever the report format.
 func writeSummary(w io.Writer, s report.Summary) {
 	var buf bytes.Buffer
 	_ = report.WriteTable(&buf, nil, s) // no findings: summary and warnings only
-	if s.Threshold == "" {
+	if s.Threshold == "" && !s.FailOnKEV && len(s.DeniedLicenses) == 0 {
 		buf.WriteString("no failure threshold (--fail-on none)\n")
 	}
 	sc := bufio.NewScanner(&buf)
 	for sc.Scan() {
 		fmt.Fprintf(w, "orbit: %s\n", sc.Text())
 	}
+}
+
+// sbomOptions names the SBOM after --sbom-name, or else the scanned
+// directory (root is the resolved --path), and stamps it with now, the scan
+// time, and a new serial number from newUUID (uuid.New if nil).
+func sbomOptions(cfg scanConfig, root string, now time.Time, newUUID func() uuid.UUID) report.SBOMOptions {
+	if newUUID == nil {
+		newUUID = uuid.New
+	}
+	name := cfg.sbomName
+	if name == "" {
+		name = filepath.Base(root)
+		if name == "." || name == string(filepath.Separator) {
+			name = "" // a filesystem root; the writers fall back to "unnamed"
+		}
+	}
+	return report.SBOMOptions{Name: name, Now: now, Serial: newUUID()}
+}
+
+// licenseHint suggests --licenses when an SBOM leaves dependencies without
+// a license that the opt-in lookup might find. The lookup stays off by
+// default: it sends package names and versions to deps.dev.
+func licenseHint(cfg scanConfig, s report.Summary) string {
+	if !slices.Contains(sbomFormats, cfg.format) || cfg.licenses {
+		return ""
+	}
+	missing := 0
+	for _, d := range s.Deps {
+		if d.License == "" {
+			missing++
+		}
+	}
+	if missing == 0 {
+		return ""
+	}
+	return fmt.Sprintf("orbit: %d of %d dependencies have no license in the SBOM; --licenses looks them up on deps.dev", missing, len(s.Deps))
 }

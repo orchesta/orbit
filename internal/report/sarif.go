@@ -3,9 +3,11 @@ package report
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/orchesta/orbit/internal/domain/entity"
@@ -44,7 +46,9 @@ type sarifResult struct {
 	Message             sarifText          `json:"message"`
 	Locations           []sarifLocation    `json:"locations"`
 	PartialFingerprints map[string]string  `json:"partialFingerprints"`
+	BaselineState       string             `json:"baselineState,omitempty"` // SARIF 2.1.0 §3.27.24, only with a baseline
 	Suppressions        []sarifSuppression `json:"suppressions,omitempty"`
+	Properties          map[string]any     `json:"properties,omitempty"`
 }
 
 // sarifRootID is the uriBaseId of artifact URIs relative to RootURI.
@@ -122,9 +126,21 @@ type SARIFOptions struct {
 	RootURI string
 }
 
-// WriteSARIF writes a SARIF 2.1.0 log with one rule per distinct advisory. A
-// rule with a malicious finding is tagged "malicious" and rated 10.0.
-func WriteSARIF(w io.Writer, f []Finding, _ Summary, tool ToolInfo, opts SARIFOptions) error {
+// WriteSARIF writes a SARIF 2.1.0 log with one rule per distinct advisory
+// and one rule "license/<ID>" per denied license that a violation names;
+// a violation naming several denied licenses is one result per license. A
+// rule with a malicious finding is tagged "malicious" and rated 10.0. A rule listed in CISA KEV is also tagged "known-exploited";
+// its security-severity is not raised. With a baseline (s.Baseline) every
+// finding's result has baselineState "new" or "unchanged"; "updated" and
+// "absent" are not produced. SARIF 2.1.0 §3.27.24 wants baselineState on
+// every result once one has it, so license results then have "new": the
+// baseline never filters license violations, so they gate like new
+// findings. A license rule is tagged "license" only, not "security".
+func WriteSARIF(w io.Writer, f []Finding, s Summary, tool ToolInfo, opts SARIFOptions) error {
+	recs := make(map[[4]string]Recommendation, len(s.Recommendations))
+	for _, r := range s.Recommendations {
+		recs[[4]string{r.Ecosystem, r.Manifest, r.Package, r.Current}] = r
+	}
 	rules := []sarifRule{}
 	ruleIdx := map[string]int{}
 	ruleRank := map[string]int{}
@@ -149,7 +165,10 @@ func WriteSARIF(w io.Writer, f []Finding, _ Summary, tool ToolInfo, opts SARIFOp
 			rules[i].Properties["security-severity"] = score
 		}
 		if x.Malicious {
-			rules[i].Properties["tags"] = []string{"security", "malicious"}
+			addRuleTag(rules[i].Properties, "malicious")
+		}
+		if v.KEV {
+			addRuleTag(rules[i].Properties, "known-exploited")
 		}
 		// The first non-empty text in finding order wins.
 		if rules[i].ShortDescription.Text == "" {
@@ -159,6 +178,7 @@ func WriteSARIF(w io.Writer, f []Finding, _ Summary, tool ToolInfo, opts SARIFOp
 			rules[i].HelpURI = v.References[0]
 		}
 		msg := affectedText(x)
+		rec := recs[[4]string{string(d.Ecosystem), d.ManifestFile, d.Name, d.CurrentVersion}]
 		switch fv := fixedIn(v); {
 		case x.Malicious && fv != "":
 			// fv comes from a member that is not a MAL- advisory (highestFix).
@@ -166,20 +186,60 @@ func WriteSARIF(w io.Writer, f []Finding, _ Summary, tool ToolInfo, opts SARIFOp
 		case x.Malicious:
 			msg += "; remove or replace it"
 		case fv != "":
-			msg += " (fixed in " + fv + ")"
+			msg += fixedText(rec, v.OSVID, fv)
 		default:
 			msg += " (no fix available)"
+			if rec.Malicious {
+				msg += removalHint
+			}
 		}
+		msg += exploitSuffix(v)
 		var r sarifResult
 		r.RuleID, r.Level, r.Message = v.OSVID, level, sarifText{msg}
+		r.Properties = exploitProperties(v)
 		r.Locations = make([]sarifLocation, 1)
 		r.Locations[0].PhysicalLocation.ArtifactLocation = opts.artifactLocation(d.ManifestFile)
 		sum := sha256.Sum256([]byte(strings.Join([]string{v.OSVID, string(d.Ecosystem), d.Name, d.CurrentVersion, d.ManifestFile}, "|")))
 		r.PartialFingerprints = map[string]string{"orbit/v1": hex.EncodeToString(sum[:])}
+		if s.Baseline {
+			r.BaselineState = "unchanged"
+			if x.New {
+				r.BaselineState = "new"
+			}
+		}
 		if x.Ignored {
 			r.Suppressions = []sarifSuppression{{Kind: "external", Justification: x.IgnoreReason}}
 		}
 		results = append(results, r)
+	}
+	for _, v := range s.LicenseViolations {
+		d := v.Dependency
+		for _, id := range v.Denied {
+			ruleID := "license/" + id
+			if _, ok := ruleIdx[ruleID]; !ok {
+				ruleIdx[ruleID] = len(rules)
+				rules = append(rules, sarifRule{
+					ID:               ruleID,
+					ShortDescription: sarifText{"Denied license " + id},
+					HelpURI:          licenseHelpURI(id),
+					Properties:       map[string]any{"tags": []string{"license"}},
+				})
+			}
+			var r sarifResult
+			r.RuleID, r.Level = ruleID, "error"
+			r.Message = sarifText{d.Name + "@" + d.CurrentVersion + " is licensed under " + d.License + ", and the license policy denies " + id}
+			r.Locations = make([]sarifLocation, 1)
+			r.Locations[0].PhysicalLocation.ArtifactLocation = opts.artifactLocation(d.ManifestFile)
+			sum := sha256.Sum256([]byte(strings.Join([]string{ruleID, string(d.Ecosystem), d.Name, d.CurrentVersion, d.ManifestFile}, "|")))
+			r.PartialFingerprints = map[string]string{"orbit/v1": hex.EncodeToString(sum[:])}
+			if s.Baseline {
+				r.BaselineState = "new"
+			}
+			if v.Ignored {
+				r.Suppressions = []sarifSuppression{{Kind: "external", Justification: v.IgnoreReason}}
+			}
+			results = append(results, r)
+		}
 	}
 	for i := range rules {
 		if rules[i].ShortDescription.Text == "" {
@@ -208,4 +268,41 @@ func WriteSARIF(w io.Writer, f []Finding, _ Summary, tool ToolInfo, opts SARIFOp
 		driver["informationUri"] = tool.InformationURI
 	}
 	return encodeJSON(w, doc)
+}
+
+// removalHint follows a finding of a package recommended for removal that
+// is not itself the malicious advisory: upgrading is not the advice.
+const removalHint = ". This package is reported as malicious; remove or replace it."
+
+// fixedText follows a finding of advisory id, fixed in fv, that is not
+// malicious itself; r is its package's recommendation. It names the fix and,
+// for a package recommended for removal, says so. Otherwise, when the
+// package's upgrade also clears other advisories, it says so: as part of the
+// fix when the upgrade is fv itself, or as a sentence naming the upgrade.
+func fixedText(r Recommendation, id, fv string) string {
+	if r.Malicious {
+		return " (fixed in " + fv + ")" + removalHint
+	}
+	if r.Upgrade == "" || len(r.Fixes) < 2 || !slices.Contains(r.Fixes, id) {
+		return " (fixed in " + fv + ")"
+	}
+	n := len(r.Fixes) - 1
+	word := "advisories"
+	if n == 1 {
+		word = "advisory"
+	}
+	// Recommend gives a Go upgrade the "v" that go get expects.
+	if r.Upgrade == fv || r.Upgrade == "v"+fv {
+		return fmt.Sprintf(" (fixed in %s; this also fixes %d other %s for this package)", fv, n, word)
+	}
+	return fmt.Sprintf(" (fixed in %s). Upgrading to %s fixes this and %d other %s for this package.", fv, r.Upgrade, n, word)
+}
+
+// licenseHelpURI links an SPDX-listed license to its page on spdx.org; a
+// LicenseRef has none.
+func licenseHelpURI(id string) string {
+	if strings.Contains(id, "LicenseRef-") {
+		return ""
+	}
+	return "https://spdx.org/licenses/" + id + ".html"
 }

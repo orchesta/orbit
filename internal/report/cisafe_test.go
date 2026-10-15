@@ -131,9 +131,10 @@ func TestTableCellsAreSingleLineWithoutControlCharacters(t *testing.T) {
 			t.Errorf("color=%v: control characters left in the table:\n%q", color, out)
 		}
 		lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-		// header, one finding, blank, summary, threshold, one warning
-		if len(lines) != 6 {
-			t.Errorf("color=%v: %d lines, want 6:\n%s", color, len(lines), out)
+		// header, one finding, blank, recommendation header and row, caution,
+		// blank, summary, threshold, one warning
+		if len(lines) != 10 {
+			t.Errorf("color=%v: %d lines, want 10:\n%s", color, len(lines), out)
 		}
 		for _, l := range lines {
 			if strings.HasPrefix(strings.TrimSpace(l), "::") {

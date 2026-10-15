@@ -10,6 +10,14 @@
 #     ORBIT_FAIL_ON: high     # optional: critical|high|medium|low|unknown|none
 #     ORBIT_IGNORE_FILE: ""   # optional: empty = <path>/.orbitignore when present
 #     ORBIT_PATH: ""          # optional: directory to scan, default $CI_PROJECT_DIR
+#     ORBIT_FAIL_ON_KEV: "false"  # optional: "true" also fails on any finding in CISA KEV
+#     ORBIT_EXPLOIT_DATA: "true"  # optional: "false" sends nothing to www.cisa.gov or api.first.org
+#     ORBIT_LICENSES: "false"     # optional: "true" looks up missing licenses on api.deps.dev
+#     ORBIT_DENY_LICENSE: ""      # optional: comma-separated SPDX IDs that fail the job
+#     ORBIT_BASELINE: ""      # optional: "" off, "auto", or a path to an earlier orbit JSON report
+#     ORBIT_BASELINE_JOB: ""  # optional, auto: job whose orbit-baseline.json is used (default: this job's name)
+#     ORBIT_SBOM_FORMAT: ""   # optional: cyclonedx or spdx adds an SBOM artifact
+#     ORBIT_SBOM_NAME: ""     # optional: project name in the SBOM, default $CI_PROJECT_PATH
 #
 # Variables you set in your own .gitlab-ci.yml (top level or on the job) override the
 # template, because the template only declares ORBIT_VERSION at its top level (needed for
@@ -29,8 +37,53 @@
 #   orbit.sarif      kept as a job artifact, run with --fail-on none
 # Why two runs and not "JSON once, convert with jq": the CLI image (alpine based) has no
 # jq, and installing it at job time would add another network dependency. A second run is
-# one extra osv.dev round trip.
+# one extra osv.dev round trip. The second run downloads the KEV catalog and EPSS scores
+# again (about 200 KB) and, with ORBIT_LICENSES, repeats the deps.dev lookups.
 # Only the first run decides the job result, so the job fails at most once.
+# With ORBIT_SBOM_FORMAT a third run, also with --fail-on none, writes orbit.cdx.json
+# (cyclonedx) or orbit.spdx.json (spdx) as a job artifact. It keeps ORBIT_IGNORE_FILE,
+# ORBIT_EXPLOIT_DATA and ORBIT_LICENSES, but not the KEV gate, ORBIT_DENY_LICENSE or the
+# baseline: the SBOM lists every dependency and finding. If it fails the job only warns.
+#
+# Licenses: ORBIT_DENY_LICENSE fails the job (exit 1) on a dependency that can only be
+# used under one of the listed licenses, whatever ORBIT_FAIL_ON says. The SARIF run applies
+# it too, so orbit.sarif lists the violations. With ORBIT_LICENSES a failed deps.dev
+# lookup is an error (exit 2) when ORBIT_DENY_LICENSE is set.
+#
+# Baseline (ORBIT_BASELINE: auto): merge requests fail only on findings that are new compared
+# with the default branch, on malicious packages and on denied licenses (the baseline does
+# not filter those); all findings are still reported.
+#   - On the default branch (not a merge request pipeline) the job also writes
+#     orbit-baseline.json, one more scan, and keeps it as an artifact. Every finding there is
+#     an existing one, so exit 1 is reported as a warning but does not fail the job (not even
+#     for a malicious package, a KEV entry or a denied license): GitLab hands out artifacts
+#     only from the latest successful pipeline of a branch. Exit 2 still fails it, and so
+#     does a failed orbit-baseline.json scan: a passing job without the file would become
+#     the latest successful pipeline and leave merge requests without a baseline, while a
+#     failed job leaves the previous pipeline's baseline in place.
+#   - Everywhere else the job downloads orbit-baseline.json of the latest successful pipeline
+#     of the merge request's target branch (the default branch otherwise) through the job
+#     artifacts API with CI_JOB_TOKEN, and passes it to --baseline. This works on every tier;
+#     needs:project is not used. With no baseline yet (a first run, or a target branch that
+#     never recorded one) it warns and every finding counts.
+#   - The API looks only at the latest successful pipeline of that branch. If that pipeline
+#     did not run the orbit job (rules skipped it, or it ran other jobs only), the download
+#     gets a 404, and the job warns as above.
+#   - GitLab may answer the download with a redirect to object storage or a CDN. busybox
+#     wget follows it and sends the JOB-TOKEN header there as well. The token is scoped to
+#     this job and expires with it. On self-managed GitLab use an https CI_API_V4_URL and,
+#     with object storage, proxy_download so artifacts are served by GitLab itself.
+#   - GitLab keeps the artifacts of each branch's latest successful pipeline regardless of
+#     expire_in ("Keep artifacts from most recent successful jobs", on by default).
+#   - Merge request pipelines that run in a fork download from the fork's own pipelines.
+#   - Schedule a default-branch pipeline (for example daily) so advisories published since
+#     the last merge are part of the baseline.
+# Any other ORBIT_BASELINE value is a path to a report you provide; it is passed to
+# --baseline as is, and a missing file is an error (exit 2).
+# Every job that does not record (the default mode, and auto outside the default branch)
+# logs "orbit-baseline.json: no matching files" when it uploads artifacts. That is
+# expected: the path is listed for the recording job. The same goes for orbit.cdx.json
+# and orbit.spdx.json, which are listed for ORBIT_SBOM_FORMAT.
 
 variables:
   ORBIT_VERSION: latest   # pin to a release tag such as v1.0.0
@@ -50,25 +103,123 @@ variables:
     - |
       path="${ORBIT_PATH:-$CI_PROJECT_DIR}"
       fail_on="${ORBIT_FAIL_ON:-high}"
+      case "${ORBIT_FAIL_ON_KEV:-false}" in
+        true) kev_flag="--fail-on-kev" ;;
+        false) kev_flag="" ;;
+        *) echo "error: ORBIT_FAIL_ON_KEV must be true or false, got '$ORBIT_FAIL_ON_KEV'" >&2; exit 2 ;;
+      esac
+      case "${ORBIT_EXPLOIT_DATA:-true}" in
+        true) exploit_flag="" ;;
+        false) exploit_flag="--no-exploit-data" ;;
+        *) echo "error: ORBIT_EXPLOIT_DATA must be true or false, got '$ORBIT_EXPLOIT_DATA'" >&2; exit 2 ;;
+      esac
+      # The first and the SARIF run get it, with ORBIT_DENY_LICENSE; the SBOM run gets it
+      # without ORBIT_DENY_LICENSE; the recording run does not.
+      case "${ORBIT_LICENSES:-false}" in
+        true) license_flag="--licenses" ;;
+        false) license_flag="" ;;
+        *) echo "error: ORBIT_LICENSES must be true or false, got '$ORBIT_LICENSES'" >&2; exit 2 ;;
+      esac
+      case "${ORBIT_SBOM_FORMAT:-}" in
+        "") sbom_out="" ;;
+        cyclonedx) sbom_out=orbit.cdx.json ;;
+        spdx) sbom_out=orbit.spdx.json ;;
+        *) echo "error: ORBIT_SBOM_FORMAT must be cyclonedx, spdx or empty, got '$ORBIT_SBOM_FORMAT'" >&2; exit 2 ;;
+      esac
+      sbom_name="${ORBIT_SBOM_NAME:-${CI_PROJECT_PATH:-}}"
+      baseline=""
+      record=false
+      case "${ORBIT_BASELINE:-}" in
+        "") ;;
+        auto)
+          if [ -z "${CI_MERGE_REQUEST_IID:-}" ] && [ -n "${CI_COMMIT_BRANCH:-}" ] \
+            && [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+            record=true
+          else
+            ref="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-$CI_DEFAULT_BRANCH}"
+            job="${ORBIT_BASELINE_JOB:-$CI_JOB_NAME}"
+            urlenc() {
+              printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/ /%20/g' -e 's|/|%2F|g' -e 's/#/%23/g' \
+                -e 's/?/%3F/g' -e 's/&/%26/g' -e 's/+/%2B/g'
+            }
+            prev="${TMPDIR:-/tmp}/orbit-baseline.prev.json"
+            url="$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs/artifacts/$(urlenc "$ref")"
+            url="$url/raw/orbit-baseline.json?job=$(urlenc "$job")"
+            if wget -q -T 60 --header "JOB-TOKEN: $CI_JOB_TOKEN" -O "$prev" "$url"; then
+              baseline="$prev"
+            else
+              rm -f "$prev"
+              echo "warning: no Orbit baseline from the latest successful $ref pipeline" \
+                "(job $job); every finding counts" >&2
+            fi
+          fi
+          ;;
+        *) baseline="$ORBIT_BASELINE" ;;
+      esac
       rc=0
-      orbit scan --path "$path" --fail-on "$fail_on" \
+      orbit scan --path "$path" --fail-on "$fail_on" $kev_flag $exploit_flag $license_flag \
         ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_IGNORE_FILE"} \
+        ${ORBIT_DENY_LICENSE:+--deny-license "$ORBIT_DENY_LICENSE"} \
+        ${baseline:+--baseline "$baseline"} \
         --format junit --out orbit-junit.xml || rc=$?
-      # Exit 2 is an error (osv.dev unreachable, timeout, bad flag): no report was written
-      # and a second run would most likely fail the same way.
+      # Exit 2 is an error (osv.dev unreachable, timeout, bad flag, bad baseline, or no KEV
+      # catalog with ORBIT_FAIL_ON_KEV, or a failed license lookup with ORBIT_DENY_LICENSE):
+      # no report was written and another run would most likely fail the same way.
       if [ "$rc" -ne 2 ]; then
-        orbit scan --path "$path" --fail-on none \
+        # No --fail-on-kev in the runs below: they only write artifacts.
+        # --fail-on none keeps findings from failing it, but a denied license still exits 1
+        # after writing the report; only 2 means it is missing.
+        sarif_rc=0
+        orbit scan --path "$path" --fail-on none $exploit_flag $license_flag \
           ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_IGNORE_FILE"} \
-          --format sarif --out orbit.sarif --quiet \
-          || echo "warning: could not write orbit.sarif" >&2
+          ${ORBIT_DENY_LICENSE:+--deny-license "$ORBIT_DENY_LICENSE"} \
+          ${baseline:+--baseline "$baseline"} \
+          --format sarif --out orbit.sarif --quiet || sarif_rc=$?
+        [ "$sarif_rc" -le 1 ] || echo "warning: could not write orbit.sarif" >&2
+        # The SBOM lists every dependency and finding: no license policy and no
+        # baseline. A failure only warns.
+        if [ -n "$sbom_out" ]; then
+          orbit scan --path "$path" --fail-on none $exploit_flag $license_flag \
+            ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_IGNORE_FILE"} \
+            --format "$ORBIT_SBOM_FORMAT" ${sbom_name:+--sbom-name "$sbom_name"} \
+            --out "$sbom_out" --quiet \
+            || echo "warning: could not write $sbom_out" >&2
+        fi
+        # A failed recording scan fails the job: a passing job without the file would
+        # become the latest successful pipeline, and merge requests would find no
+        # baseline. A failed one leaves the previous pipeline's baseline in place.
+        if [ "$record" = true ] && ! orbit scan --path "$path" --fail-on none $exploit_flag \
+            ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_IGNORE_FILE"} \
+            --format json --out orbit-baseline.json --quiet; then
+          echo "error: could not write orbit-baseline.json; failing the job so the previous" \
+            "successful pipeline keeps serving its baseline" >&2
+          rm -f orbit-baseline.json
+          rc=2
+        fi
       fi
-      # Keep the first run's exit code: 0 clean, 1 findings at or above the threshold, 2 error.
+      # Only exit 1 (findings or a denied license) is turned into a warning; exit 2 from
+      # either scan stays.
+      if [ "$record" = true ] && [ "$rc" -eq 1 ]; then
+        echo "warning: Orbit findings and denied licenses are reported in orbit-junit.xml" \
+          "but do not fail the job: $CI_DEFAULT_BRANCH records the baseline" >&2
+        rc=0
+      fi
+      # Keep the first run's exit code: 0 clean, 1 findings at or above the threshold, a
+      # malicious package (unless the threshold is none), in KEV with ORBIT_FAIL_ON_KEV
+      # (with a baseline only new findings count, and malicious packages even when it lists
+      # them), or a license ORBIT_DENY_LICENSE denies (the baseline does not filter these),
+      # 2 error.
+      # The default branch in baseline mode turns 1 into 0 and a failed recording scan
+      # into 2, see above.
       exit "$rc"
   artifacts:
     when: always
     expire_in: 30 days
     paths:
       - orbit.sarif
+      - orbit.cdx.json
+      - orbit.spdx.json
+      - orbit-baseline.json
     reports:
       junit: orbit-junit.xml
 

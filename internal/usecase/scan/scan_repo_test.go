@@ -19,6 +19,7 @@ import (
 	"github.com/orchesta/orbit/internal/domain/repository"
 	"github.com/orchesta/orbit/internal/engine"
 	"github.com/orchesta/orbit/internal/infrastructure/analyzer"
+	"github.com/orchesta/orbit/internal/infrastructure/exploit"
 	"github.com/orchesta/orbit/internal/infrastructure/git"
 )
 
@@ -733,4 +734,109 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// fakeExploit marks every vulnerability as known exploited when its KEV
+// source answered.
+type fakeExploit struct{ result exploit.Result }
+
+func (f fakeExploit) Enrich(_ context.Context, vulns []*entity.Vulnerability) exploit.Result {
+	if f.result.KEV.Status == exploit.StatusOK {
+		for _, v := range vulns {
+			v.KEV = true
+		}
+	}
+	return f.result
+}
+
+func newExploitUseCase(t *testing.T, scans *fakeScanRepo, vulns *fakeVulnRepo, enricher engine.ExploitEnricher, logger *slog.Logger) *UseCase {
+	t.Helper()
+	registry := analyzer.NewRegistry()
+	registry.Register(fakeAnalyzer{})
+	eng := engine.New(registry, fakeLookup{vulnerable: 1, total: 2}, engine.Options{CheckLatest: true, Logger: discardLogger(), Exploit: enricher})
+	return NewUseCase(&fakeRepoRepo{}, scans, &fakeDepRepo{}, vulns, eng,
+		func(entity.GitProvider) (git.Cloner, error) { return fakeProvider{}, nil },
+		nil, Options{WorkDir: t.TempDir()}, logger)
+}
+
+func TestRunSavesExploitSignals(t *testing.T) {
+	scans, vulns := &fakeScanRepo{}, &fakeVulnRepo{}
+	ok := exploit.SourceResult{Status: exploit.StatusOK}
+	uc := newExploitUseCase(t, scans, vulns, fakeExploit{result: exploit.Result{KEV: ok, EPSS: ok}}, discardLogger())
+	if err := uc.Run(context.Background(), claimedScan()); err != nil {
+		t.Fatal(err)
+	}
+	if len(vulns.saved) != 2 || !vulns.saved[0].KEV || !vulns.saved[1].KEV {
+		t.Fatalf("saved = %+v; want both rows with KEV", vulns.saved)
+	}
+}
+
+func TestRunCompletesAndWarnsWhenExploitDataFails(t *testing.T) {
+	scans, vulns := &fakeScanRepo{}, &fakeVulnRepo{}
+	var logs bytes.Buffer
+	failed := exploit.SourceResult{Status: exploit.StatusFailed, Err: errors.New("fetch KEV catalog: HTTP 503")}
+	uc := newExploitUseCase(t, scans, vulns, fakeExploit{result: exploit.Result{KEV: failed, EPSS: exploit.SourceResult{Status: exploit.StatusOK}}},
+		slog.New(slog.NewTextHandler(&logs, nil)))
+	if err := uc.Run(context.Background(), claimedScan()); err != nil {
+		t.Fatal(err)
+	}
+	if scans.last.Status != entity.ScanStatusCompleted || len(vulns.saved) != 2 || vulns.saved[0].KEV {
+		t.Fatalf("scan %s with %d rows (KEV %v); want completed, 2 rows, no KEV", scans.last.Status, len(vulns.saved), vulns.saved[0].KEV)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "exploit data unavailable") || !strings.Contains(out, "HTTP 503") || !strings.Contains(out, "repo=app") {
+		t.Fatalf("logs lack the warning:\n%s", out)
+	}
+}
+
+// failingLicenses fails every license lookup, as deps.dev does when it is
+// unreachable.
+type failingLicenses struct{}
+
+func (failingLicenses) License(context.Context, entity.Ecosystem, string, string) (string, error) {
+	return "", errors.New("api.deps.dev: HTTP 503")
+}
+
+func TestRunCompletesAndWarnsWhenLicenseLookupsFail(t *testing.T) {
+	scans, deps := &fakeScanRepo{}, &fakeDepRepo{}
+	var logs bytes.Buffer
+	registry := analyzer.NewRegistry()
+	registry.Register(lockAnalyzer{})
+	provider := fakeProvider{clone: func(_ context.Context, opts git.CloneOptions) error {
+		if err := os.MkdirAll(opts.DestPath, 0o755); err != nil {
+			return err
+		}
+		for _, name := range []string{"package.json", "package-lock.json"} {
+			if err := os.WriteFile(filepath.Join(opts.DestPath, name), []byte("{}"), 0o644); err != nil {
+				return err
+			}
+		}
+		return nil
+	}}
+	eng := engine.New(registry, fakeLookup{}, engine.Options{Logger: discardLogger(), Licenses: failingLicenses{}})
+	uc := NewUseCase(&fakeRepoRepo{}, scans, deps, nil, eng,
+		func(entity.GitProvider) (git.Cloner, error) { return provider, nil },
+		nil, Options{WorkDir: t.TempDir()}, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err := uc.Run(context.Background(), claimedScan()); err != nil {
+		t.Fatal(err)
+	}
+	if scans.last.Status != entity.ScanStatusCompleted || len(deps.saved) != 2 {
+		t.Fatalf("scan %s with %d dependencies; want completed with 2", scans.last.Status, len(deps.saved))
+	}
+	for _, d := range deps.saved {
+		if d.License != "" {
+			t.Fatalf("%s license = %q, want unknown", d.Name, d.License)
+		}
+	}
+	var warning string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "level=WARN") && strings.Contains(line, "license lookup on deps.dev failed") {
+			warning = line
+		}
+	}
+	for _, want := range []string{"repo=app", "failed=2", "api.deps.dev: HTTP 503"} {
+		if !strings.Contains(warning, want) {
+			t.Fatalf("license warning %q lacks %q; logs:\n%s", warning, want, logs.String())
+		}
+	}
 }

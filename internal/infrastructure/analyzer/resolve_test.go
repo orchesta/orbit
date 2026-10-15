@@ -3,6 +3,7 @@ package analyzer
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -494,5 +495,57 @@ func TestResolveIgnoresFailedVersionsFile(t *testing.T) {
 	}
 	if got := Resolve(files); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestMergeNames(t *testing.T) {
+	if got := MergeNames(nil, nil); got != nil {
+		t.Errorf("MergeNames(nil, nil) = %v, want nil", got)
+	}
+	a := []string{"mocha", "express"}
+	got := MergeNames(a, []string{"express", "body-parser"})
+	if want := []string{"body-parser", "express", "mocha"}; !slices.Equal(got, want) {
+		t.Errorf("MergeNames = %v, want %v", got, want)
+	}
+	if !slices.Equal(a, []string{"mocha", "express"}) {
+		t.Errorf("input modified: %v", a)
+	}
+}
+
+// One package and version installed twice in one lockfile (two nested
+// copies) is reported once, pulled in by every parent of either copy.
+func TestResolveMergesVia(t *testing.T) {
+	lock := lockfile(fakeNpm, "package-lock.json",
+		ParsedDependency{Name: "qs", CurrentVersion: "6.7.0", Via: []string{"express"}},
+		ParsedDependency{Name: "qs", CurrentVersion: "6.7.0", Via: []string{"body-parser", "express"}},
+		ParsedDependency{Name: "ms", CurrentVersion: "2.0.0"},
+	)
+	via := map[string][]string{}
+	for _, r := range Resolve([]ParsedFile{lock}) {
+		via[r.Name+"@"+r.CurrentVersion] = r.Via
+	}
+	want := map[string][]string{"ms@2.0.0": nil, "qs@6.7.0": {"body-parser", "express"}}
+	if !reflect.DeepEqual(via, want) {
+		t.Fatalf("via = %v, want %v", via, want)
+	}
+}
+
+func TestResolveKeepsLockfileLicenses(t *testing.T) {
+	licensed := func(name, version, license string) ParsedDependency {
+		return ParsedDependency{Name: name, CurrentVersion: version, License: license}
+	}
+	got := Resolve([]ParsedFile{
+		manifest(fakeNpm, "package.json", d("a", "^1.0.0")),
+		// The same entry twice, once without a license: the license is kept.
+		lockfile(fakeNpm, "package-lock.json", d("a", "1.0.0"), licensed("a", "1.0.0", "MIT"), licensed("b", "2.0.0", "ISC")),
+	})
+	if len(got) != 2 {
+		t.Fatalf("Resolve = %+v, want a and b", got)
+	}
+	if got[0].Name != "a" || got[0].License != "MIT" || !got[0].IsDirect {
+		t.Errorf("a = %+v, want direct with MIT", got[0])
+	}
+	if got[1].Name != "b" || got[1].License != "ISC" {
+		t.Errorf("b = %+v, want ISC", got[1])
 	}
 }

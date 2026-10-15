@@ -62,6 +62,22 @@ func CompareVersions(current, latest string) string {
 	return "patch"
 }
 
+// CompareVersionOrder orders two versions in the formats CompareVersions
+// accepts: -1 when a is lower than b, 0 when equal, 1 when higher. ok is
+// false when either cannot be parsed; order is then 0 and meaningless, so
+// callers must check ok before using it.
+func CompareVersionOrder(a, b string) (order int, ok bool) {
+	va, ok := parseVersion(a)
+	if !ok {
+		return 0, false
+	}
+	vb, ok := parseVersion(b)
+	if !ok {
+		return 0, false
+	}
+	return compareVersion(va, vb), true
+}
+
 func segment(core []int, i int) int {
 	if i < len(core) {
 		return core[i]

@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/domain/repository"
 )
 
 // seedScanWithVulns stores a completed scan for repoID with one dependency per
@@ -44,7 +45,7 @@ func TestListLatestVulnerabilitiesUsesLatestCompletedScans(t *testing.T) {
 	seedScanWithVulns(t, ctx, a, time.Now().Add(-time.Hour), scans, deps, vulns, entity.SeverityHigh, entity.SeverityUnknown)
 	seedScanWithVulns(t, ctx, b, time.Now().Add(-time.Hour), scans, deps, vulns, entity.SeverityCritical)
 
-	all, total, err := vulns.ListLatest(ctx, "", 25, 0)
+	all, total, err := vulns.ListLatest(ctx, repository.VulnerabilityListFilter{}, 25, 0)
 	if err != nil || total != 3 || len(all) != 3 {
 		t.Fatalf("ListLatest = %d items, total %d, %v; want 3", len(all), total, err)
 	}
@@ -55,12 +56,12 @@ func TestListLatestVulnerabilitiesUsesLatestCompletedScans(t *testing.T) {
 		t.Fatalf("finding lacks package details: %+v", all[0])
 	}
 
-	high, total, err := vulns.ListLatest(ctx, "high", 25, 0)
+	high, total, err := vulns.ListLatest(ctx, repository.VulnerabilityListFilter{Severity: "high"}, 25, 0)
 	if err != nil || total != 1 || len(high) != 1 || high[0].RepositoryName != "alpha" {
 		t.Fatalf("severity filter = %+v, %d, %v", high, total, err)
 	}
 
-	page2, total, err := vulns.ListLatest(ctx, "", 2, 2)
+	page2, total, err := vulns.ListLatest(ctx, repository.VulnerabilityListFilter{}, 2, 2)
 	if err != nil || total != 3 || len(page2) != 1 {
 		t.Fatalf("second page = %d items, total %d, %v", len(page2), total, err)
 	}

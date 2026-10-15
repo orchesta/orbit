@@ -2,7 +2,7 @@ import { vi } from 'vitest';
 
 // mockFetch stubs global fetch with a route table: keys are "METHOD /path"
 // (path without the /api/v1 prefix, query string included when given) and
-// values are { status, body } or a function (request) => { status, body } or
+// values are { status, body, headers } or a function (request) => { status, body } or
 // a Promise of one. Unmatched requests fail the test loudly.
 export function mockFetch(routes) {
   const calls = [];
@@ -19,7 +19,7 @@ export function mockFetch(routes) {
     const text = res.raw ?? (res.body === undefined ? '' : JSON.stringify(res.body));
     return new Response(status === 204 ? null : text, {
       status,
-      headers: { 'Content-Type': res.raw ? 'text/html' : 'application/json' },
+      headers: { 'Content-Type': res.raw ? 'text/html' : 'application/json', ...(res.headers || {}) },
     });
   });
   vi.stubGlobal('fetch', fn);

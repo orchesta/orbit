@@ -57,7 +57,7 @@ type ResolvedDependency struct {
 // Resolved: only exact pins set it. Names are compared the way the ecosystem
 // compares them (PyPI and NuGet names are case-insensitive). Entries with the same ecosystem, file, name
 // and version are reported once: direct if any of them is, dev only if all
-// of them are. The result is sorted by ecosystem, file, name and version.
+// of them are, with the union of their Via. The result is sorted by ecosystem, file, name and version.
 //
 // A lockfile that could not be read or parsed can be passed with no Deps:
 // its directory then keeps its manifests' results instead of falling to a
@@ -123,7 +123,7 @@ func resolveEcosystem(eco entity.Ecosystem, files []ParsedFile, out *collector) 
 			declared[dir] = make(map[string]bool)
 		}
 		for _, dep := range f.Deps {
-			declared[dir][nameKey(eco, dep.Name)] = true
+			declared[dir][NameKey(eco, dep.Name)] = true
 		}
 	}
 
@@ -134,7 +134,7 @@ func resolveEcosystem(eco entity.Ecosystem, files []ParsedFile, out *collector) 
 		for _, lock := range locks {
 			knowsDirect := slices.ContainsFunc(lock.Deps, func(dep ParsedDependency) bool { return dep.IsDirect })
 			for _, dep := range lock.Deps {
-				key := nameKey(eco, dep.Name)
+				key := NameKey(eco, dep.Name)
 				if dep.Internal {
 					if dep.Name != "" {
 						internal[key] = true
@@ -160,7 +160,7 @@ func resolveEcosystem(eco entity.Ecosystem, files []ParsedFile, out *collector) 
 		for _, m := range covered[dir] {
 			inWorkspace := workspaces[path.Dir(m.Path)]
 			for _, dep := range m.Deps {
-				key := nameKey(eco, dep.Name)
+				key := NameKey(eco, dep.Name)
 				if inWorkspace && internal[key] {
 					continue
 				}
@@ -189,8 +189,8 @@ func applyVersions(eco entity.Ecosystem, files []ParsedFile) []ParsedFile {
 			versions[dir] = make(map[string]string)
 		}
 		for _, dep := range f.Deps {
-			if _, dup := versions[dir][nameKey(eco, dep.Name)]; !dup {
-				versions[dir][nameKey(eco, dep.Name)] = dep.CurrentVersion
+			if _, dup := versions[dir][NameKey(eco, dep.Name)]; !dup {
+				versions[dir][NameKey(eco, dep.Name)] = dep.CurrentVersion
 			}
 		}
 	}
@@ -205,7 +205,7 @@ func applyVersions(eco entity.Ecosystem, files []ParsedFile) []ParsedFile {
 				f.Deps = slices.Clone(f.Deps)
 				for i, dep := range f.Deps {
 					if dep.CurrentVersion == "" {
-						f.Deps[i].CurrentVersion = byName[nameKey(eco, dep.Name)]
+						f.Deps[i].CurrentVersion = byName[NameKey(eco, dep.Name)]
 					}
 				}
 			}
@@ -277,10 +277,10 @@ func coveringDir(manifestDir string, lockfiles map[string][]ParsedFile) (string,
 	}
 }
 
-// nameKey returns the form of a package name that the ecosystem treats as
+// NameKey returns the form of a package name that the ecosystem treats as
 // identical: PyPI names are normalized as in PEP 503, NuGet IDs are
 // case-insensitive, and other names are compared as written.
-func nameKey(eco entity.Ecosystem, name string) string {
+func NameKey(eco entity.Ecosystem, name string) string {
 	switch eco {
 	case entity.EcosystemPyPI:
 		return strings.Join(strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
@@ -317,8 +317,23 @@ func (c *collector) add(eco entity.Ecosystem, file string, dep ParsedDependency)
 		c.deps[i].IsDirect = c.deps[i].IsDirect || dep.IsDirect
 		c.deps[i].Dev = c.deps[i].Dev && dep.Dev
 		c.deps[i].Resolved = c.deps[i].Resolved || dep.Resolved
+		c.deps[i].Via = MergeNames(c.deps[i].Via, dep.Via)
+		if c.deps[i].License == "" {
+			c.deps[i].License = dep.License
+		}
 		return
 	}
 	c.index[key] = len(c.deps)
 	c.deps = append(c.deps, ResolvedDependency{ParsedDependency: dep, Ecosystem: eco, ManifestFile: file})
+}
+
+// MergeNames returns the sorted union of a and b without repeats, or nil
+// when both are empty. The inputs are not modified.
+func MergeNames(a, b []string) []string {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	out := slices.Concat(a, b)
+	slices.Sort(out)
+	return slices.Compact(out)
 }

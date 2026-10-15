@@ -17,7 +17,10 @@ import (
 )
 
 // Ensure interface compliance.
-var _ analyzer.Analyzer = (*Analyzer)(nil)
+var (
+	_ analyzer.Analyzer      = (*Analyzer)(nil)
+	_ analyzer.OptionsParser = (*Analyzer)(nil)
+)
 
 // Analyzer implements the analyzer.Analyzer interface for npm packages.
 type Analyzer struct {
@@ -61,15 +64,31 @@ type packageJSON struct {
 // lockfiles. Manifest entries are direct; lockfile entries are not marked,
 // since Resolve derives directness from the package.json files they cover.
 func (a *Analyzer) ParseDependencies(content []byte, manifestPath string) ([]analyzer.ParsedDependency, error) {
+	deps, _, err := a.ParseWithOptions(content, manifestPath, analyzer.ParseOptions{})
+	return deps, err
+}
+
+// ParseWithOptions is ParseDependencies with options. Only package-lock.json
+// and npm-shrinkwrap.json use them, and only they warn: when their graph is
+// too large to record Via (see lockVia).
+func (a *Analyzer) ParseWithOptions(content []byte, manifestPath string, opts analyzer.ParseOptions) ([]analyzer.ParsedDependency, []string, error) {
+	var deps []analyzer.ParsedDependency
+	var err error
 	switch path.Base(manifestPath) {
 	case "package-lock.json", "npm-shrinkwrap.json":
-		return parsePackageLock(content)
+		return parsePackageLock(content, opts)
 	case "yarn.lock":
-		return parseYarnLock(content)
+		deps, err = parseYarnLock(content)
 	case "pnpm-lock.yaml":
-		return parsePnpmLock(content)
+		deps, err = parsePnpmLock(content)
+	default:
+		deps, err = parsePackageJSON(content)
 	}
+	return deps, nil, err
+}
 
+// parsePackageJSON reads the dependencies a package.json declares.
+func parsePackageJSON(content []byte) ([]analyzer.ParsedDependency, error) {
 	var pkg packageJSON
 	if err := json.Unmarshal(content, &pkg); err != nil {
 		return nil, fmt.Errorf("failed to parse package.json: %w", err)

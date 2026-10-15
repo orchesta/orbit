@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="orbit" tests="5" failures="1" skipped="3">
+  <testcase name="lodash@4.17.15: GHSA-crit-0003" classname="package-lock.json">
+    <skipped message="existing finding (in the baseline)"></skipped>
+  </testcase>
+  <testcase name="express@4.18.2: GHSA-esc-0005" classname="package-lock.json">
+    <failure message="high: a &amp; b &lt; c &gt; d &#34; e&#xA;line2" type="high">express@4.18.2 is affected by GHSA-esc-0005</failure>
+  </testcase>
+  <testcase name="django@3.0.0: GHSA-high-0002" classname="requirements.txt">
+    <skipped message="existing finding (in the baseline)"></skipped>
+  </testcase>
+  <testcase name="lodash@4.17.15: GHSA-medium-0001" classname="package-lock.json"></testcase>
+  <testcase name="django@3.0.0: GHSA-low-0004" classname="requirements.txt">
+    <skipped message="accepted risk"></skipped>
+  </testcase>
+</testsuite>

@@ -31,3 +31,9 @@ scanner:
   max_concurrent_scans: 3
   scan_timeout: 900
   retain_scans: 10
+  licenses: false   # look up missing licenses on deps.dev (sends package names and versions)
+
+exploit:
+  enabled: true   # CISA KEV and FIRST EPSS data on findings; false sends nothing to cisa.gov or api.first.org
+  kev_url: ""     # empty: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+  epss_url: ""    # empty: https://api.first.org/data/v1/epss

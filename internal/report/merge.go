@@ -8,6 +8,7 @@ import (
 
 	"github.com/orchesta/orbit/internal/domain/entity"
 	"github.com/orchesta/orbit/internal/infrastructure/analyzer"
+	"github.com/orchesta/orbit/internal/infrastructure/exploit"
 )
 
 // mergeAliases merges the vulnerabilities of one dependency that are the same
@@ -67,8 +68,9 @@ func idSet(v *entity.Vulnerability) []string {
 }
 
 // mergeGroup combines vulnerabilities of one dependency that are the same
-// issue. Members are ranked by severity (highest first), then ID, aliases and
-// summary, so the result does not depend on input order. The merged finding:
+// issue. Members are ranked by severity (highest first), then ID, aliases,
+// summary and fixed version, so the result does not depend on input order.
+// The merged finding:
 //   - is reported under a CVE ID of a member if there is one, otherwise the
 //     smallest member ID, and lists every other ID (sorted) as an alias;
 //   - has the highest severity and the first non-empty summary and details;
@@ -77,7 +79,9 @@ func idSet(v *entity.Vulnerability) []string {
 //     no fix (upgrading must clear every advisory in the group). Malicious
 //     package advisories (see maliciousAdvisory) take no part when the group
 //     has other members: a MAL- record names no fix, and the other
-//     advisories say which release is clean.
+//     advisories say which release is clean;
+//   - is in KEV if any member is (earliest date) and has the highest EPSS of
+//     its members.
 func mergeGroup(group []*entity.Vulnerability) *entity.Vulnerability {
 	if len(group) == 1 {
 		return group[0]
@@ -94,7 +98,12 @@ func mergeGroup(group []*entity.Vulnerability) *entity.Vulnerability {
 		if aa, ba := strings.Join(a.Aliases, ","), strings.Join(b.Aliases, ","); aa != ba {
 			return aa < ba
 		}
-		return a.Summary < b.Summary
+		if a.Summary != b.Summary {
+			return a.Summary < b.Summary
+		}
+		// Two spellings of one fix ("2.0", "2.0.0") are equal to newer, so
+		// highestFix keeps the first; string order makes that choice stable.
+		return fixedIn(a) < fixedIn(b)
 	})
 
 	m := *members[0]
@@ -124,7 +133,21 @@ func mergeGroup(group []*entity.Vulnerability) *entity.Vulnerability {
 	}
 	sort.Strings(m.Aliases)
 	m.FixedVersion = highestFix(members)
+	mergeExploit(&m, members)
 	return &m
+}
+
+// mergeExploit gives the merged finding the strongest exploit signal of
+// its members: listed in KEV if any member is, since the earliest date,
+// and the highest EPSS with that member's percentile. The combining rule
+// is exploit.MergeKEV and exploit.MergeEPSS, the same one the enricher
+// uses for the CVE IDs of one advisory.
+func mergeExploit(m *entity.Vulnerability, members []*entity.Vulnerability) {
+	m.KEV, m.KEVDateAdded, m.EPSS, m.EPSSPercentile = false, nil, nil, nil
+	for _, v := range members {
+		exploit.MergeKEV(m, v.KEV, v.KEVDateAdded)
+		exploit.MergeEPSS(m, v.EPSS, v.EPSSPercentile)
+	}
 }
 
 // groupID picks the ID a merged group is reported under.
@@ -176,16 +199,23 @@ func highestFix(members []*entity.Vulnerability) *string {
 	return &best
 }
 
-// newer reports whether version a is higher than b. Versions the analyzer
-// cannot compare fall back to string order, so the choice stays stable.
+// newer reports whether version a is higher than b (see versionOrder).
+// Two spellings of one version, such as "2.0" and "2.0.0", are equal, so
+// neither is newer.
 func newer(a, b string) bool {
-	if analyzer.CompareVersions(b, a) != "none" {
-		return true
+	order, _ := versionOrder(a, b)
+	return order > 0
+}
+
+// versionOrder orders a and b: -1 when a is lower, 0 when equal, 1 when
+// higher. It is the one comparison that highestFix and Recommend share.
+// comparable is false when analyzer.CompareVersionOrder cannot parse one of
+// them; the order is then string order, so the choice stays stable.
+func versionOrder(a, b string) (order int, comparable bool) {
+	if order, ok := analyzer.CompareVersionOrder(a, b); ok {
+		return order, true
 	}
-	if analyzer.CompareVersions(a, b) != "none" {
-		return false
-	}
-	return a > b
+	return strings.Compare(a, b), false
 }
 
 // maliciousAdvisory reports whether v is itself an OpenSSF malicious package

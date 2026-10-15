@@ -179,3 +179,59 @@ func TestLoadStillReadsOrbitYAML(t *testing.T) {
 		t.Fatalf("RetainScans = %d, want 4 from orbit.yaml", cfg.Scanner.RetainScans)
 	}
 }
+
+func TestLoadExploitDefaults(t *testing.T) {
+	setRequiredEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Exploit.Enabled || cfg.Exploit.KEVURL != "" || cfg.Exploit.EPSSURL != "" {
+		t.Fatalf("exploit defaults = %+v; want enabled with the public services", cfg.Exploit)
+	}
+}
+
+func TestLoadExploitSettings(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("ORBIT_EXPLOIT_ENABLED", "false")
+	t.Setenv("ORBIT_EXPLOIT_KEV_URL", "https://mirror.example/kev.json")
+	t.Setenv("ORBIT_EXPLOIT_EPSS_URL", "https://mirror.example/epss")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Exploit.Enabled || cfg.Exploit.KEVURL != "https://mirror.example/kev.json" || cfg.Exploit.EPSSURL != "https://mirror.example/epss" {
+		t.Fatalf("exploit = %+v", cfg.Exploit)
+	}
+}
+
+// Compose passes ORBIT_EXPLOIT_KEV_URL and ORBIT_EXPLOIT_EPSS_URL as
+// empty strings when deploy/docker/.env does not set them; that means the
+// public services.
+func TestLoadTreatsEmptyExploitURLsAsTheDefaults(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("ORBIT_EXPLOIT_ENABLED", "true")
+	t.Setenv("ORBIT_EXPLOIT_KEV_URL", "")
+	t.Setenv("ORBIT_EXPLOIT_EPSS_URL", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Exploit.Enabled || cfg.Exploit.KEVURL != "" || cfg.Exploit.EPSSURL != "" {
+		t.Fatalf("exploit = %+v; want enabled with the public services", cfg.Exploit)
+	}
+}
+
+func TestLoadRejectsInvalidExploitURLs(t *testing.T) {
+	for _, env := range []string{"ORBIT_EXPLOIT_KEV_URL", "ORBIT_EXPLOIT_EPSS_URL"} {
+		for _, value := range []string{"ftp://mirror.example/kev.json", "mirror.example/kev.json", "https://"} {
+			t.Run(env+"="+value, func(t *testing.T) {
+				setRequiredEnv(t)
+				t.Setenv(env, value)
+				if _, err := Load(); err == nil || !strings.Contains(err.Error(), env) {
+					t.Fatalf("err = %v, want one naming %s", err, env)
+				}
+			})
+		}
+	}
+}

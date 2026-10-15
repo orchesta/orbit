@@ -7,6 +7,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -169,7 +170,8 @@ func TestJSONEmptyArraysNotNull(t *testing.T) {
 	if err := WriteJSON(&b, f, s, testTool); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(b.String(), `"findings": []`) || !strings.Contains(b.String(), `"dependencies": []`) {
+	if !strings.Contains(b.String(), `"findings": []`) || !strings.Contains(b.String(), `"dependencies": []`) ||
+		!strings.Contains(b.String(), `"recommendations": []`) {
 		t.Errorf("want empty arrays:\n%s", b.String())
 	}
 }
@@ -412,4 +414,199 @@ func TestJUnitEscapingRoundTrip(t *testing.T) {
 		}
 	}
 	t.Error("escaping case missing")
+}
+
+func TestJSONBaselineFields(t *testing.T) {
+	f, s := build(t, entity.SeverityHigh)
+	ApplyBaseline(f, &s, fixtureBaseline(t))
+	var b bytes.Buffer
+	if err := WriteJSON(&b, f, s, testTool); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Summary struct {
+			New      int  `json:"new"`
+			Baseline bool `json:"baseline"`
+		} `json:"summary"`
+		Findings []struct {
+			ID  string `json:"id"`
+			New *bool  `json:"new"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal(b.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.Summary.Baseline || doc.Summary.New != 2 {
+		t.Errorf("summary = %+v", doc.Summary)
+	}
+	for _, x := range doc.Findings {
+		if x.New == nil {
+			t.Fatalf("%s has no \"new\" field", x.ID)
+		}
+		if want := x.ID != "GHSA-crit-0003" && x.ID != "GHSA-high-0002"; *x.New != want {
+			t.Errorf("%s: new = %v, want %v", x.ID, *x.New, want)
+		}
+	}
+}
+
+func buildWithBaseline(t *testing.T) ([]Finding, Summary) {
+	t.Helper()
+	f, s := build(t, entity.SeverityHigh)
+	ApplyBaseline(f, &s, fixtureBaseline(t))
+	return f, s
+}
+
+func TestTableBaselineGolden(t *testing.T) {
+	f, s := buildWithBaseline(t)
+	var b bytes.Buffer
+	if err := WriteTable(&b, f, s); err != nil {
+		t.Fatal(err)
+	}
+	golden(t, "table.baseline.golden", b.Bytes())
+}
+
+// newSummaryRE is the ", N new" token of the summary line. A plain " new"
+// would also match "newer" in the recommendations footer.
+var newSummaryRE = regexp.MustCompile(`, \d+ new\b`)
+
+func TestTableWithoutBaselineHasNoNewMarker(t *testing.T) {
+	f, s := build(t, entity.SeverityHigh)
+	var b bytes.Buffer
+	if err := WriteTable(&b, f, s); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	if strings.Contains(out, "(new)") || strings.Contains(out, ", new)") ||
+		newSummaryRE.MatchString(out) || strings.Contains(out, "(new findings and malicious packages)") {
+		t.Errorf("no baseline, no new marker:\n%s", out)
+	}
+}
+
+// With a baseline, the threshold line follows the new findings only: the
+// critical finding is in the baseline, so --fail-on critical passes.
+func TestTableBaselineThresholdPassesOnExistingFindings(t *testing.T) {
+	f, s := build(t, entity.SeverityCritical)
+	ApplyBaseline(f, &s, fixtureBaseline(t))
+	var b bytes.Buffer
+	if err := WriteTable(&b, f, s); err != nil {
+		t.Fatal(err)
+	}
+	if out := b.String(); !strings.Contains(out, "threshold critical (new findings and malicious packages): passed\n") {
+		t.Errorf("want a passed threshold line:\n%s", out)
+	}
+}
+
+func TestJUnitBaselineGolden(t *testing.T) {
+	f, s := buildWithBaseline(t)
+	var b bytes.Buffer
+	if err := WriteJUnit(&b, f, s); err != nil {
+		t.Fatal(err)
+	}
+	golden(t, "report.junit.baseline.golden", b.Bytes())
+	out := b.String()
+	if strings.Count(out, "<failure") != 1 || strings.Count(out, "<skipped") != 3 ||
+		strings.Count(out, `existing finding (in the baseline)`) != 2 ||
+		!strings.Contains(out, `failures="1" skipped="3"`) {
+		t.Errorf("want 1 failure (esc) and 3 skipped (crit, high: baseline; low: ignored):\n%s", out)
+	}
+}
+
+// A malicious package fails even when the baseline lists it (see gates), so
+// JUnit reports a failure, like the exit code.
+func TestJUnitBaselineMaliciousFindingFails(t *testing.T) {
+	res := fixtureResult()
+	res.Vulnerabilities = res.Vulnerabilities[2:3] // GHSA-crit-0003 on lodash, in the baseline
+	res.Vulnerabilities[0].Aliases = []string{"MAL-2025-0003"}
+	f, s := Build(res, nil, entity.SeverityHigh, fixedNow)
+	ApplyBaseline(f, &s, fixtureBaseline(t))
+	var b bytes.Buffer
+	if err := WriteJUnit(&b, f, s); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	if f[0].New || !s.Failed || strings.Count(out, `<failure`) != 1 ||
+		!strings.Contains(out, `type="malicious"`) || strings.Contains(out, "<skipped") {
+		t.Errorf("want one malicious failure (New %v, Failed %v):\n%s", f[0].New, s.Failed, out)
+	}
+}
+
+func TestSARIFBaselineState(t *testing.T) {
+	f, s := buildWithBaseline(t)
+	var b bytes.Buffer
+	if err := WriteSARIF(&b, f, s, testTool, SARIFOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	golden(t, "report.sarif.baseline.golden", b.Bytes())
+	var doc struct {
+		Runs []struct {
+			Results []struct {
+				RuleID        string `json:"ruleId"`
+				BaselineState string `json:"baselineState"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(b.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	schemaEnum := map[string]bool{"new": true, "unchanged": true, "updated": true, "absent": true} // SARIF 2.1.0 result.baselineState
+	want := map[string]string{
+		"GHSA-crit-0003": "unchanged", "GHSA-esc-0005": "new", "GHSA-high-0002": "unchanged",
+		"GHSA-medium-0001": "new", "GHSA-low-0004": "new",
+	}
+	if len(doc.Runs) != 1 || len(doc.Runs[0].Results) != len(want) {
+		t.Fatalf("want one run with %d results:\n%s", len(want), b.String())
+	}
+	for _, r := range doc.Runs[0].Results {
+		if !schemaEnum[r.BaselineState] {
+			t.Errorf("%s: baselineState %q is not in the SARIF 2.1.0 enum", r.RuleID, r.BaselineState)
+		}
+		if r.BaselineState != want[r.RuleID] {
+			t.Errorf("%s: baselineState %q, want %q", r.RuleID, r.BaselineState, want[r.RuleID])
+		}
+	}
+}
+
+// Apart from baselineState, the SARIF log with a baseline is
+// report.sarif.golden, the log without one. Compared as decoded JSON:
+// baselineState is the last key of most results, so a textual diff would
+// also see the comma before it.
+func TestSARIFBaselineOnlyAddsBaselineState(t *testing.T) {
+	f, s := buildWithBaseline(t)
+	var b bytes.Buffer
+	if err := WriteSARIF(&b, f, s, testTool, SARIFOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := os.ReadFile(filepath.Join("testdata", "report.sarif.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var with, without map[string]any
+	if err := json.Unmarshal(b.Bytes(), &with); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(plain, &without); err != nil {
+		t.Fatal(err)
+	}
+	results := with["runs"].([]any)[0].(map[string]any)["results"].([]any)
+	for _, r := range results {
+		r := r.(map[string]any)
+		if _, ok := r["baselineState"]; !ok {
+			t.Errorf("%v has no baselineState", r["ruleId"])
+		}
+		delete(r, "baselineState")
+	}
+	if !reflect.DeepEqual(with, without) {
+		t.Errorf("SARIF with a baseline differs beyond baselineState:\nwith:    %v\nwithout: %v", with, without)
+	}
+}
+
+func TestSARIFWithoutBaselineHasNoBaselineState(t *testing.T) {
+	f, s := build(t, entity.SeverityHigh)
+	var b bytes.Buffer
+	if err := WriteSARIF(&b, f, s, testTool, SARIFOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), "baselineState") {
+		t.Error("baselineState needs a baseline")
+	}
 }

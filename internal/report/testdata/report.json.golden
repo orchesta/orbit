@@ -18,10 +18,22 @@
     },
     "threshold": "high",
     "failed": true,
+    "new": 4,
+    "baseline": false,
     "warnings": [
       "go.mod: unresolved version",
       "ignore entry GHSA-high-0002 expired on 2026-10-15"
-    ]
+    ],
+    "kev_findings": 0,
+    "fail_on_kev": false,
+    "exploit_data": {
+      "kev": "disabled",
+      "kev_catalog_version": "",
+      "epss": "disabled",
+      "epss_date": ""
+    },
+    "denied_licenses": [],
+    "license_failed": false
   },
   "dependencies": [
     {
@@ -31,7 +43,8 @@
       "manifest": "package-lock.json",
       "direct": false,
       "dev": true,
-      "resolved": true
+      "resolved": true,
+      "license": ""
     },
     {
       "name": "lodash",
@@ -40,7 +53,8 @@
       "manifest": "package-lock.json",
       "direct": true,
       "dev": false,
-      "resolved": true
+      "resolved": true,
+      "license": ""
     },
     {
       "name": "django",
@@ -49,7 +63,8 @@
       "manifest": "requirements.txt",
       "direct": true,
       "dev": false,
-      "resolved": true
+      "resolved": true,
+      "license": ""
     }
   ],
   "findings": [
@@ -66,7 +81,12 @@
       "fixed_version": null,
       "references": [],
       "ignored": false,
-      "ignore_reason": ""
+      "ignore_reason": "",
+      "kev": false,
+      "kev_date_added": null,
+      "epss": null,
+      "epss_percentile": null,
+      "new": true
     },
     {
       "id": "GHSA-esc-0005",
@@ -81,7 +101,12 @@
       "fixed_version": null,
       "references": [],
       "ignored": false,
-      "ignore_reason": ""
+      "ignore_reason": "",
+      "kev": false,
+      "kev_date_added": null,
+      "epss": null,
+      "epss_percentile": null,
+      "new": true
     },
     {
       "id": "GHSA-high-0002",
@@ -100,7 +125,12 @@
         "https://example.com/h2"
       ],
       "ignored": false,
-      "ignore_reason": ""
+      "ignore_reason": "",
+      "kev": false,
+      "kev_date_added": null,
+      "epss": null,
+      "epss_percentile": null,
+      "new": true
     },
     {
       "id": "GHSA-medium-0001",
@@ -119,7 +149,12 @@
         "https://example.com/m1"
       ],
       "ignored": false,
-      "ignore_reason": ""
+      "ignore_reason": "",
+      "kev": false,
+      "kev_date_added": null,
+      "epss": null,
+      "epss_percentile": null,
+      "new": true
     },
     {
       "id": "GHSA-low-0004",
@@ -136,7 +171,56 @@
         "https://example.com/l4"
       ],
       "ignored": true,
-      "ignore_reason": "accepted risk"
+      "ignore_reason": "accepted risk",
+      "kev": false,
+      "kev_date_added": null,
+      "epss": null,
+      "epss_percentile": null,
+      "new": true
     }
-  ]
+  ],
+  "recommendations": [
+    {
+      "ecosystem": "npm",
+      "package": "lodash",
+      "current": "4.17.15",
+      "upgrade": "4.17.21",
+      "fixes": [
+        "GHSA-medium-0001"
+      ],
+      "no_fix": [
+        "GHSA-crit-0003"
+      ],
+      "manifest": "package-lock.json",
+      "via": "",
+      "malicious": false
+    },
+    {
+      "ecosystem": "PyPI",
+      "package": "django",
+      "current": "3.0.0",
+      "upgrade": "3.0.7",
+      "fixes": [
+        "GHSA-high-0002"
+      ],
+      "no_fix": [],
+      "manifest": "requirements.txt",
+      "via": "",
+      "malicious": false
+    },
+    {
+      "ecosystem": "npm",
+      "package": "express",
+      "current": "4.18.2",
+      "upgrade": "",
+      "fixes": [],
+      "no_fix": [
+        "GHSA-esc-0005"
+      ],
+      "manifest": "package-lock.json",
+      "via": "",
+      "malicious": false
+    }
+  ],
+  "license_violations": []
 }

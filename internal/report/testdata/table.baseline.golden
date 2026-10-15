@@ -1,0 +1,18 @@
+SEVERITY       ID                PACKAGE         FIXED    MANIFEST
+CRITICAL       GHSA-crit-0003    lodash@4.17.15  -        package-lock.json
+HIGH (new)     GHSA-esc-0005     express@4.18.2  -        package-lock.json
+HIGH           GHSA-high-0002    django@3.0.0    3.0.7    requirements.txt
+MEDIUM (new)   GHSA-medium-0001  lodash@4.17.15  4.17.21  package-lock.json
+LOW (ignored)  GHSA-low-0004     django@3.0.0    3.0.8    requirements.txt
+
+PACKAGE         UPGRADE TO  FIXES  VIA  MANIFEST
+lodash@4.17.15  4.17.21     1      -    package-lock.json
+django@3.0.0    3.0.7       1      -    requirements.txt
+lodash@4.17.15: no known fix for GHSA-crit-0003
+express@4.18.2: no known fix for GHSA-esc-0005
+Each upgrade is the lowest version at or above every known fix for that package. It can still break your build; check the release notes. Orbit does not check that the version exists or that no other advisory affects it.
+
+3 dependencies, 3 vulnerable (1 critical, 2 high, 1 medium), 2 new
+threshold high (new findings and malicious packages): FAILED
+warning: go.mod: unresolved version
+warning: ignore entry GHSA-high-0002 expired on 2026-10-15

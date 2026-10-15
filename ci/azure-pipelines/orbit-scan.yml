@@ -6,19 +6,65 @@
 #       parameters:
 #         failOn: high
 #         ignoreFile: ''   # optional, relative to path; empty uses <path>/.orbitignore
+#         failOnKev: false
+#         exploitData: true
+#         licenses: false    # true looks up missing licenses on api.deps.dev
+#         denyLicense: ''    # comma-separated SPDX IDs that fail the build
+#         baseline: false   # true: pull requests fail only on new findings (see below)
+#         baselineBranch: refs/heads/main
+#         sbomFormat: none  # cyclonedx or spdx also publishes an "orbit-sbom" artifact
+#         sbomName: $(Build.Repository.Name)   # project name written into the SBOM
 #
-# Publishes a JUnit test run ("Orbit") and a SARIF file as the "CodeAnalysisLogs" build
-# artifact, then fails the job with the CLI's exit code (0 clean, 1 findings at or above
-# failOn, 2 error). Only that last step decides the build result; a missing report just
-# skips its publish step. Needs Azure DevOps Server 2020 or later (typed parameters; for
-# Server 2019 convert `parameters:` to the untyped map form). Use the template once per
-# job: it shares the ORBIT_* variables.
+# Publishes a JUnit test run ("Orbit") and a SARIF file as the "CodeAnalysisLogs"
+# build artifact, then fails the job with the CLI's exit code (0 clean, 1 findings
+# at or above failOn or, with failOnKev, in CISA KEV, a malicious package unless
+# failOn is none, or a license denyLicense denies, 2 error). Only that last step
+# decides the build result; a missing report just skips its publish step. Needs Azure
+# DevOps Server 2020 or later (typed parameters; for Server 2019 convert `parameters:`
+# to the untyped map form). Use the template once per job: it shares the ORBIT_*
+# variables.
+#
+# failOnKev: true      also fails on any finding in CISA KEV; no catalog means
+#                      exit 2. Only the first run gets it, the SARIF run never does.
+# exploitData: false   passes --no-exploit-data: nothing goes to www.cisa.gov or
+#                      api.first.org.
+# licenses: true       passes --licenses: looks up on api.deps.dev the licenses the
+#                      lockfiles do not record (package names and versions are sent).
+# denyLicense: 'GPL-3.0-only,AGPL-3.0-only'
+#                      fails the build (exit 1) on a dependency that can only be used
+#                      under one of these SPDX licenses, whatever failOn says. With
+#                      licenses: true a failed lookup is an error (exit 2). The first
+#                      run and the SARIF run get both; the recording run gets neither.
+#
+# sbomFormat: cyclonedx or spdx adds a third run, with --fail-on none, and publishes
+# orbit.cdx.json or orbit.spdx.json as the "orbit-sbom" build artifact. It keeps
+# ignoreFile, exploitData and licenses, but not failOnKev, denyLicense or the baseline: the
+# SBOM lists every dependency and finding. If it fails the scan step only warns. none
+# (the default) turns it off. sbomName is the project name written into the SBOM.
 #
 # useContainer: true   runs the CLI image with docker (Linux agents with Docker).
 # useContainer: false  downloads the release binary and verifies it against checksums.txt
 #                      (Linux, macOS and Windows agents, no Docker needed).
 # Air-gapped: mirror the image and set imageName, or mirror the release assets and set
 # binaryBaseUrl.
+#
+# baseline: true  Builds of baselineBranch also write orbit-baseline.json (one more scan)
+#                 and publish it as the build artifact "orbit-baseline". Every finding there
+#                 is an existing one, so exit 1 is reported as a warning and does not fail
+#                 the build (not even for a malicious package, a KEV entry or a denied
+#                 license): the download below skips failed builds. Exit 2 still fails it,
+#                 and so does a failed orbit-baseline.json scan: nothing is published and
+#                 the previous good build keeps serving its baseline, while a passing build
+#                 without it would leave pull requests with none. Other builds, pull
+#                 requests included, download that artifact from the latest successful or
+#                 partially succeeded build of baselineBranch in this pipeline and pass it
+#                 to --baseline: they fail only on new findings, on malicious packages and
+#                 on denied licenses. With none yet the download step fails softly
+#                 (continueOnError, the build shows as partially succeeded), a warning says
+#                 so and every finding counts. Schedule a daily build of baselineBranch so
+#                 new advisories are part of the baseline (see example.yml). Build artifacts
+#                 are used because pipeline artifacts are not available on Azure DevOps
+#                 Server.
 
 parameters:
   - name: path
@@ -30,6 +76,25 @@ parameters:
   - name: ignoreFile
     type: string
     default: ''   # relative to path; empty uses <path>/.orbitignore when it exists
+  - name: sbomFormat
+    type: string
+    default: none   # cyclonedx or spdx adds an SBOM run and the "orbit-sbom" artifact
+    values: [none, cyclonedx, spdx]
+  - name: sbomName
+    type: string
+    default: $(Build.Repository.Name)   # project name written into the SBOM
+  - name: failOnKev
+    type: boolean
+    default: false   # true also fails on any finding in CISA KEV (no catalog: exit 2)
+  - name: exploitData
+    type: boolean
+    default: true    # false passes --no-exploit-data: no www.cisa.gov, no api.first.org
+  - name: licenses
+    type: boolean
+    default: false   # true passes --licenses: package names and versions go to api.deps.dev
+  - name: denyLicense
+    type: string
+    default: ''   # comma-separated SPDX license IDs, e.g. GPL-3.0-only,AGPL-3.0-only
   - name: version
     type: string
     default: latest   # a release tag such as v1.0.0; required (not "latest") when useContainer is false
@@ -42,8 +107,34 @@ parameters:
   - name: binaryBaseUrl
     type: string
     default: https://github.com/orchesta/orbit/releases/download
+  - name: baseline
+    type: boolean
+    default: false   # true: pull requests fail only on findings baselineBranch does not have
+  - name: baselineBranch
+    type: string
+    default: refs/heads/main   # full ref, as in Build.SourceBranch
 
 steps:
+  # ---- baseline (baseline: true) -----------------------------------------------------
+  # Builds of baselineBranch record the baseline instead (see the scan steps).
+  - ${{ if eq(parameters.baseline, true) }}:
+      - task: DownloadBuildArtifacts@0
+        displayName: Download Orbit baseline
+        # not(canceled()), not succeeded(): the scan steps run after a failed earlier step
+        # too (their conditions have no status function), so the download does as well.
+        condition: and(not(canceled()), ne(variables['Build.SourceBranch'], '${{ parameters.baselineBranch }}'))
+        continueOnError: true   # a first run has no baseline yet
+        inputs:
+          buildType: specific
+          project: $(System.TeamProjectId)
+          pipeline: $(System.DefinitionId)
+          buildVersionToDownload: latestFromBranch
+          branchName: ${{ parameters.baselineBranch }}
+          allowPartiallySucceededBuilds: true
+          downloadType: single
+          artifactName: orbit-baseline
+          downloadPath: $(Agent.TempDirectory)
+
   # ---- container mode (Linux agents with Docker) -------------------------------------
   - ${{ if eq(parameters.useContainer, true) }}:
       - bash: |
@@ -55,24 +146,79 @@ steps:
           set -u
           reports="$AGENT_TEMPDIRECTORY/orbit-reports"
           mkdir -p "$reports"
-          rc=0
-          docker run --rm --user "$(id -u):$(id -g)" \
-            -v "$ORBIT_PATH":/src:ro -v "$reports":/out \
-            "$ORBIT_IMAGE:$ORBIT_VERSION" \
-            scan --path /src --fail-on "$ORBIT_FAIL_ON" \
-            ${ORBIT_IGNORE_FILE:+--ignore-file "/src/$ORBIT_IGNORE_FILE"} \
-            --format junit --out /out/orbit-junit.xml || rc=$?
-          if [ "$rc" -ne 2 ]; then
+          case "${ORBIT_SBOM_FORMAT:-}" in
+            cyclonedx) sbom_out=orbit.cdx.json ;;
+            spdx) sbom_out=orbit.spdx.json ;;
+            *) sbom_out="" ;;
+          esac
+          # Baseline mode: builds of the baseline branch record, all others compare. The
+          # branch match ignores case, like the download step's condition.
+          record=false
+          baseline=""
+          baseline_dir="$AGENT_TEMPDIRECTORY/orbit-baseline"
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+          if [ -n "${ORBIT_BASELINE_BRANCH:-}" ]; then
+            if [ "$(lower "${BUILD_SOURCEBRANCH:-}")" = "$(lower "$ORBIT_BASELINE_BRANCH")" ]; then
+              record=true
+            elif [ -f "$baseline_dir/orbit-baseline.json" ]; then
+              baseline=/baseline/orbit-baseline.json
+            else
+              echo "##vso[task.logissue type=warning]Orbit: no baseline was downloaded from $ORBIT_BASELINE_BRANCH;" \
+                "every finding counts."
+            fi
+          fi
+          # Arguments every run gets; the runs add their own after them.
+          orbit_run() {
             docker run --rm --user "$(id -u):$(id -g)" \
               -v "$ORBIT_PATH":/src:ro -v "$reports":/out \
+              ${baseline:+-v "$baseline_dir":/baseline:ro} \
               "$ORBIT_IMAGE:$ORBIT_VERSION" \
-              scan --path /src --fail-on none \
-              ${ORBIT_IGNORE_FILE:+--ignore-file "/src/$ORBIT_IGNORE_FILE"} \
-              --format sarif --out /out/orbit.sarif --quiet \
-              || echo "warning: could not write orbit.sarif" >&2
+              scan --path /src ${ORBIT_NO_EXPLOIT_DATA:+--no-exploit-data} \
+              ${ORBIT_IGNORE_FILE:+--ignore-file "/src/$ORBIT_IGNORE_FILE"} "$@"
+          }
+          rc=0
+          # The license switches go to the first and the SARIF run, not the recording one.
+          orbit_run --fail-on "$ORBIT_FAIL_ON" ${ORBIT_FAIL_ON_KEV:+--fail-on-kev} \
+            ${ORBIT_LICENSES:+--licenses} ${ORBIT_DENY_LICENSE:+--deny-license "$ORBIT_DENY_LICENSE"} \
+            ${baseline:+--baseline "$baseline"} \
+            --format junit --out /out/orbit-junit.xml || rc=$?
+          if [ "$rc" -ne 2 ]; then
+            # No --fail-on-kev in the runs below: they only write reports. A denied
+            # license still exits 1 with --fail-on none, after writing the report.
+            sarif_rc=0
+            orbit_run --fail-on none ${baseline:+--baseline "$baseline"} \
+              ${ORBIT_LICENSES:+--licenses} ${ORBIT_DENY_LICENSE:+--deny-license "$ORBIT_DENY_LICENSE"} \
+              --format sarif --out /out/orbit.sarif --quiet || sarif_rc=$?
+            [ "$sarif_rc" -le 1 ] || echo "warning: could not write orbit.sarif" >&2
+            # The SBOM lists every dependency and finding: no license policy and no
+            # baseline. A failure only warns.
+            if [ -n "$sbom_out" ]; then
+              orbit_run --fail-on none ${ORBIT_LICENSES:+--licenses} \
+                --format "$ORBIT_SBOM_FORMAT" ${ORBIT_SBOM_NAME:+--sbom-name "$ORBIT_SBOM_NAME"} \
+                --out "/out/$sbom_out" --quiet \
+                || echo "warning: could not write $sbom_out" >&2
+            fi
+            # A failed recording scan fails the build and publishes nothing, so the
+            # download keeps taking the previous good build's baseline.
+            if [ "$record" = true ] \
+              && ! orbit_run --fail-on none --format json --out /out/orbit-baseline.json --quiet; then
+              echo "##vso[task.logissue type=error]Orbit: could not write orbit-baseline.json;" \
+                "failing the build so the previous good build keeps serving its baseline."
+              rm -f "$reports/orbit-baseline.json"
+              rc=2
+            fi
+          fi
+          # Only exit 1 (findings or a denied license) is turned into a warning; exit 2
+          # from either scan stays.
+          if [ "$record" = true ] && [ "$rc" -eq 1 ]; then
+            echo "##vso[task.logissue type=warning]Orbit: $ORBIT_BASELINE_BRANCH records the baseline;" \
+              "its findings and denied licenses are reported and do not fail the build."
+            rc=0
           fi
           [ -f "$reports/orbit-junit.xml" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_JUNIT]true"
           [ -f "$reports/orbit.sarif" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_SARIF]true"
+          [ -f "$reports/orbit-baseline.json" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_BASELINE]true"
+          [ -n "$sbom_out" ] && [ -f "$reports/$sbom_out" ] && echo "##vso[task.setvariable variable=ORBIT_SBOM_FILE]$sbom_out"
           echo "##vso[task.setvariable variable=ORBIT_EXIT]$rc"
           echo "##vso[task.setvariable variable=ORBIT_REPORTS]$reports"
         displayName: Orbit scan
@@ -81,7 +227,29 @@ steps:
           ORBIT_PATH: ${{ parameters.path }}
           ORBIT_FAIL_ON: ${{ parameters.failOn }}
           ORBIT_IGNORE_FILE: ${{ parameters.ignoreFile }}
+          ${{ if ne(parameters.sbomFormat, 'none') }}:
+            ORBIT_SBOM_FORMAT: ${{ parameters.sbomFormat }}
+          ${{ if eq(parameters.sbomFormat, 'none') }}:
+            ORBIT_SBOM_FORMAT: ''
+          ORBIT_SBOM_NAME: ${{ parameters.sbomName }}
           ORBIT_VERSION: ${{ parameters.version }}
+          ${{ if eq(parameters.failOnKev, true) }}:
+            ORBIT_FAIL_ON_KEV: 'true'
+          ${{ if eq(parameters.failOnKev, false) }}:
+            ORBIT_FAIL_ON_KEV: ''
+          ${{ if eq(parameters.exploitData, false) }}:
+            ORBIT_NO_EXPLOIT_DATA: 'true'
+          ${{ if eq(parameters.exploitData, true) }}:
+            ORBIT_NO_EXPLOIT_DATA: ''
+          ${{ if eq(parameters.licenses, true) }}:
+            ORBIT_LICENSES: 'true'
+          ${{ if eq(parameters.licenses, false) }}:
+            ORBIT_LICENSES: ''
+          ORBIT_DENY_LICENSE: ${{ parameters.denyLicense }}
+          ${{ if eq(parameters.baseline, true) }}:
+            ORBIT_BASELINE_BRANCH: ${{ parameters.baselineBranch }}
+          ${{ if eq(parameters.baseline, false) }}:
+            ORBIT_BASELINE_BRANCH: ''
           ORBIT_IMAGE: ${{ parameters.imageName }}
 
   # ---- binary mode (no Docker) -------------------------------------------------------
@@ -124,18 +292,75 @@ steps:
           set +e
           reports="$AGENT_TEMPDIRECTORY/orbit-reports"
           mkdir -p "$reports"
-          "$orbit" scan --path "$ORBIT_PATH" --fail-on "$ORBIT_FAIL_ON" \
-            ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_PATH/$ORBIT_IGNORE_FILE"} \
+          case "${ORBIT_SBOM_FORMAT:-}" in
+            cyclonedx) sbom_out=orbit.cdx.json ;;
+            spdx) sbom_out=orbit.spdx.json ;;
+            *) sbom_out="" ;;
+          esac
+          # Baseline mode: builds of the baseline branch record, all others compare. The
+          # branch match ignores case, like the download step's condition. No arrays:
+          # macOS ships bash 3.2.
+          record=false
+          baseline=""
+          baseline_file="$AGENT_TEMPDIRECTORY/orbit-baseline/orbit-baseline.json"
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+          if [ -n "${ORBIT_BASELINE_BRANCH:-}" ]; then
+            if [ "$(lower "${BUILD_SOURCEBRANCH:-}")" = "$(lower "$ORBIT_BASELINE_BRANCH")" ]; then
+              record=true
+            elif [ -f "$baseline_file" ]; then
+              baseline="$baseline_file"
+            else
+              echo "##vso[task.logissue type=warning]Orbit: no baseline was downloaded from $ORBIT_BASELINE_BRANCH;" \
+                "every finding counts."
+            fi
+          fi
+          # Arguments every run gets; the runs add their own after them.
+          orbit_run() {
+            "$orbit" scan --path "$ORBIT_PATH" ${ORBIT_NO_EXPLOIT_DATA:+--no-exploit-data} \
+              ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_PATH/$ORBIT_IGNORE_FILE"} "$@"
+          }
+          # The license switches go to the first and the SARIF run, not the recording one.
+          orbit_run --fail-on "$ORBIT_FAIL_ON" ${ORBIT_FAIL_ON_KEV:+--fail-on-kev} \
+            ${ORBIT_LICENSES:+--licenses} ${ORBIT_DENY_LICENSE:+--deny-license "$ORBIT_DENY_LICENSE"} \
+            ${baseline:+--baseline "$baseline"} \
             --format junit --out "$reports/orbit-junit.xml"
           rc=$?
           if [ "$rc" -ne 2 ]; then
-            "$orbit" scan --path "$ORBIT_PATH" --fail-on none \
-              ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_PATH/$ORBIT_IGNORE_FILE"} \
-              --format sarif --out "$reports/orbit.sarif" --quiet \
-              || echo "warning: could not write orbit.sarif" >&2
+            # No --fail-on-kev in the runs below: they only write reports. A denied
+            # license still exits 1 with --fail-on none, after writing the report.
+            orbit_run --fail-on none ${baseline:+--baseline "$baseline"} \
+              ${ORBIT_LICENSES:+--licenses} ${ORBIT_DENY_LICENSE:+--deny-license "$ORBIT_DENY_LICENSE"} \
+              --format sarif --out "$reports/orbit.sarif" --quiet
+            [ "$?" -le 1 ] || echo "warning: could not write orbit.sarif" >&2
+            # The SBOM lists every dependency and finding: no license policy and no
+            # baseline. A failure only warns.
+            if [ -n "$sbom_out" ]; then
+              orbit_run --fail-on none ${ORBIT_LICENSES:+--licenses} \
+                --format "$ORBIT_SBOM_FORMAT" ${ORBIT_SBOM_NAME:+--sbom-name "$ORBIT_SBOM_NAME"} \
+                --out "$reports/$sbom_out" --quiet \
+                || echo "warning: could not write $sbom_out" >&2
+            fi
+            # A failed recording scan fails the build and publishes nothing, so the
+            # download keeps taking the previous good build's baseline.
+            if [ "$record" = true ] \
+              && ! orbit_run --fail-on none --format json --out "$reports/orbit-baseline.json" --quiet; then
+              echo "##vso[task.logissue type=error]Orbit: could not write orbit-baseline.json;" \
+                "failing the build so the previous good build keeps serving its baseline."
+              rm -f "$reports/orbit-baseline.json"
+              rc=2
+            fi
+          fi
+          # Only exit 1 (findings or a denied license) is turned into a warning; exit 2
+          # from either scan stays.
+          if [ "$record" = true ] && [ "$rc" -eq 1 ]; then
+            echo "##vso[task.logissue type=warning]Orbit: $ORBIT_BASELINE_BRANCH records the baseline;" \
+              "its findings and denied licenses are reported and do not fail the build."
+            rc=0
           fi
           [ -f "$reports/orbit-junit.xml" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_JUNIT]true"
           [ -f "$reports/orbit.sarif" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_SARIF]true"
+          [ -f "$reports/orbit-baseline.json" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_BASELINE]true"
+          [ -n "$sbom_out" ] && [ -f "$reports/$sbom_out" ] && echo "##vso[task.setvariable variable=ORBIT_SBOM_FILE]$sbom_out"
           echo "##vso[task.setvariable variable=ORBIT_EXIT]$rc"
           echo "##vso[task.setvariable variable=ORBIT_REPORTS]$reports"
         displayName: Orbit scan
@@ -144,7 +369,29 @@ steps:
           ORBIT_PATH: ${{ parameters.path }}
           ORBIT_FAIL_ON: ${{ parameters.failOn }}
           ORBIT_IGNORE_FILE: ${{ parameters.ignoreFile }}
+          ${{ if ne(parameters.sbomFormat, 'none') }}:
+            ORBIT_SBOM_FORMAT: ${{ parameters.sbomFormat }}
+          ${{ if eq(parameters.sbomFormat, 'none') }}:
+            ORBIT_SBOM_FORMAT: ''
+          ORBIT_SBOM_NAME: ${{ parameters.sbomName }}
           ORBIT_VERSION: ${{ parameters.version }}
+          ${{ if eq(parameters.failOnKev, true) }}:
+            ORBIT_FAIL_ON_KEV: 'true'
+          ${{ if eq(parameters.failOnKev, false) }}:
+            ORBIT_FAIL_ON_KEV: ''
+          ${{ if eq(parameters.exploitData, false) }}:
+            ORBIT_NO_EXPLOIT_DATA: 'true'
+          ${{ if eq(parameters.exploitData, true) }}:
+            ORBIT_NO_EXPLOIT_DATA: ''
+          ${{ if eq(parameters.licenses, true) }}:
+            ORBIT_LICENSES: 'true'
+          ${{ if eq(parameters.licenses, false) }}:
+            ORBIT_LICENSES: ''
+          ORBIT_DENY_LICENSE: ${{ parameters.denyLicense }}
+          ${{ if eq(parameters.baseline, true) }}:
+            ORBIT_BASELINE_BRANCH: ${{ parameters.baselineBranch }}
+          ${{ if eq(parameters.baseline, false) }}:
+            ORBIT_BASELINE_BRANCH: ''
           ORBIT_BASE_URL: ${{ parameters.binaryBaseUrl }}
       # Windows agents (Windows PowerShell 5.1 or later; no pwsh install needed)
       - powershell: |
@@ -182,14 +429,72 @@ steps:
           New-Item -ItemType Directory -Force -Path $reports | Out-Null
           $ignoreArgs = @()
           if ($env:ORBIT_IGNORE_FILE) { $ignoreArgs = @('--ignore-file', (Join-Path $env:ORBIT_PATH $env:ORBIT_IGNORE_FILE)) }
-          & $exe scan --path $env:ORBIT_PATH --fail-on $env:ORBIT_FAIL_ON @ignoreArgs --format junit --out (Join-Path $reports 'orbit-junit.xml')
+          $exploitArgs = @()
+          if ($env:ORBIT_NO_EXPLOIT_DATA) { $exploitArgs = @('--no-exploit-data') }
+          $kevArgs = @()
+          if ($env:ORBIT_FAIL_ON_KEV) { $kevArgs = @('--fail-on-kev') }
+          # The first and the SARIF run get these, the recording run does not.
+          $licenseArgs = @()
+          if ($env:ORBIT_LICENSES) { $licenseArgs += '--licenses' }
+          if ($env:ORBIT_DENY_LICENSE) { $licenseArgs += @('--deny-license', $env:ORBIT_DENY_LICENSE) }
+          # The SBOM run looks up licenses too but applies no policy. An empty name is left
+          # out: Windows PowerShell drops empty arguments to native commands.
+          $sbomOut = $null
+          if ($env:ORBIT_SBOM_FORMAT -eq 'cyclonedx') { $sbomOut = 'orbit.cdx.json' }
+          if ($env:ORBIT_SBOM_FORMAT -eq 'spdx') { $sbomOut = 'orbit.spdx.json' }
+          $sbomArgs = @()
+          if ($env:ORBIT_LICENSES) { $sbomArgs += '--licenses' }
+          if ($env:ORBIT_SBOM_NAME) { $sbomArgs += @('--sbom-name', $env:ORBIT_SBOM_NAME) }
+          # Baseline mode: builds of the baseline branch record, all others compare. -eq
+          # ignores case, like the download step's condition.
+          $record = $false
+          $baseArgs = @()
+          $baselineFile = Join-Path (Join-Path $env:AGENT_TEMPDIRECTORY 'orbit-baseline') 'orbit-baseline.json'
+          if ($env:ORBIT_BASELINE_BRANCH) {
+            if ($env:BUILD_SOURCEBRANCH -eq $env:ORBIT_BASELINE_BRANCH) {
+              $record = $true
+            } elseif (Test-Path -LiteralPath $baselineFile -PathType Leaf) {
+              $baseArgs = @('--baseline', $baselineFile)
+            } else {
+              Write-Host "##vso[task.logissue type=warning]Orbit: no baseline was downloaded from $($env:ORBIT_BASELINE_BRANCH); every finding counts."
+            }
+          }
+          & $exe scan --path $env:ORBIT_PATH --fail-on $env:ORBIT_FAIL_ON @ignoreArgs @exploitArgs @kevArgs @licenseArgs @baseArgs --format junit --out (Join-Path $reports 'orbit-junit.xml')
           $rc = $LASTEXITCODE
           if ($rc -ne 2) {
-            & $exe scan --path $env:ORBIT_PATH --fail-on none @ignoreArgs --format sarif --out (Join-Path $reports 'orbit.sarif') --quiet
-            if ($LASTEXITCODE -ne 0) { Write-Host 'warning: could not write orbit.sarif' }
+            # No @kevArgs in the runs below: they only write reports. A denied license
+            # still exits 1 with --fail-on none, after writing the report.
+            & $exe scan --path $env:ORBIT_PATH --fail-on none @ignoreArgs @exploitArgs @licenseArgs @baseArgs --format sarif --out (Join-Path $reports 'orbit.sarif') --quiet
+            if ($LASTEXITCODE -gt 1) { Write-Host 'warning: could not write orbit.sarif' }
+            # The SBOM lists every dependency and finding: no license policy and no
+            # baseline. A failure only warns.
+            if ($sbomOut) {
+              & $exe scan --path $env:ORBIT_PATH --fail-on none @ignoreArgs @exploitArgs @sbomArgs --format $env:ORBIT_SBOM_FORMAT --out (Join-Path $reports $sbomOut) --quiet
+              if ($LASTEXITCODE -ne 0) { Write-Host "warning: could not write $sbomOut" }
+            }
+            # A failed recording scan fails the build and publishes nothing, so the
+            # download keeps taking the previous good build's baseline.
+            if ($record) {
+              & $exe scan --path $env:ORBIT_PATH --fail-on none @ignoreArgs @exploitArgs --format json --out (Join-Path $reports 'orbit-baseline.json') --quiet
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host ('##vso[task.logissue type=error]Orbit: could not write orbit-baseline.json; ' +
+                  'failing the build so the previous good build keeps serving its baseline.')
+                Remove-Item -LiteralPath (Join-Path $reports 'orbit-baseline.json') -Force -ErrorAction SilentlyContinue
+                $rc = 2
+              }
+            }
+          }
+          # Only exit 1 (findings or a denied license) is turned into a warning; exit 2
+          # from either scan stays.
+          if ($record -and $rc -eq 1) {
+            Write-Host ("##vso[task.logissue type=warning]Orbit: $($env:ORBIT_BASELINE_BRANCH) records the baseline; " +
+              'its findings and denied licenses are reported and do not fail the build.')
+            $rc = 0
           }
           if (Test-Path (Join-Path $reports 'orbit-junit.xml')) { Write-Host '##vso[task.setvariable variable=ORBIT_HAS_JUNIT]true' }
           if (Test-Path (Join-Path $reports 'orbit.sarif')) { Write-Host '##vso[task.setvariable variable=ORBIT_HAS_SARIF]true' }
+          if (Test-Path (Join-Path $reports 'orbit-baseline.json')) { Write-Host '##vso[task.setvariable variable=ORBIT_HAS_BASELINE]true' }
+          if ($sbomOut -and (Test-Path (Join-Path $reports $sbomOut))) { Write-Host "##vso[task.setvariable variable=ORBIT_SBOM_FILE]$sbomOut" }
           Write-Host "##vso[task.setvariable variable=ORBIT_EXIT]$rc"
           Write-Host "##vso[task.setvariable variable=ORBIT_REPORTS]$reports"
           exit 0
@@ -199,7 +504,29 @@ steps:
           ORBIT_PATH: ${{ parameters.path }}
           ORBIT_FAIL_ON: ${{ parameters.failOn }}
           ORBIT_IGNORE_FILE: ${{ parameters.ignoreFile }}
+          ${{ if ne(parameters.sbomFormat, 'none') }}:
+            ORBIT_SBOM_FORMAT: ${{ parameters.sbomFormat }}
+          ${{ if eq(parameters.sbomFormat, 'none') }}:
+            ORBIT_SBOM_FORMAT: ''
+          ORBIT_SBOM_NAME: ${{ parameters.sbomName }}
           ORBIT_VERSION: ${{ parameters.version }}
+          ${{ if eq(parameters.failOnKev, true) }}:
+            ORBIT_FAIL_ON_KEV: 'true'
+          ${{ if eq(parameters.failOnKev, false) }}:
+            ORBIT_FAIL_ON_KEV: ''
+          ${{ if eq(parameters.exploitData, false) }}:
+            ORBIT_NO_EXPLOIT_DATA: 'true'
+          ${{ if eq(parameters.exploitData, true) }}:
+            ORBIT_NO_EXPLOIT_DATA: ''
+          ${{ if eq(parameters.licenses, true) }}:
+            ORBIT_LICENSES: 'true'
+          ${{ if eq(parameters.licenses, false) }}:
+            ORBIT_LICENSES: ''
+          ORBIT_DENY_LICENSE: ${{ parameters.denyLicense }}
+          ${{ if eq(parameters.baseline, true) }}:
+            ORBIT_BASELINE_BRANCH: ${{ parameters.baselineBranch }}
+          ${{ if eq(parameters.baseline, false) }}:
+            ORBIT_BASELINE_BRANCH: ''
           ORBIT_BASE_URL: ${{ parameters.binaryBaseUrl }}
 
   # ---- publish (always, so findings are visible even when the build fails) -----------
@@ -221,6 +548,23 @@ steps:
     inputs:
       PathtoPublish: $(ORBIT_REPORTS)/orbit.sarif
       ArtifactName: CodeAnalysisLogs
+
+  # The SBOM (sbomFormat cyclonedx or spdx).
+  - task: PublishBuildArtifacts@1
+    displayName: Publish Orbit SBOM
+    condition: and(always(), ne(variables['ORBIT_SBOM_FILE'], ''))
+    inputs:
+      PathtoPublish: $(ORBIT_REPORTS)/$(ORBIT_SBOM_FILE)
+      ArtifactName: orbit-sbom
+
+  # The baseline other builds download (written only on baselineBranch).
+  - ${{ if eq(parameters.baseline, true) }}:
+      - task: PublishBuildArtifacts@1
+        displayName: Publish Orbit baseline
+        condition: and(always(), eq(variables['ORBIT_HAS_BASELINE'], 'true'))
+        inputs:
+          PathtoPublish: $(ORBIT_REPORTS)/orbit-baseline.json
+          ArtifactName: orbit-baseline
 
   # ---- fail the build with the CLI's exit code ---------------------------------------
   - bash: |

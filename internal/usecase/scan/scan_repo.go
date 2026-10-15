@@ -182,6 +182,23 @@ func (uc *UseCase) Run(ctx context.Context, scan *entity.ScanResult) error {
 		return uc.fail(ctx, scan, err.Error())
 	}
 
+	// Exploit data is advisory: the scan is saved without it, and only the
+	// log says that its KEV or EPSS fields are missing.
+	if res.Exploit != nil {
+		for _, w := range res.Exploit.Warnings() {
+			uc.logger.Warn("exploit data unavailable; the scan is saved without it",
+				slog.String("repo", repo.Name), slog.String("detail", w))
+		}
+	}
+
+	// Licenses are advisory too: a failed deps.dev lookup leaves those
+	// licenses unknown, and only the log says so.
+	if res.LicenseLookupFailed > 0 {
+		uc.logger.Warn("license lookup on deps.dev failed; the scan is saved with those licenses unknown",
+			slog.String("repo", repo.Name), slog.Int("failed", res.LicenseLookupFailed),
+			slog.Any("error", res.LicenseLookupErr))
+	}
+
 	for _, dep := range res.Dependencies {
 		dep.RepositoryID = scan.RepositoryID
 		dep.ScanResultID = scan.ID

@@ -48,6 +48,39 @@ type ParsedDependency struct {
 	// as a registry dependency.
 	Internal bool
 	Dir      string
+	// Via names the direct dependencies that pull a lockfile entry in, when
+	// the lockfile records the dependency graph (today only npm
+	// package-lock.json v2 and v3). Sorted and without repeats; nil when
+	// unknown or when the project declares the entry itself.
+	Via []string
+	// License is the license the lockfile records for the entry, as a
+	// normalised SPDX expression (see spdx.Normalize), or "". Only npm's
+	// package-lock.json v2/v3 records one.
+	License string
+}
+
+// ParseOptions tunes a parse; the zero value parses everything.
+type ParseOptions struct {
+	// SkipVia leaves ParsedDependency.Via nil, so a lockfile parser need not
+	// walk the dependency graph. The server sets it: it does not keep Via.
+	SkipVia bool
+}
+
+// OptionsParser is implemented by analyzers that take ParseOptions or report
+// warnings: problems that leave the parse usable, such as information that
+// was left out.
+type OptionsParser interface {
+	ParseWithOptions(content []byte, manifestPath string, opts ParseOptions) (deps []ParsedDependency, warnings []string, err error)
+}
+
+// Parse parses a file with a's ParseWithOptions if it has one, and with
+// ParseDependencies, which ignores opts and has no warnings, otherwise.
+func Parse(a Analyzer, content []byte, manifestPath string, opts ParseOptions) ([]ParsedDependency, []string, error) {
+	if op, ok := a.(OptionsParser); ok {
+		return op.ParseWithOptions(content, manifestPath, opts)
+	}
+	deps, err := a.ParseDependencies(content, manifestPath)
+	return deps, nil, err
 }
 
 // ManifestKind tells Resolve how a matched file is used.

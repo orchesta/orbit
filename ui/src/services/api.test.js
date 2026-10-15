@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { request, ApiError, UNAUTHORIZED_EVENT } from './api';
+import { request, ApiError, UNAUTHORIZED_EVENT, vulnerabilityApi, scanApi, attachmentName } from './api';
 import { mockFetch } from '../test/fetch';
+import { stubDownload } from '../test/download';
 
 describe('request', () => {
   it('returns the envelope data', async () => {
@@ -66,5 +67,69 @@ describe('request', () => {
     const { fn } = mockFetch({ 'GET /x': { body: { data: 1 } } });
     await request('/x');
     expect(fn.mock.calls[0][1].headers.Authorization).toBe('Bearer abc');
+  });
+});
+
+describe('vulnerabilityApi.list', () => {
+  it('sends the exploit filters and the sort', async () => {
+    const { calls } = mockFetch({ 'GET /vulnerabilities': { body: { success: true, data: { data: [] } } } });
+    await vulnerabilityApi.list({ page: 2, kev: true, min_epss: '0.1', sort: 'epss' });
+    expect(calls[0].path).toBe('/vulnerabilities?page=2&per_page=25&kev=true&min_epss=0.1&sort=epss');
+  });
+
+  it('leaves the defaults out of the URL', async () => {
+    const { calls } = mockFetch({ 'GET /vulnerabilities': { body: { success: true, data: { data: [] } } } });
+    await vulnerabilityApi.list({ kev: false, sort: 'severity' });
+    expect(calls[0].path).toBe('/vulnerabilities?page=1&per_page=25');
+  });
+});
+
+describe('download', () => {
+  it('saves the file under the server name, sending the token', async () => {
+    localStorage.setItem('orbit_token', 'abc');
+    const { created, revoked, names, flushTimers } = stubDownload();
+    const { fn } = mockFetch({
+      'GET /scans/s1/sbom': { body: { bomFormat: 'CycloneDX' }, headers: { 'Content-Disposition': 'attachment; filename=web-s1.cdx.json' } },
+    });
+    await scanApi.downloadSbom('s1', 'cyclonedx');
+    expect(fn.mock.calls[0][0]).toBe('/api/v1/scans/s1/sbom?format=cyclonedx');
+    expect(fn.mock.calls[0][1].headers.Authorization).toBe('Bearer abc');
+    expect(created).toHaveBeenCalledOnce();
+    expect(names).toEqual(['web-s1.cdx.json']);
+    flushTimers();
+    expect(revoked).toHaveBeenCalledWith('blob:orbit');
+  });
+
+  it('falls back to its own name without Content-Disposition', async () => {
+    const { names } = stubDownload();
+    mockFetch({ 'GET /scans/abcdef123456/sbom': { body: {} } });
+    await scanApi.downloadSbom('abcdef123456', 'spdx');
+    expect(names).toEqual(['orbit-abcdef12.spdx.json']);
+  });
+
+  it('throws the server error and saves nothing', async () => {
+    const { names } = stubDownload();
+    mockFetch({ 'GET /scans/s1/sbom': { status: 409, body: { success: false, error: 'scan is not completed' } } });
+    const err = await scanApi.downloadSbom('s1', 'cyclonedx').catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(409);
+    expect(err.message).toBe('scan is not completed');
+    expect(names).toEqual([]);
+  });
+
+  it('on 401 clears the token', async () => {
+    localStorage.setItem('orbit_token', 't');
+    stubDownload();
+    mockFetch({ 'GET /scans/s1/sbom': { status: 401, body: { error: 'expired' } } });
+    await scanApi.downloadSbom('s1', 'spdx').catch(() => {});
+    expect(localStorage.getItem('orbit_token')).toBeNull();
+  });
+});
+
+describe('attachmentName', () => {
+  it('reads quoted and bare file names', () => {
+    expect(attachmentName('attachment; filename="a b.json"')).toBe('a b.json');
+    expect(attachmentName('attachment; filename=x.cdx.json')).toBe('x.cdx.json');
+    expect(attachmentName(null)).toBeNull();
   });
 });

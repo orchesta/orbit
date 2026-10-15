@@ -20,13 +20,18 @@ import (
 type scanTestRepos struct {
 	repository.RepositoryRepo
 	exists bool
+	name   string // repository name; "r" when empty
 }
 
 func (s scanTestRepos) GetByID(_ context.Context, id uuid.UUID) (*entity.Repository, error) {
 	if !s.exists {
 		return nil, nil
 	}
-	r := entity.NewRepository("r", "https://github.com/o/r", entity.GitProviderGitHub, "")
+	name := s.name
+	if name == "" {
+		name = "r"
+	}
+	r := entity.NewRepository(name, "https://github.com/o/r", entity.GitProviderGitHub, "")
 	r.ID = id
 	return r, nil
 }

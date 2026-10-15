@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import RepoDetail from './RepoDetail';
 import { renderWithProviders } from '../test/render';
 import { mockFetch } from '../test/fetch';
+import { stubDownload } from '../test/download';
 
 const repo = { id: 'r1', name: 'web', url: 'https://github.com/o/web', provider: 'github', is_active: true };
 const at = { route: '/repositories/r1', path: '/repositories/:id' };
@@ -53,6 +54,7 @@ describe('RepoDetail', () => {
       'GET /repositories/r1': { body: { data: repo } },
       'GET /repositories/r1/scans': { body: { data: [done] } },
       'GET /scans/s1/dependencies': { body: { data: [{ id: 'd1', name: 'chalk', ecosystem: 'npm', current_version: '5.6.1', is_direct: true, is_resolved: true, is_dev: false }] } },
+      'GET /scans/s1/recommendations': { body: { data: [] } },
       'GET /scans/s1/vulnerabilities': { body: { data: [
         { id: 'v1', dependency_id: 'd1', osv_id: 'MAL-2025-46969', summary: 'Malicious code in chalk (npm)', severity: 'critical', malicious: true },
         { id: 'v2', dependency_id: 'd1', osv_id: 'GHSA-xxxx-yyyy-zzzz', summary: 'Prototype pollution', severity: 'high', malicious: false },
@@ -137,6 +139,48 @@ describe('RepoDetail', () => {
     status = 'completed';
     await waitFor(() => expect(calls.filter((c) => c.path === '/repositories/r1/scans').length).toBeGreaterThan(before), { timeout: 5000 });
   });
+  describe('SBOM download', () => {
+    it('downloads the last completed scan in the chosen format', async () => {
+      const { names } = stubDownload();
+      const { calls } = mockFetch({
+        'GET /repositories/r1': { body: { data: repo } },
+        'GET /repositories/r1/scans': { body: { data: [{ id: 's2', status: 'failed', error: 'clone failed' }, done] } },
+        'GET /scans/s1/dependencies': { body: { data: [] } },
+        'GET /scans/s1/vulnerabilities': { body: { data: [] } },
+        'GET /scans/s1/sbom': { body: {}, headers: { 'Content-Disposition': 'attachment; filename=web-s1.spdx.json' } },
+      });
+      renderWithProviders(<RepoDetail />, at);
+      const group = await screen.findByRole('group', { name: 'Download SBOM' });
+      await userEvent.click(within(group).getByRole('button', { name: 'SPDX' }));
+      await waitFor(() => expect(names).toEqual(['web-s1.spdx.json']));
+      expect(calls.some((c) => c.path === '/scans/s1/sbom?format=spdx')).toBe(true);
+    });
+
+    it('is disabled before the first completed scan', async () => {
+      mockFetch({ 'GET /repositories/r1': { body: { data: repo } }, 'GET /repositories/r1/scans': { body: { data: [{ id: 's1', status: 'running' }] } } });
+      renderWithProviders(<RepoDetail />, at);
+      const group = await screen.findByRole('group', { name: 'Download SBOM' });
+      expect(within(group).getByRole('button', { name: 'CycloneDX' })).toBeDisabled();
+      expect(within(group).getByRole('button', { name: 'SPDX' })).toBeDisabled();
+    });
+
+    it('reports a failed download and enables the buttons again', async () => {
+      const alert = vi.spyOn(window, 'alert').mockImplementation(() => {});
+      stubDownload();
+      mockFetch({
+        'GET /repositories/r1': { body: { data: repo } },
+        'GET /repositories/r1/scans': { body: { data: [done] } },
+        'GET /scans/s1/dependencies': { body: { data: [] } },
+        'GET /scans/s1/vulnerabilities': { body: { data: [] } },
+        'GET /scans/s1/sbom': { status: 500, body: { error: 'internal server error' } },
+      });
+      renderWithProviders(<RepoDetail />, at);
+      await userEvent.click(await screen.findByRole('button', { name: 'CycloneDX' }));
+      await waitFor(() => expect(alert).toHaveBeenCalledWith('SBOM download failed: internal server error'));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'CycloneDX' })).toBeEnabled());
+    });
+  });
+
   describe('dependency table', () => {
     const depsFixture = [
       { id: 'd1', name: 'express', ecosystem: 'npm', current_version: '^4.0.0', is_direct: true, is_resolved: false, is_dev: false },
@@ -193,6 +237,118 @@ describe('RepoDetail', () => {
       await userEvent.selectOptions(screen.getByLabelText('Dependency type'), 'transitive');
       expect(screen.getByText('No transitive dependencies')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Dependencies (3)' })).toBeInTheDocument();
+    });
+  });
+
+  describe('upgrade recommendations', () => {
+    const deps = [{ id: 'd1', name: 'lodash', ecosystem: 'npm', current_version: '4.17.15', is_direct: true, is_resolved: true, is_dev: false }];
+    const vulns = [{ id: 'v1', dependency_id: 'd1', osv_id: 'CVE-2021-23337', summary: 'Command injection', severity: 'high', fixed_version: '4.17.21' }];
+    const recs = [
+      { ecosystem: 'npm', package: 'lodash', current: '4.17.15', upgrade: '4.17.21', fixes: ['CVE-2020-8203', 'CVE-2021-23337'], no_fix: [], manifest: 'package-lock.json', via: '', malicious: false },
+      { ecosystem: 'npm', package: 'express', current: '4.18.2', upgrade: '', fixes: [], no_fix: ['GHSA-esc-0005'], manifest: 'package-lock.json', via: '', malicious: false },
+      { ecosystem: 'npm', package: 'evil-pkg', current: '1.0.0', upgrade: '', fixes: [], no_fix: ['MAL-2025-1234'], manifest: 'package-lock.json', via: '', malicious: true },
+      { ecosystem: 'npm', package: 'debug', current: '4.4.2', upgrade: '4.4.3', fixes: ['CVE-2025-59144'], no_fix: [], manifest: 'package-lock.json', via: '', malicious: true },
+    ];
+    const routes = (recsRoute) => ({
+      'GET /repositories/r1': { body: { data: repo } },
+      'GET /repositories/r1/scans': { body: { data: [done] } },
+      'GET /scans/s1/dependencies': { body: { data: deps } },
+      'GET /scans/s1/vulnerabilities': { body: { data: vulns } },
+      'GET /scans/s1/recommendations': recsRoute,
+    });
+
+    it('shows the smallest upgrade per package with a caution', async () => {
+      mockFetch(routes({ body: { data: recs } }));
+      renderWithProviders(<RepoDetail />, at);
+      await userEvent.click(await screen.findByRole('button', { name: /^Vulnerabilities/ }));
+      const panel = await screen.findByRole('region', { name: 'Recommended upgrades' });
+      const items = within(panel).getAllByRole('listitem');
+      expect(items[0]).toHaveTextContent('lodash 4.17.15 → 4.17.21 fixes 2 advisories');
+      expect(items[1]).toHaveTextContent('express 4.18.2 — no known fix for GHSA-esc-0005');
+      expect(items[2]).toHaveTextContent('evil-pkg 1.0.0 — reported as malicious; remove it');
+      expect(items[3]).toHaveTextContent('debug 4.4.2 — reported as malicious; remove it (a non-malicious advisory names 4.4.3 as fixed)');
+      expect(items[3]).not.toHaveTextContent('→');
+      expect(panel).toHaveTextContent('It can still break your build; check the release notes. Orbit does not check that the version exists or that no other advisory affects it.');
+      expect(screen.getByText('Command injection')).toBeInTheDocument();
+    });
+
+    it('asks for recommendations only on the vulnerabilities tab', async () => {
+      const { calls } = mockFetch(routes({ body: { data: recs } }));
+      renderWithProviders(<RepoDetail />, at);
+      await screen.findByText('lodash');
+      expect(calls.some((c) => c.path === '/scans/s1/recommendations')).toBe(false);
+      await userEvent.click(screen.getByRole('button', { name: /^Vulnerabilities/ }));
+      expect(await screen.findByRole('region', { name: 'Recommended upgrades' })).toBeInTheDocument();
+    });
+
+    it('keeps the vulnerability list when recommendations fail', async () => {
+      mockFetch(routes({ status: 500, body: { error: 'boom' } }));
+      renderWithProviders(<RepoDetail />, at);
+      await userEvent.click(await screen.findByRole('button', { name: /^Vulnerabilities/ }));
+      expect(await screen.findByText('Upgrade recommendations could not be loaded.')).toBeInTheDocument();
+      expect(screen.getByText('Command injection')).toBeInTheDocument();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+  });
+
+  it('marks known exploited vulnerabilities of the scan', async () => {
+    mockFetch({
+      'GET /repositories/r1': { body: { data: repo } },
+      'GET /repositories/r1/scans': { body: { data: [done] } },
+      'GET /scans/s1/dependencies': { body: { data: [{ id: 'd1', name: 'jquery', current_version: '3.4.1', ecosystem: 'npm' }] } },
+      'GET /scans/s1/recommendations': { body: { data: [] } },
+      'GET /scans/s1/vulnerabilities': { body: { data: [{ id: 'v1', dependency_id: 'd1', osv_id: 'CVE-2020-11023', summary: 'XSS in jQuery', severity: 'medium', kev: true, kev_date_added: '2025-01-23T00:00:00Z', epss: 0.84887, epss_percentile: 0.9971 }] } },
+    });
+    renderWithProviders(<RepoDetail />, at);
+    await userEvent.click(await screen.findByRole('button', { name: /^Vulnerabilities/ }));
+    expect(await screen.findByText('KEV')).toHaveAttribute('title', expect.stringContaining('2025'));
+    expect(screen.getByText('84.9%')).toBeInTheDocument();
+  });
+
+  describe('licenses', () => {
+    const licensed = [
+      { id: 'd1', name: 'express', ecosystem: 'npm', current_version: '4.18.2', is_direct: true, is_resolved: true, license: 'MIT' },
+      { id: 'd2', name: 'qs', ecosystem: 'npm', current_version: '6.11.0', is_direct: false, is_resolved: true, license: 'BSD-3-Clause' },
+      { id: 'd3', name: 'ms', ecosystem: 'npm', current_version: '2.1.3', is_direct: false, is_resolved: true, license: 'MIT' },
+      { id: 'd4', name: 'private', ecosystem: 'npm', current_version: '1.0.0', is_direct: true, is_resolved: true, license: '' },
+    ];
+    const setup = (data) => {
+      mockFetch({
+        'GET /repositories/r1': { body: { data: repo } },
+        'GET /repositories/r1/scans': { body: { data: [done] } },
+        'GET /scans/s1/dependencies': { body: { data } },
+        'GET /scans/s1/vulnerabilities': { body: { data: [] } },
+      });
+      renderWithProviders(<RepoDetail />, at);
+    };
+
+    it('shows a license column and a breakdown', async () => {
+      setup(licensed);
+      await screen.findByText('express');
+      const row = (name) => screen.getByText(name).closest('tr');
+      expect(within(row('express')).getByTestId('dep-license')).toHaveTextContent('MIT');
+      expect(within(row('private')).getByTestId('dep-license')).toHaveTextContent('-');
+      const breakdown = screen.getByRole('region', { name: 'License breakdown' });
+      const items = within(breakdown).getAllByRole('listitem').map((li) => li.textContent);
+      expect(items).toEqual(['MIT2', 'BSD-3-Clause1', 'Unknown1']);
+    });
+
+    it('hides the breakdown when no license is known', async () => {
+      setup([{ id: 'd1', name: 'express', ecosystem: 'npm', current_version: '4.18.2', is_direct: true, is_resolved: true }]);
+      await screen.findByText('express');
+      expect(screen.queryByRole('region', { name: 'License breakdown' })).not.toBeInTheDocument();
+      expect(screen.getByTestId('dep-license')).toHaveTextContent('-');
+    });
+
+    it('sums licenses beyond the first eight into Other', async () => {
+      const many = Array.from({ length: 10 }, (_, i) => ({
+        id: `d${i}`, name: `pkg${i}`, ecosystem: 'npm', current_version: '1.0.0', is_direct: true, is_resolved: true, license: `LicenseRef-L${i}`,
+      }));
+      setup(many);
+      await screen.findByText('pkg0');
+      const items = within(screen.getByRole('region', { name: 'License breakdown' })).getAllByRole('listitem');
+      expect(items).toHaveLength(9);
+      expect(items[8]).toHaveTextContent('Other2');
     });
   });
 });

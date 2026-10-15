@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
@@ -129,12 +131,45 @@ const maxVulnerabilityPage = 1_000_000
 
 var validSeverities = map[string]bool{"": true, "critical": true, "high": true, "medium": true, "low": true, "unknown": true}
 
-// List handles GET /api/v1/vulnerabilities across every repository's latest completed scan.
+// listSorts are the orders GET /vulnerabilities accepts.
+var listSorts = map[string]bool{"severity": true, "epss": true}
+
+// parseListFilter reads severity, kev, min_epss and sort, or returns the
+// message of a 400 response.
+func parseListFilter(q url.Values) (repository.VulnerabilityListFilter, string) {
+	f := repository.VulnerabilityListFilter{Severity: q.Get("severity"), Sort: q.Get("sort")}
+	if !validSeverities[f.Severity] {
+		return f, "severity must be one of critical, high, medium, low, unknown"
+	}
+	switch q.Get("kev") {
+	case "", "false":
+	case "true":
+		f.KEVOnly = true
+	default:
+		return f, "kev must be true or false"
+	}
+	if s := q.Get("min_epss"); s != "" {
+		v, err := strconv.ParseFloat(s, 64)
+		if err != nil || math.IsNaN(v) || v < 0 || v > 1 {
+			return f, "min_epss must be a number from 0 to 1"
+		}
+		f.MinEPSS = &v
+	}
+	if f.Sort == "" {
+		f.Sort = "severity"
+	}
+	if !listSorts[f.Sort] {
+		return f, "sort must be severity or epss"
+	}
+	return f, ""
+}
+
+// List handles GET /api/v1/vulnerabilities across every repository's latest completed scan, with optional severity, kev, min_epss and sort.
 func (h *VulnHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	severity := q.Get("severity")
-	if !validSeverities[severity] {
-		RespondError(w, http.StatusBadRequest, "severity must be one of critical, high, medium, low, unknown")
+	filter, msg := parseListFilter(q)
+	if msg != "" {
+		RespondError(w, http.StatusBadRequest, msg)
 		return
 	}
 	page, _ := strconv.Atoi(q.Get("page"))
@@ -151,7 +186,7 @@ func (h *VulnHandler) List(w http.ResponseWriter, r *http.Request) {
 		perPage = 25
 	}
 
-	findings, total, err := h.vulnRepo.ListLatest(r.Context(), severity, perPage, (page-1)*perPage)
+	findings, total, err := h.vulnRepo.ListLatest(r.Context(), filter, perPage, (page-1)*perPage)
 	if err != nil {
 		RespondServerError(w, r, err)
 		return
