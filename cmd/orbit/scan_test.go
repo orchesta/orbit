@@ -21,6 +21,7 @@ import (
 	"github.com/orchesta/orbit/internal/buildinfo"
 	"github.com/orchesta/orbit/internal/domain/entity"
 	"github.com/orchesta/orbit/internal/engine"
+	"github.com/orchesta/orbit/internal/infrastructure/exploit"
 )
 
 // fakeEngine stands in for engine.Engine: it returns a canned result and
@@ -37,6 +38,7 @@ type fakeEngine struct {
 	calls       int
 	root        string
 	checkLatest bool
+	exploitData bool
 	deadline    time.Time
 }
 
@@ -58,8 +60,9 @@ var testNow = time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 
 func (f *fakeEngine) deps() scanDeps {
 	return scanDeps{
-		newEngine: func(checkLatest bool, logger *slog.Logger) analyzerEngine {
-			f.checkLatest = checkLatest
+		newEngine: func(ec engineConfig, logger *slog.Logger) analyzerEngine {
+			f.checkLatest = ec.checkLatest
+			f.exploitData = ec.exploitData
 			f.logger = logger
 			return f
 		},
@@ -233,15 +236,16 @@ func TestScanDefaultTimeoutIsTenMinutes(t *testing.T) {
 func TestScanBadFlagsExitTwo(t *testing.T) {
 	dir := t.TempDir()
 	cases := map[string][]string{
-		"invalid fail-on":     {"--path", dir, "--fail-on", "hihg"},
-		"empty fail-on":       {"--path", dir, "--fail-on", ""},
-		"invalid format":      {"--path", dir, "--format", "xml"},
-		"unknown flag":        {"--path", dir, "--nope"},
-		"stray argument":      {"--path", dir, "extra"},
-		"zero timeout":        {"--path", dir, "--timeout", "0s"},
-		"missing path":        {"--path", filepath.Join(dir, "missing")},
-		"path is a file":      {"--path", writeFile(t, dir, "file.txt", "x")},
-		"missing ignore file": {"--path", dir, "--ignore-file", filepath.Join(dir, "nope")},
+		"invalid fail-on":       {"--path", dir, "--fail-on", "hihg"},
+		"empty fail-on":         {"--path", dir, "--fail-on", ""},
+		"invalid format":        {"--path", dir, "--format", "xml"},
+		"unknown flag":          {"--path", dir, "--nope"},
+		"stray argument":        {"--path", dir, "extra"},
+		"zero timeout":          {"--path", dir, "--timeout", "0s"},
+		"missing path":          {"--path", filepath.Join(dir, "missing")},
+		"path is a file":        {"--path", writeFile(t, dir, "file.txt", "x")},
+		"missing ignore file":   {"--path", dir, "--ignore-file", filepath.Join(dir, "nope")},
+		"kev gate without data": {"--path", dir, "--fail-on-kev", "--no-exploit-data"},
 	}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -715,5 +719,110 @@ func TestScanStdoutWriteFailureExitsTwo(t *testing.T) {
 				t.Errorf("stderr lacks the cause:\n%s", errOut.String())
 			}
 		})
+	}
+}
+
+// kevResult is a medium finding listed in CISA KEV with exploit data
+// collected, as the real engine reports jquery@3.4.1 (CVE-2020-11023).
+func kevResult() *engine.Result {
+	res := resultWith(entity.SeverityMedium)
+	added := time.Date(2025, 1, 23, 0, 0, 0, 0, time.UTC)
+	epss, pct := 0.84887, 0.9971
+	v := res.Vulnerabilities[0]
+	v.KEV, v.KEVDateAdded, v.EPSS, v.EPSSPercentile = true, &added, &epss, &pct
+	res.Exploit = &exploit.Result{
+		KEV:  exploit.SourceResult{Status: exploit.StatusOK, Version: "2026.10.14"},
+		EPSS: exploit.SourceResult{Status: exploit.StatusOK, Version: "2026-10-14"},
+	}
+	return res
+}
+
+// kevUnavailable is kevResult after the KEV download failed: no KEV
+// status, a warning from the engine.
+func kevUnavailable() *engine.Result {
+	res := kevResult()
+	res.Vulnerabilities[0].KEV, res.Vulnerabilities[0].KEVDateAdded = false, nil
+	res.Exploit.KEV = exploit.SourceResult{Status: exploit.StatusFailed, Err: errors.New("fetch KEV catalog: dial tcp: i/o timeout")}
+	res.Warnings = res.Exploit.Warnings()
+	return res
+}
+
+func TestScanAsksForExploitDataUnlessTurnedOff(t *testing.T) {
+	f := &fakeEngine{res: resultWith()}
+	runFake(t, f, "--path", t.TempDir())
+	if !f.exploitData {
+		t.Error("exploit data must be on by default")
+	}
+	f = &fakeEngine{res: resultWith()}
+	runFake(t, f, "--path", t.TempDir(), "--no-exploit-data")
+	if f.exploitData {
+		t.Error("--no-exploit-data did not turn exploit data off")
+	}
+}
+
+func TestScanFailOnKEV(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		want    int
+		verdict string
+	}{
+		{"severity gate only", []string{"--fail-on", "high"}, 0, "threshold high: passed"},
+		{"kev gate", []string{"--fail-on", "high", "--fail-on-kev"}, 1, "fail on KEV: FAILED"},
+		{"kev gate without a threshold", []string{"--fail-on", "none", "--fail-on-kev"}, 1, "fail on KEV: FAILED"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, stdout, stderr := runFake(t, &fakeEngine{res: kevResult()}, append([]string{"--path", t.TempDir()}, tc.args...)...)
+			if code != tc.want {
+				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, tc.want, stderr)
+			}
+			if !strings.Contains(stdout, tc.verdict) || !strings.Contains(stdout, "1 known exploited (CISA KEV)") {
+				t.Fatalf("table lacks %q and the KEV count:\n%s", tc.verdict, stdout)
+			}
+		})
+	}
+}
+
+func TestScanFailOnKEVPassesAnIgnoredFinding(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, ".orbitignore", "GHSA-0 mitigated by CSP, see SEC-12\n")
+	code, stdout, stderr := runFake(t, &fakeEngine{res: kevResult()}, "--path", dir, "--fail-on-kev")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (the KEV finding is ignored); stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "fail on KEV: passed") {
+		t.Fatalf("table:\n%s", stdout)
+	}
+}
+
+// --fail-on-kev cannot be checked without the catalog: exit 2, no report.
+func TestScanFailOnKEVWithoutTheCatalogExitsTwo(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "orbit.json")
+	if err := os.WriteFile(out, []byte(`{"stale":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runFake(t, &fakeEngine{res: kevUnavailable()}, "--path", t.TempDir(), "--fail-on-kev", "--format", "json", "--out", out)
+	if code != 2 || stdout != "" {
+		t.Fatalf("exit = %d, stdout %q; want 2 and nothing", code, stdout)
+	}
+	if !strings.Contains(stderr, "--fail-on-kev") || !strings.Contains(stderr, "i/o timeout") {
+		t.Fatalf("stderr lacks the cause:\n%s", stderr)
+	}
+	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale report kept: %v", err)
+	}
+}
+
+func TestScanExploitDataFailureIsOnlyAWarning(t *testing.T) {
+	code, stdout, stderr := runFake(t, &fakeEngine{res: kevUnavailable()}, "--path", t.TempDir(), "--format", "json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (medium is below --fail-on high); stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "warning: exploit data: the CISA KEV catalog could not be loaded") {
+		t.Fatalf("stderr lacks the warning:\n%s", stderr)
+	}
+	if !strings.Contains(stdout, `"kev": "failed"`) {
+		t.Fatalf("JSON lacks exploit_data.kev failed:\n%s", stdout)
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/orchesta/orbit/internal/buildinfo"
 	"github.com/orchesta/orbit/internal/domain/entity"
 	"github.com/orchesta/orbit/internal/engine"
+	"github.com/orchesta/orbit/internal/infrastructure/exploit"
 	"github.com/orchesta/orbit/internal/infrastructure/git"
 	"github.com/orchesta/orbit/internal/infrastructure/vulnerability/osv"
 	"github.com/orchesta/orbit/internal/report"
@@ -28,11 +29,13 @@ import (
 
 // Exit codes of orbit scan.
 const (
-	exitOK = 0 // no finding fails the --fail-on threshold
-	// exitFailed: a non-ignored finding at or above the threshold, or a known
-	// malicious package, which fails at every threshold except none.
+	exitOK = 0 // no finding trips the gate
+	// exitFailed: a non-ignored finding trips the gate (report.failsGate:
+	// threshold, malicious package, or KEV with --fail-on-kev).
 	exitFailed = 1
-	exitError  = 2 // the scan could not be completed or the flags are wrong
+	// exitError: the scan could not be completed or the flags are wrong, or
+	// --fail-on-kev without the KEV catalog.
+	exitError = 2
 )
 
 const ignoreFileName = ".orbitignore"
@@ -42,24 +45,32 @@ type analyzerEngine interface {
 	Analyze(ctx context.Context, root string) (*engine.Result, error)
 }
 
+// engineConfig is what the command line decides about the engine.
+type engineConfig struct {
+	checkLatest bool // --outdated
+	exploitData bool // not --no-exploit-data
+}
+
 // scanDeps holds what runScan needs from the outside world, so tests can
 // replace the engine and the clock.
 type scanDeps struct {
-	newEngine func(checkLatest bool, logger *slog.Logger) analyzerEngine
+	newEngine func(ec engineConfig, logger *slog.Logger) analyzerEngine
 	now       func() time.Time
 }
 
-// defaultScanDeps builds the production engine: all analyzers and a real
-// osv.dev lookup. It needs no configuration, database or secrets.
+// defaultScanDeps builds the production engine: all analyzers, a real
+// osv.dev lookup and, unless turned off, CISA KEV and FIRST EPSS data. It
+// needs no configuration, database or secrets.
 func defaultScanDeps() scanDeps {
 	return scanDeps{
-		newEngine: func(checkLatest bool, logger *slog.Logger) analyzerEngine {
+		newEngine: func(ec engineConfig, logger *slog.Logger) analyzerEngine {
 			osvClient := osv.NewClient()
 			osvClient.Logger = logger
-			return engine.New(newAnalyzerRegistry(), vulnuc.NewLookup(osvClient, logger), engine.Options{
-				CheckLatest: checkLatest,
-				Logger:      logger,
-			})
+			opts := engine.Options{CheckLatest: ec.checkLatest, Logger: logger}
+			if ec.exploitData {
+				opts.Exploit = exploit.NewEnricher(exploit.Config{Logger: logger})
+			}
+			return engine.New(newAnalyzerRegistry(), vulnuc.NewLookup(osvClient, logger), opts)
 		},
 		now: time.Now,
 	}
@@ -90,6 +101,9 @@ type scanConfig struct {
 	timeout    time.Duration
 	quiet      bool
 	verbose    bool
+
+	failOnKEV     bool // --fail-on-kev
+	noExploitData bool // --no-exploit-data
 }
 
 // usageError is a problem with the command line.
@@ -107,6 +121,8 @@ func parseScanFlags(args []string, stderr io.Writer) (scanConfig, error) {
 	flags.StringVar(&c.out, "out", "-", `report file, or "-" for stdout`)
 	flags.StringVar(&c.ignoreFile, "ignore-file", "", "ignore file (default <path>/"+ignoreFileName+" if it exists)")
 	flags.BoolVar(&c.outdated, "outdated", false, "also ask the package registries for the latest versions")
+	flags.BoolVar(&c.failOnKEV, "fail-on-kev", false, "also exit 1 on any finding in the CISA KEV catalog, whatever its severity")
+	flags.BoolVar(&c.noExploitData, "no-exploit-data", false, "do not download the CISA KEV catalog or send CVE IDs to api.first.org for EPSS scores")
 	flags.DurationVar(&c.timeout, "timeout", 10*time.Minute, "give up after this long")
 	flags.BoolVar(&c.quiet, "quiet", false, "write only the summary and warnings to stderr")
 	flags.BoolVar(&c.verbose, "verbose", false, "log progress details to stderr")
@@ -137,6 +153,9 @@ func parseScanFlags(args []string, stderr io.Writer) (scanConfig, error) {
 	if c.out == "" {
 		return c, usageError{`--out needs a file path or "-"`}
 	}
+	if c.failOnKEV && c.noExploitData {
+		return c, usageError{"--fail-on-kev needs exploit data; it cannot be combined with --no-exploit-data"}
+	}
 	return c, nil
 }
 
@@ -151,6 +170,11 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer, deps 
 	return code
 }
 
+// runScanSafe is runScan with stderr already neutralised. It exits 1 when
+// a finding trips the gate (threshold, malicious package, or KEV with
+// --fail-on-kev) and 2 when the scan fails after the flags were accepted,
+// including --fail-on-kev without the KEV catalog; then any --out file is
+// removed so no stale report survives.
 func runScanSafe(ctx context.Context, args []string, stdout, stderr io.Writer, deps scanDeps) int {
 	cfg, err := parseScanFlags(args, stderr)
 	if errors.Is(err, flag.ErrHelp) {
@@ -178,7 +202,7 @@ func runScanSafe(ctx context.Context, args []string, stdout, stderr io.Writer, d
 }
 
 // executeScan runs the analysis, writes the report and the stderr summary, and
-// reports whether a finding reached the threshold. Every error except a
+// reports whether a finding tripped the gate. Every error except a
 // failing stdout itself happens before anything is written to stdout.
 func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, deps scanDeps) (failed bool, err error) {
 	// The engine does not follow symlinks, so a symlinked --path (a common
@@ -213,7 +237,7 @@ func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, 
 
 	ctx, cancel := context.WithTimeout(ctx, cfg.timeout)
 	defer cancel()
-	res, err := deps.newEngine(cfg.outdated, logger).Analyze(ctx, root)
+	res, err := deps.newEngine(engineConfig{checkLatest: cfg.outdated, exploitData: !cfg.noExploitData}, logger).Analyze(ctx, root)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return false, fmt.Errorf("scan did not finish within --timeout %s: %w", cfg.timeout, err)
@@ -223,8 +247,14 @@ func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, 
 	if res == nil {
 		return false, errors.New("scan failed: engine returned no result")
 	}
+	if cfg.failOnKEV {
+		if err := kevAvailable(res); err != nil {
+			return false, err
+		}
+	}
 
-	findings, summary := report.Build(res, ignores, cfg.threshold, deps.now())
+	findings, summary := report.BuildWithOptions(res, ignores,
+		report.BuildOptions{Threshold: cfg.threshold, FailOnKEV: cfg.failOnKEV}, deps.now())
 
 	if cfg.out == "-" {
 		if err := writeStdout(stdout, cfg.format, findings, summary, sarifOptions(root)); err != nil {
@@ -249,6 +279,20 @@ func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, 
 		writeSummary(stderr, summary)
 	}
 	return summary.Failed, nil
+}
+
+// kevAvailable stops --fail-on-kev when the KEV catalog could not be read:
+// the gate the user asked for cannot be checked, and passing it would read
+// as "nothing is known exploited". EPSS has no gate, so its failure stays
+// a warning.
+func kevAvailable(res *engine.Result) error {
+	switch {
+	case res.Exploit == nil:
+		return errors.New("--fail-on-kev: no exploit data was collected")
+	case res.Exploit.KEV.Status == exploit.StatusFailed:
+		return fmt.Errorf("--fail-on-kev: %w", res.Exploit.KEV.Err)
+	}
+	return nil
 }
 
 // replaceFile writes data to a temporary file next to path and renames it
@@ -427,7 +471,7 @@ func writeReport(w io.Writer, format string, f []report.Finding, s report.Summar
 func writeSummary(w io.Writer, s report.Summary) {
 	var buf bytes.Buffer
 	_ = report.WriteTable(&buf, nil, s) // no findings: summary and warnings only
-	if s.Threshold == "" {
+	if s.Threshold == "" && !s.FailOnKEV {
 		buf.WriteString("no failure threshold (--fail-on none)\n")
 	}
 	sc := bufio.NewScanner(&buf)

@@ -30,6 +30,7 @@ The backend is Go, the UI is React, and the database is PostgreSQL. Orbit is an 
 - Go modules, npm (npm, yarn v1 and berry, pnpm), Python (requirements files, Pipfile, Poetry, uv, `pyproject.toml`) and NuGet.
 - Uses lockfiles for exact versions, including transitive dependencies. Manifest-only projects get an estimated version and a warning.
 - Vulnerability data from osv.dev. Outdated-version checks against npm, PyPI, NuGet and the Go module proxy.
+- Exploit signals: each finding with a CVE ID is marked when it is in CISA's Known Exploited Vulnerabilities (KEV) catalog and carries its FIRST EPSS score, so you can see what to fix first.
 - Server: imports repositories from GitHub, GitLab and Azure DevOps (Services and Server), scans them on a cron schedule per repository with a bounded worker pool, and shows a dashboard, a vulnerability list and scan history.
 - CLI: `orbit scan` with `table`, `json`, `sarif` and `junit` output, a severity threshold, documented exit codes, and an `.orbitignore` file for accepted findings with optional expiry dates.
 - Flags known malicious packages (OpenSSF Malicious Packages, `MAL-` advisories on osv.dev) separately. They fail `orbit scan` at every `--fail-on` level except `none`.
@@ -42,7 +43,7 @@ The backend is Go, the UI is React, and the database is PostgreSQL. Orbit is an 
 | --- | --- | --- |
 | Use it for | Continuous monitoring of many repositories | Checking a build in CI, or a local checkout |
 | What it scans | Clones each repository's configured branch | A directory that is already on disk |
-| Needs | PostgreSQL, a JWT secret, an encryption key | Nothing except outbound HTTPS to `api.osv.dev` |
+| Needs | PostgreSQL, a JWT secret, an encryption key | Outbound HTTPS to `api.osv.dev`; also `www.cisa.gov` and `api.first.org` for exploit data unless `--no-exploit-data` |
 | Interface | Web UI on port 8080, REST API under `/api/v1` | Report on stdout or in a file, exit code 0/1/2 |
 | Triggers | Cron schedule per repository, or **Scan Now** in the UI | Every pipeline run |
 | Outdated versions | Always checked | Only with `--outdated` |
@@ -134,14 +135,16 @@ orbit scan --path services/api               # one part of a monorepo
 orbit scan --fail-on critical                # fail only on critical findings (and malicious packages)
 orbit scan --format sarif --out orbit.sarif  # also: json, junit
 orbit scan --outdated                        # also check for newer versions
+orbit scan --fail-on-kev                     # also fail on anything CISA lists as exploited
+orbit scan --no-exploit-data                 # no requests to cisa.gov or api.first.org
 ```
 
 ```
-SEVERITY  ID              PACKAGE         FIXED    MANIFEST
-HIGH      CVE-2020-8203   lodash@4.17.15  4.17.19  package-lock.json
-HIGH      CVE-2021-23337  lodash@4.17.15  4.18.0   package-lock.json
-MEDIUM    CVE-2020-28500  lodash@4.17.15  4.17.21  package-lock.json
-MEDIUM    CVE-2025-13465  lodash@4.17.15  4.18.0   package-lock.json
+SEVERITY  KEV  EPSS   ID              PACKAGE         FIXED    MANIFEST
+HIGH      -    21.3%  CVE-2021-23337  lodash@4.17.15  4.18.0   package-lock.json
+HIGH      -    5.2%   CVE-2020-8203   lodash@4.17.15  4.17.19  package-lock.json
+MEDIUM    -    7.3%   CVE-2020-28500  lodash@4.17.15  4.17.21  package-lock.json
+MEDIUM    -    1.9%   CVE-2025-13465  lodash@4.17.15  4.18.0   package-lock.json
 
 1 dependencies, 1 vulnerable (2 high, 2 medium)
 threshold high: FAILED
@@ -155,6 +158,8 @@ threshold high: FAILED
 | `--out` | `-` (stdout) | Report file |
 | `--ignore-file` | `<path>/.orbitignore` if it exists | Accepted findings; `""` disables it |
 | `--outdated` | off | Also ask the registries for the latest versions |
+| `--fail-on-kev` | off | Also exit 1 on any finding in the CISA KEV catalog, whatever its severity |
+| `--no-exploit-data` | off | Do not download the KEV catalog or ask api.first.org for EPSS scores |
 | `--timeout` | `10m` | Give up after this long |
 | `--quiet` / `--verbose` | off | Less or more progress on stderr |
 
@@ -162,11 +167,24 @@ threshold high: FAILED
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Clean; or every finding is below `--fail-on` or ignored and none is a malicious package; or `--fail-on none` |
-| 1 | At least one finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`) |
-| 2 | The scan could not complete: osv.dev unreachable, timeout, bad flag, missing or invalid ignore file |
+| 0 | Clean; or every finding is below `--fail-on` or ignored, none is a malicious package and, with `--fail-on-kev`, none is in CISA KEV; or `--fail-on none` without `--fail-on-kev` |
+| 1 | At least one finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV |
+| 2 | The scan could not complete: osv.dev unreachable, timeout, bad flag, missing or invalid ignore file, or `--fail-on-kev` without the KEV catalog |
 
 On exit 2 nothing is written to stdout and an existing `--out` file is deleted, so a stale report is never uploaded. An osv.dev failure never counts as "no vulnerabilities".
+
+### Exploit signals: CISA KEV and FIRST EPSS
+
+For every finding with a CVE ID (as its ID or an alias), Orbit adds:
+
+- **KEV**: the CVE is in CISA's [Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) catalog, which means exploitation in the wild has been reported, and the date CISA listed it.
+- **EPSS**: FIRST's [Exploit Prediction Scoring System](https://www.first.org/epss/) estimate of the probability of exploitation activity in the next 30 days, with its percentile.
+
+Severity and `--fail-on` do not change. Within one severity, findings in KEV come first, then higher EPSS. `--fail-on-kev` adds a second gate: any finding in KEV that is not ignored fails the build, even a low one.
+
+If cisa.gov or api.first.org cannot be reached, the scan still completes and prints a warning, and the findings lack that signal; `summary.exploit_data` in the JSON report says which source answered. The exception is `--fail-on-kev`: without the catalog that gate cannot be checked, so the scan exits 2.
+
+Advisories without a CVE ID (some GHSA-only advisories, all `MAL-` records) have no exploit signals. EPSS is a probability, not a verdict; a low score does not mean a vulnerability is safe to ignore.
 
 ### `.orbitignore`
 
@@ -452,7 +470,7 @@ The release binaries are mainly for the CLI. The server serves the UI from `./ui
 
 ## Security notes
 
-- **What leaves your network.** To find vulnerabilities, Orbit sends package coordinates (ecosystem, name, version) to `api.osv.dev`. Source code, file paths and repository details are not sent. The server also asks the public registries (npm, PyPI, NuGet, the Go module proxy) for the latest versions of every package; the CLI does that only with `--outdated`. Private feeds such as Azure Artifacts are not queried.
+- **What leaves your network.** To find vulnerabilities, Orbit sends package coordinates (ecosystem, name, version) to `api.osv.dev`. Source code, file paths and repository details are not sent. The server also asks the public registries (npm, PyPI, NuGet, the Go module proxy) for the latest versions of every package; the CLI does that only with `--outdated`. Private feeds such as Azure Artifacts are not queried. For exploit data, Orbit downloads the whole CISA KEV catalog from `www.cisa.gov` (nothing about your project is sent) and sends the CVE IDs of its findings to `api.first.org` in the query string to get their EPSS scores; this tells FIRST which CVEs affect the scanned project. Both requests carry a User-Agent naming Orbit and its version. Turn them off with `--no-exploit-data`, or `ORBIT_EXPLOIT_ENABLED=false` on the server.
 - **Access tokens** for GitHub, GitLab and Azure DevOps, including tokens stored on repositories, are encrypted at rest with AES-256-GCM using `ORBIT_CRYPTO_ENCRYPTION_KEY`. Losing the key means re-adding the tokens.
 - **First-run setup** requires `ORBIT_SETUP_TOKEN` when it is set, so only someone who has the token can create the first admin account.
 - **Logins** are limited to 5 failures per email and 20 per client IP in 15 minutes. Behind a reverse proxy, set `ORBIT_SERVER_TRUST_PROXY_HEADERS=true` so the limit applies per real client.
@@ -466,6 +484,7 @@ Orbit reports known vulnerabilities for the versions it can see. Please keep the
 
 - It finds only advisories that are published in osv.dev. A clean result means no known advisory matched, not that the dependencies are free of problems.
 - Malicious packages are found only when they are in the OpenSSF Malicious Packages data on osv.dev, matched by package name and version. A private package with the same name as a public malicious one is reported too, and `.orbitignore` cannot suppress that finding.
+- Exploit signals match CVE IDs only. KEV and EPSS cover CVEs, not every advisory; a finding without a signal is not known to be safe. The server stores them at scan time, so a CVE that CISA lists later appears after the next scan.
 - It does not analyse whether vulnerable code is actually reached by your application.
 - Without a lockfile, versions are estimated from manifest ranges and can be wrong in either direction.
 - Supported ecosystems are Go, npm, Python and NuGet. Other ecosystems (for example Maven, Gradle, Cargo or Composer) are not scanned.
