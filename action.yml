@@ -15,14 +15,22 @@ inputs:
     required: false
     default: high
   format:
-    description: Report format - table, json, sarif or junit.
+    description: >-
+      Report format - table, json, sarif, junit, cyclonedx (CycloneDX 1.6 SBOM) or
+      spdx (SPDX 2.3 SBOM).
     required: false
     default: sarif
   output:
     description: >-
       Report file, relative to the workspace. Use "-" to print the report to the log.
-      Empty picks a name from format - orbit.sarif, orbit.json, orbit.xml (junit) or
-      orbit.txt (table).
+      Empty picks a name from format - orbit.sarif, orbit.json, orbit.xml (junit),
+      orbit.txt (table), orbit.cdx.json (cyclonedx) or orbit.spdx.json (spdx).
+    required: false
+    default: ""
+  sbom-name:
+    description: >-
+      Project name written into a cyclonedx or spdx report. Empty uses the repository
+      (owner/name). Ignored for the other formats.
     required: false
     default: ""
   ignore-file:
@@ -100,6 +108,7 @@ runs:
         INPUT_BASELINE_OUTPUT: ${{ inputs.baseline-output }}
         INPUT_LICENSES: ${{ inputs.licenses }}
         INPUT_DENY_LICENSE: ${{ inputs.deny-license }}
+        INPUT_SBOM_NAME: ${{ inputs.sbom-name }}
         INPUT_VERSION: ${{ inputs.version }}
         ACTION_REF: ${{ github.action_ref }}
       run: |
@@ -130,6 +139,8 @@ runs:
             json) output=orbit.json ;;
             junit) output=orbit.xml ;;
             table) output=orbit.txt ;;
+            cyclonedx) output=orbit.cdx.json ;;
+            spdx) output=orbit.spdx.json ;;
             *) output=orbit.sarif ;;
           esac
         fi
@@ -145,6 +156,17 @@ runs:
           args+=(--ignore-file "/src/${INPUT_IGNORE_FILE}")
           record+=(--ignore-file "/src/${INPUT_IGNORE_FILE}")
         fi
+        # Only the SBOM formats take --sbom-name, so an older pinned image still runs the
+        # others. Without it the project would be named after the mount point, "src". The
+        # baseline-output scan writes JSON and does not get it.
+        case "$INPUT_FORMAT" in
+          cyclonedx|spdx)
+            sbom_name="${INPUT_SBOM_NAME:-${GITHUB_REPOSITORY:-}}"
+            if [ -n "$sbom_name" ]; then
+              args+=(--sbom-name "$sbom_name")
+            fi
+            ;;
+        esac
         # The KEV gate applies to the first scan only.
         case "$INPUT_FAIL_ON_KEV" in
           true) args+=(--fail-on-kev) ;;

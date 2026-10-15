@@ -16,6 +16,8 @@
 #     ORBIT_DENY_LICENSE: ""      # optional: comma-separated SPDX IDs that fail the job
 #     ORBIT_BASELINE: ""      # optional: "" off, "auto", or a path to an earlier orbit JSON report
 #     ORBIT_BASELINE_JOB: ""  # optional, auto: job whose orbit-baseline.json is used (default: this job's name)
+#     ORBIT_SBOM_FORMAT: ""   # optional: cyclonedx or spdx adds an SBOM artifact
+#     ORBIT_SBOM_NAME: ""     # optional: project name in the SBOM, default $CI_PROJECT_PATH
 #
 # Variables you set in your own .gitlab-ci.yml (top level or on the job) override the
 # template, because the template only declares ORBIT_VERSION at its top level (needed for
@@ -38,6 +40,10 @@
 # one extra osv.dev round trip. The second run downloads the KEV catalog and EPSS scores
 # again (about 200 KB) and, with ORBIT_LICENSES, repeats the deps.dev lookups.
 # Only the first run decides the job result, so the job fails at most once.
+# With ORBIT_SBOM_FORMAT a third run, also with --fail-on none, writes orbit.cdx.json
+# (cyclonedx) or orbit.spdx.json (spdx) as a job artifact. It keeps ORBIT_IGNORE_FILE,
+# ORBIT_EXPLOIT_DATA and ORBIT_LICENSES, but not the KEV gate, ORBIT_DENY_LICENSE or the
+# baseline: the SBOM lists every dependency and finding. If it fails the job only warns.
 #
 # Licenses: ORBIT_DENY_LICENSE fails the job (exit 1) on a dependency that can only be
 # used under one of the listed licenses, whatever ORBIT_FAIL_ON says. The SARIF run applies
@@ -76,7 +82,8 @@
 # --baseline as is, and a missing file is an error (exit 2).
 # Every job that does not record (the default mode, and auto outside the default branch)
 # logs "orbit-baseline.json: no matching files" when it uploads artifacts. That is
-# expected: the path is listed for the recording job.
+# expected: the path is listed for the recording job. The same goes for orbit.cdx.json
+# and orbit.spdx.json, which are listed for ORBIT_SBOM_FORMAT.
 
 variables:
   ORBIT_VERSION: latest   # pin to a release tag such as v1.0.0
@@ -106,13 +113,20 @@ variables:
         false) exploit_flag="--no-exploit-data" ;;
         *) echo "error: ORBIT_EXPLOIT_DATA must be true or false, got '$ORBIT_EXPLOIT_DATA'" >&2; exit 2 ;;
       esac
-      # The first and the SARIF run get it, with ORBIT_DENY_LICENSE; the recording run
-      # does not.
+      # The first and the SARIF run get it, with ORBIT_DENY_LICENSE; the SBOM run gets it
+      # without ORBIT_DENY_LICENSE; the recording run does not.
       case "${ORBIT_LICENSES:-false}" in
         true) license_flag="--licenses" ;;
         false) license_flag="" ;;
         *) echo "error: ORBIT_LICENSES must be true or false, got '$ORBIT_LICENSES'" >&2; exit 2 ;;
       esac
+      case "${ORBIT_SBOM_FORMAT:-}" in
+        "") sbom_out="" ;;
+        cyclonedx) sbom_out=orbit.cdx.json ;;
+        spdx) sbom_out=orbit.spdx.json ;;
+        *) echo "error: ORBIT_SBOM_FORMAT must be cyclonedx, spdx or empty, got '$ORBIT_SBOM_FORMAT'" >&2; exit 2 ;;
+      esac
+      sbom_name="${ORBIT_SBOM_NAME:-${CI_PROJECT_PATH:-}}"
       baseline=""
       record=false
       case "${ORBIT_BASELINE:-}" in
@@ -162,6 +176,15 @@ variables:
           ${baseline:+--baseline "$baseline"} \
           --format sarif --out orbit.sarif --quiet || sarif_rc=$?
         [ "$sarif_rc" -le 1 ] || echo "warning: could not write orbit.sarif" >&2
+        # The SBOM lists every dependency and finding: no license policy and no
+        # baseline. A failure only warns.
+        if [ -n "$sbom_out" ]; then
+          orbit scan --path "$path" --fail-on none $exploit_flag $license_flag \
+            ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_IGNORE_FILE"} \
+            --format "$ORBIT_SBOM_FORMAT" ${sbom_name:+--sbom-name "$sbom_name"} \
+            --out "$sbom_out" --quiet \
+            || echo "warning: could not write $sbom_out" >&2
+        fi
         # A failed recording scan fails the job: a passing job without the file would
         # become the latest successful pipeline, and merge requests would find no
         # baseline. A failed one leaves the previous pipeline's baseline in place.
@@ -194,6 +217,8 @@ variables:
     expire_in: 30 days
     paths:
       - orbit.sarif
+      - orbit.cdx.json
+      - orbit.spdx.json
       - orbit-baseline.json
     reports:
       junit: orbit-junit.xml

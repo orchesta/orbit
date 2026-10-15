@@ -318,6 +318,21 @@ steps:
 
 `v1.0.0` is a placeholder for a real release tag. Pin it in both places: `version` is the tag of the `orchestalabs/orbit-cli` image the action runs, and a major ref such as `@v1` has no image tag. The action writes `orbit.sarif` by default. A complete workflow is in [`.github/examples/orbit-scan.yml`](.github/examples/orbit-scan.yml), and the action's inputs are in [`action.yml`](action.yml).
 
+For an SBOM instead of SARIF, set `format: cyclonedx` (writes `orbit.cdx.json`) or `format: spdx` (writes `orbit.spdx.json`). The project in the SBOM is named after the repository unless `sbom-name` is set. The action runs one scan, so `fail-on` and the other inputs apply to that run as usual. To get both SARIF and an SBOM, use the action twice:
+
+```yaml
+  - uses: orchesta/orbit@v1.0.0
+    with:
+      format: cyclonedx
+      fail-on: none
+      version: v1.0.0
+  - if: always() && hashFiles('orbit.cdx.json') != ''
+    uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+    with:
+      name: sbom
+      path: orbit.cdx.json
+```
+
 To check licenses as well, add `deny-license: GPL-3.0-only,AGPL-3.0-only` (the SPDX IDs to fail on) and, to look up on deps.dev the licenses that lockfiles do not record, `licenses: "true"`. See [Licenses](#licenses) for how the policy is evaluated.
 
 The templates pull `orchestalabs/orbit-cli` from Docker Hub, which limits pulls by anonymous users. If many pipelines share one IP address, log in to Docker Hub in the job (`docker login`) or mirror the image to your own registry (`imageName` in the Azure template, the `image` of the GitLab job).
@@ -379,6 +394,8 @@ variables:
 Both take a KEV gate (`ORBIT_FAIL_ON_KEV` / `failOnKev`) and can turn exploit data off (`ORBIT_EXPLOIT_DATA` / `exploitData`); the SARIF run never applies the KEV gate.
 
 Both also take the license options: `ORBIT_LICENSES` / `licenses` turns on deps.dev lookups (`--licenses`), and `ORBIT_DENY_LICENSE` / `denyLicense` sets the denied SPDX IDs (`--deny-license`). The SARIF run applies the license policy too, so the SARIF report lists the violations; the run that records the baseline does not.
+
+Both can also write an SBOM in a third run with `--fail-on none`: set `ORBIT_SBOM_FORMAT` (GitLab) or `sbomFormat` (Azure, default `none`) to `cyclonedx` or `spdx`. GitLab keeps `orbit.cdx.json` or `orbit.spdx.json` as a job artifact; Azure publishes it as the `orbit-sbom` build artifact. The project is named after the repository unless `ORBIT_SBOM_NAME` / `sbomName` is set. The SBOM run keeps the ignore file, the exploit-data setting and the license lookups, but not the KEV gate, the license policy or the baseline. If it fails, the job only warns. An unknown `ORBIT_SBOM_FORMAT` stops the GitLab job with exit 2 before any scan.
 
 Parameters and caveats for both are in the comment at the top of each template.
 

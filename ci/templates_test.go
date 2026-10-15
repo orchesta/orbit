@@ -21,7 +21,9 @@ import (
 // fails whatever --fail-on says). When $FAKE_SARIF_RC is set, the
 // "--fail-on none --format sarif" run exits with it, and when $FAKE_RECORD_RC
 // is set, a "--format json" run (the one that records the baseline) exits
-// with it. Unless it exits 2 it writes "{}" to the --out file. As docker, an
+// with it, and when $FAKE_SBOM_RC is set, a "--format cyclonedx" or
+// "--format spdx" run exits with it. Unless it exits 2 it writes "{}" to the
+// --out file. As docker, an
 // --out path inside a -v mount is written on the host side of that mount.
 const fakeTool = `#!/bin/sh
 { basename "$0"; for a in "$@"; do printf '%s\n' "$a"; done; echo ---; } >> "$FAKE_LOG"
@@ -41,6 +43,7 @@ rc="${FAKE_RC:-0}"
 [ -n "$deny" ] && [ -n "${FAKE_DENIED:-}" ] && [ "$rc" -eq 0 ] && rc=1
 [ "$failon" = none ] && [ "$format" = sarif ] && [ -n "${FAKE_SARIF_RC:-}" ] && rc="$FAKE_SARIF_RC"
 [ "$format" = json ] && [ -n "${FAKE_RECORD_RC:-}" ] && rc="$FAKE_RECORD_RC"
+case "$format" in cyclonedx|spdx) [ -n "${FAKE_SBOM_RC:-}" ] && rc="$FAKE_SBOM_RC" ;; esac
 if [ -n "$out" ] && [ "$rc" -ne 2 ]; then
   target="$out"
   for m in $mounts; do
@@ -172,7 +175,8 @@ func actionEnv(ws string, extra map[string]string) map[string]string {
 		"INPUT_OUTPUT": "", "INPUT_IGNORE_FILE": "", "INPUT_VERSION": "v1.2.3", "ACTION_REF": "",
 		"INPUT_FAIL_ON_KEV": "false", "INPUT_EXPLOIT_DATA": "true",
 		"INPUT_BASELINE": "", "INPUT_BASELINE_OUTPUT": "",
-		"INPUT_LICENSES": "false", "INPUT_DENY_LICENSE": "",
+		"INPUT_LICENSES": "false", "INPUT_DENY_LICENSE": "", "INPUT_SBOM_NAME": "",
+		"GITHUB_REPOSITORY": "acme/shop",
 	}
 	for k, v := range extra {
 		env[k] = v
@@ -532,6 +536,7 @@ func gitlabEnv(extra map[string]string) map[string]string {
 	env := map[string]string{
 		"CI_PROJECT_DIR": ".", "CI_API_V4_URL": "https://gitlab.example.com/api/v4", "CI_PROJECT_ID": "42",
 		"CI_JOB_TOKEN": "job-token", "CI_JOB_NAME": "orbit-scan", "CI_DEFAULT_BRANCH": "main",
+		"CI_PROJECT_PATH": "acme/shop",
 	}
 	for k, v := range extra {
 		env[k] = v
@@ -876,7 +881,7 @@ func azureEnv(tmp string, extra map[string]string) map[string]string {
 		"ORBIT_PATH": tmp, "ORBIT_FAIL_ON": "high", "ORBIT_IGNORE_FILE": "", "ORBIT_VERSION": "v1.0.0",
 		"ORBIT_IMAGE": "orchestalabs/orbit-cli", "AGENT_TEMPDIRECTORY": tmp, "BUILD_SOURCEBRANCH": "refs/pull/1/merge",
 		"ORBIT_FAIL_ON_KEV": "", "ORBIT_NO_EXPLOIT_DATA": "", "ORBIT_BASELINE_BRANCH": "",
-		"ORBIT_LICENSES": "", "ORBIT_DENY_LICENSE": "",
+		"ORBIT_LICENSES": "", "ORBIT_DENY_LICENSE": "", "ORBIT_SBOM_FORMAT": "", "ORBIT_SBOM_NAME": "shop",
 	}
 	for k, v := range extra {
 		env[k] = v
@@ -1397,7 +1402,10 @@ func TestAzurePowerShellLicenseArgs(t *testing.T) {
 	for i, l := range lines {
 		switch {
 		case strings.Contains(l, "--licenses") || strings.Contains(l, "--deny-license"):
-			if !strings.Contains(l, "$licenseArgs") {
+			// $sbomArgs, for the SBOM run, may look up licenses but never
+			// carries the policy.
+			sbom := strings.Contains(l, "$sbomArgs") && !strings.Contains(l, "--deny-license")
+			if !strings.Contains(l, "$licenseArgs") && !sbom {
 				t.Errorf("license flag outside $licenseArgs: %s", strings.TrimSpace(l))
 			}
 		case !strings.Contains(l, "& $exe scan"):
@@ -1423,6 +1431,431 @@ func TestAzurePowerShellLicenseArgs(t *testing.T) {
 	}
 	for _, want := range []string{"if ($env:ORBIT_LICENSES) { $licenseArgs += '--licenses' }",
 		"if ($env:ORBIT_DENY_LICENSE) { $licenseArgs += @('--deny-license', $env:ORBIT_DENY_LICENSE) }"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script lacks %q", want)
+		}
+	}
+}
+
+// ---- SBOM ----------------------------------------------------------------
+
+// sbomRun returns the one call that writes an SBOM (--format cyclonedx or
+// spdx), failing the test when there is not exactly one.
+func sbomRun(t *testing.T, calls []call) call {
+	t.Helper()
+	var found []call
+	for _, c := range calls {
+		if hasSeq(c.args, "--format", "cyclonedx") || hasSeq(c.args, "--format", "spdx") {
+			found = append(found, c)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("%d SBOM runs in %+v, want 1", len(found), calls)
+	}
+	return found[0]
+}
+
+// checkSBOMScope checks the flags of an SBOM run that is not the gating
+// one: it writes a file and fails on nothing, so it keeps the ignore file,
+// the exploit-data opt-out and the license lookups, and never gets the KEV
+// gate, the license policy or a baseline.
+func checkSBOMScope(t *testing.T, name string, c call, ignore string) {
+	t.Helper()
+	if !hasSeq(c.args, "--fail-on", "none") || !slices.Contains(c.args, "--quiet") {
+		t.Errorf("%s: SBOM run = %v, want --fail-on none and --quiet", name, c.args)
+	}
+	if !slices.Contains(c.args, "--no-exploit-data") || !slices.Contains(c.args, "--licenses") ||
+		!hasSeq(c.args, "--ignore-file", ignore) {
+		t.Errorf("%s: SBOM run = %v, want --no-exploit-data, --licenses and --ignore-file %s", name, c.args, ignore)
+	}
+	for _, flag := range []string{"--fail-on-kev", "--deny-license", "--baseline"} {
+		if slices.Contains(c.args, flag) {
+			t.Errorf("%s: SBOM run = %v, want no %s", name, c.args, flag)
+		}
+	}
+}
+
+func TestActionDeclaresSBOMInputs(t *testing.T) {
+	inputs, _ := actionScript(t)
+	in, ok := inputs["sbom-name"].(map[string]any)
+	if !ok || in["default"] != "" || in["required"] != false {
+		t.Errorf("input sbom-name = %v, want optional with default \"\"", inputs["sbom-name"])
+	}
+	for _, f := range []string{"cyclonedx", "spdx"} {
+		if d, _ := inputs["format"].(map[string]any)["description"].(string); !strings.Contains(d, f) {
+			t.Errorf("format description does not mention %s: %q", f, d)
+		}
+	}
+	// The script runs under set -u: the input must reach it through env.
+	step := loadYAML(t, "../action.yml")["runs"].(map[string]any)["steps"].([]any)[0].(map[string]any)
+	if env := step["env"].(map[string]any); env["INPUT_SBOM_NAME"] != "${{ inputs.sbom-name }}" {
+		t.Errorf("env INPUT_SBOM_NAME = %v", env["INPUT_SBOM_NAME"])
+	}
+}
+
+// The action runs once: format cyclonedx or spdx writes the SBOM instead of
+// SARIF. Inside the container the scanned directory is /src, so the project
+// is named after the repository unless sbom-name says otherwise.
+func TestActionSBOMFormats(t *testing.T) {
+	_, script := actionScript(t)
+	for _, tt := range []struct{ format, file, name, want string }{
+		{"cyclonedx", "orbit.cdx.json", "", "acme/shop"},
+		{"spdx", "orbit.spdx.json", "", "acme/shop"},
+		{"cyclonedx", "orbit.cdx.json", "shop api", "shop api"},
+	} {
+		ws := t.TempDir()
+		r := runScript(t, "bash", script, ws, actionEnv(ws, map[string]string{
+			"INPUT_FORMAT": tt.format, "INPUT_SBOM_NAME": tt.name, "INPUT_FAIL_ON": "none",
+		}))
+		d := r.of("docker")
+		if r.code != 0 || len(d) != 1 {
+			t.Fatalf("%s: exit %d, calls %+v; output:\n%s", tt.format, r.code, r.calls, r.output)
+		}
+		if !hasSeq(d[0].args, "--format", tt.format, "--out", "/src/"+tt.file) || !hasSeq(d[0].args, "--sbom-name", tt.want) {
+			t.Errorf("%s: docker args = %v, want --out /src/%s and --sbom-name %q", tt.format, d[0].args, tt.file, tt.want)
+		}
+		if _, err := os.Stat(filepath.Join(ws, tt.file)); err != nil {
+			t.Errorf("%s: report not written to the workspace: %v", tt.format, err)
+		}
+	}
+}
+
+// A guard rather than a new behaviour: an older pinned image does not know
+// --sbom-name, so the other formats never get it.
+func TestActionSARIFKeepsArgs(t *testing.T) {
+	_, script := actionScript(t)
+	for _, format := range []string{"sarif", "json", "junit", "table"} {
+		ws := t.TempDir()
+		r := runScript(t, "bash", script, ws, actionEnv(ws, map[string]string{"INPUT_FORMAT": format, "INPUT_SBOM_NAME": "x"}))
+		d := r.of("docker")
+		if r.code != 0 || len(d) != 1 || slices.Contains(d[0].args, "--sbom-name") {
+			t.Errorf("%s: exit %d, calls %+v; output:\n%s", format, r.code, r.calls, r.output)
+		}
+	}
+}
+
+// --sbom-name belongs to the SBOM report only; the baseline-output run writes
+// JSON and stays as it was.
+func TestActionSBOMNameStaysOutOfTheBaselineRun(t *testing.T) {
+	_, script := actionScript(t)
+	ws := t.TempDir()
+	r := runScript(t, "bash", script, ws, actionEnv(ws, map[string]string{
+		"INPUT_FORMAT": "spdx", "INPUT_BASELINE_OUTPUT": "orbit-baseline.json",
+	}))
+	d := r.of("docker")
+	if r.code != 0 || len(d) != 2 {
+		t.Fatalf("exit %d, calls %+v; output:\n%s", r.code, r.calls, r.output)
+	}
+	if !hasSeq(d[0].args, "--sbom-name", "acme/shop") {
+		t.Errorf("first run = %v, want --sbom-name acme/shop", d[0].args)
+	}
+	if slices.Contains(d[1].args, "--sbom-name") || !hasSeq(d[1].args, "--format", "json", "--out", "/src/orbit-baseline.json") {
+		t.Errorf("baseline run = %v, want the JSON report without --sbom-name", d[1].args)
+	}
+}
+
+func TestGitLabKeepsTheSBOMArtifacts(t *testing.T) {
+	paths := gitlabJob(t)["artifacts"].(map[string]any)["paths"].([]any)
+	for _, p := range []string{"orbit.sarif", "orbit.cdx.json", "orbit.spdx.json"} {
+		if !slices.Contains(paths, any(p)) {
+			t.Errorf("artifacts.paths = %v, want %s", paths, p)
+		}
+	}
+}
+
+// ORBIT_SBOM_FORMAT adds a run with --fail-on none after the SARIF run. It is
+// named after the project unless ORBIT_SBOM_NAME is set.
+func TestGitLabSBOMRun(t *testing.T) {
+	for _, tt := range []struct{ format, file, name, want string }{
+		{"cyclonedx", "orbit.cdx.json", "", "acme/shop"},
+		{"spdx", "orbit.spdx.json", "shop", "shop"},
+	} {
+		dir := t.TempDir()
+		r := runScript(t, "sh", gitlabScript(t), dir, gitlabEnv(map[string]string{
+			"ORBIT_SBOM_FORMAT": tt.format, "ORBIT_SBOM_NAME": tt.name, "FAKE_RC": "1",
+		}))
+		o := r.of("orbit")
+		if r.code != 1 || len(o) != 3 {
+			t.Fatalf("%s: exit %d (want the first run's 1), calls %+v; output:\n%s", tt.format, r.code, r.calls, r.output)
+		}
+		if !hasSeq(o[1].args, "--format", "sarif") {
+			t.Errorf("%s: second run = %v, want the SARIF run", tt.format, o[1].args)
+		}
+		if !hasSeq(o[2].args, "--format", tt.format, "--sbom-name", tt.want, "--out", tt.file, "--quiet") ||
+			!hasSeq(o[2].args, "--fail-on", "none") {
+			t.Errorf("%s: SBOM run = %v", tt.format, o[2].args)
+		}
+		if _, err := os.Stat(filepath.Join(dir, tt.file)); err != nil {
+			t.Errorf("%s: SBOM not written: %v", tt.format, err)
+		}
+	}
+	r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{"ORBIT_SBOM_FORMAT": ""}))
+	if r.code != 0 || len(r.of("orbit")) != 2 {
+		t.Errorf("empty ORBIT_SBOM_FORMAT: exit %d, calls %+v; output:\n%s", r.code, r.calls, r.output)
+	}
+}
+
+// The SBOM run keeps the privacy and ignore settings and the license lookups,
+// and never takes the KEV gate, the license policy or the baseline, also in
+// baseline mode. The recording run is left as it was.
+func TestGitLabSBOMRunScope(t *testing.T) {
+	scope := map[string]string{
+		"ORBIT_SBOM_FORMAT": "cyclonedx", "ORBIT_FAIL_ON_KEV": "true", "ORBIT_EXPLOIT_DATA": "false",
+		"ORBIT_LICENSES": "true", "ORBIT_DENY_LICENSE": denyList, "ORBIT_IGNORE_FILE": ".orbitignore",
+	}
+	for name, extra := range map[string]map[string]string{
+		"recording":     {"ORBIT_BASELINE": "auto", "CI_COMMIT_BRANCH": "main"},
+		"merge request": {"ORBIT_BASELINE": "auto", "CI_MERGE_REQUEST_IID": "7", "CI_MERGE_REQUEST_TARGET_BRANCH_NAME": "main"},
+		"explicit path": {"ORBIT_BASELINE": "base.json"},
+	} {
+		r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(withEnv(scope, extra)))
+		o := r.of("orbit")
+		if r.code != 0 {
+			t.Fatalf("%s: exit %d, calls %+v; output:\n%s", name, r.code, r.calls, r.output)
+		}
+		checkSBOMScope(t, name, sbomRun(t, o), ".orbitignore")
+		if name != "recording" {
+			if !slices.Contains(o[0].args, "--baseline") {
+				t.Errorf("%s: first run = %v, want --baseline", name, o[0].args)
+			}
+			continue
+		}
+		if len(o) != 4 {
+			t.Fatalf("%s: %d orbit calls, want 4; output:\n%s", name, len(o), r.output)
+		}
+		record := o[3]
+		if !hasSeq(record.args, "--format", "json", "--out", "orbit-baseline.json") || slices.Contains(record.args, "--sbom-name") ||
+			hasLicenseFlag(record.args) {
+			t.Errorf("recording run = %v, want it unchanged", record.args)
+		}
+	}
+}
+
+// A failed SBOM run only warns: the first run still decides the job, and an
+// error in the first run skips the SBOM run like the SARIF one.
+func TestGitLabSBOMFailureOnlyWarns(t *testing.T) {
+	for _, rc := range []int{0, 1} {
+		r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{
+			"ORBIT_SBOM_FORMAT": "spdx", "FAKE_RC": strconv.Itoa(rc), "FAKE_SBOM_RC": "2",
+		}))
+		if r.code != rc || len(r.of("orbit")) != 3 || !strings.Contains(r.output, "warning: could not write orbit.spdx.json") {
+			t.Errorf("rc %d: exit %d, calls %+v; output:\n%s", rc, r.code, r.calls, r.output)
+		}
+	}
+	r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{
+		"ORBIT_SBOM_FORMAT": "spdx", "ORBIT_BASELINE": "auto", "CI_COMMIT_BRANCH": "main", "FAKE_RC": "1", "FAKE_SBOM_RC": "2",
+	}))
+	if r.code != 0 || len(r.of("orbit")) != 4 || !strings.Contains(r.output, "records the baseline") {
+		t.Errorf("recording: exit %d (want 0), calls %+v; output:\n%s", r.code, r.calls, r.output)
+	}
+	r = runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{"ORBIT_SBOM_FORMAT": "spdx", "FAKE_RC": "2"}))
+	if r.code != 2 || len(r.of("orbit")) != 1 {
+		t.Errorf("first run errors: exit %d, calls %+v", r.code, r.calls)
+	}
+}
+
+// Like the other inputs, a bad ORBIT_SBOM_FORMAT stops the job before any
+// scan.
+func TestGitLabRejectsInvalidSBOMFormat(t *testing.T) {
+	for _, val := range []string{"xml", "CycloneDX", "sarif"} {
+		r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{"ORBIT_SBOM_FORMAT": val}))
+		if r.code != 2 || len(r.calls) != 0 || !strings.Contains(r.output, "error: ORBIT_SBOM_FORMAT") {
+			t.Errorf("%s: exit %d, calls %+v; output:\n%s", val, r.code, r.calls, r.output)
+		}
+	}
+}
+
+func TestAzureTemplateSBOMParameters(t *testing.T) {
+	params := map[string]map[string]any{}
+	for _, p := range loadYAML(t, "azure-pipelines/orbit-scan.yml")["parameters"].([]any) {
+		m := p.(map[string]any)
+		params[m["name"].(string)] = m
+	}
+	// "none", not '': the Run pipeline pane does not accept an empty string.
+	if p := params["sbomFormat"]; p == nil || p["type"] != "string" || p["default"] != "none" ||
+		!slices.Equal(p["values"].([]any), []any{"none", "cyclonedx", "spdx"}) {
+		t.Errorf("parameter sbomFormat = %v", p)
+	}
+	if p := params["sbomName"]; p == nil || p["type"] != "string" || p["default"] != "$(Build.Repository.Name)" {
+		t.Errorf("parameter sbomName = %v", p)
+	}
+	scans := 0
+	var publish map[string]any
+	for _, s := range azureSteps(t) {
+		if in, _ := s["inputs"].(map[string]any); s["task"] == "PublishBuildArtifacts@1" && in["ArtifactName"] == "orbit-sbom" {
+			publish = s
+		}
+		if s["displayName"] != "Orbit scan" {
+			continue
+		}
+		scans++
+		env := s["env"].(map[string]any)
+		on, _ := env["${{ if ne(parameters.sbomFormat, 'none') }}"].(map[string]any)
+		if on["ORBIT_SBOM_FORMAT"] != "${{ parameters.sbomFormat }}" {
+			t.Errorf("%v step does not pass ORBIT_SBOM_FORMAT", s["condition"])
+		}
+		// Set to '' when off, so a pipeline variable of that name cannot add a run.
+		off, _ := env["${{ if eq(parameters.sbomFormat, 'none') }}"].(map[string]any)
+		if v, ok := off["ORBIT_SBOM_FORMAT"]; !ok || v != "" {
+			t.Errorf("%v step does not clear ORBIT_SBOM_FORMAT with sbomFormat: none", s["condition"])
+		}
+		if env["ORBIT_SBOM_NAME"] != "${{ parameters.sbomName }}" {
+			t.Errorf("%v step: ORBIT_SBOM_NAME = %v", s["condition"], env["ORBIT_SBOM_NAME"])
+		}
+	}
+	if scans != 3 {
+		t.Errorf("%d Orbit scan steps, want 3", scans)
+	}
+	if publish == nil {
+		t.Fatal("no step publishes the orbit-sbom artifact")
+	}
+	if publish["inputs"].(map[string]any)["PathtoPublish"] != "$(ORBIT_REPORTS)/$(ORBIT_SBOM_FILE)" ||
+		publish["condition"] != "and(always(), ne(variables['ORBIT_SBOM_FILE'], ''))" {
+		t.Errorf("SBOM publish step = %v", publish)
+	}
+}
+
+// azureReport is where a bash mode's --out argument for file points.
+func azureReport(tool, tmp, file string) string {
+	if tool == "docker" {
+		return "/out/" + file
+	}
+	return filepath.Join(tmp, "orbit-reports", file)
+}
+
+func TestAzureSBOMRun(t *testing.T) {
+	for tool, script := range azureBashScripts(t) {
+		for _, tt := range []struct{ format, file string }{{"cyclonedx", "orbit.cdx.json"}, {"spdx", "orbit.spdx.json"}} {
+			tmp := t.TempDir()
+			r := runScript(t, "bash", script, tmp, azureEnv(tmp, map[string]string{"ORBIT_SBOM_FORMAT": tt.format, "FAKE_RC": "1"}))
+			c := r.of(tool)
+			if len(c) != 3 || !strings.Contains(r.output, "variable=ORBIT_EXIT]1") {
+				t.Fatalf("%s %s: calls %+v; output:\n%s", tool, tt.format, r.calls, r.output)
+			}
+			if !hasSeq(c[1].args, "--format", "sarif") {
+				t.Errorf("%s %s: second run = %v, want the SARIF run", tool, tt.format, c[1].args)
+			}
+			if !hasSeq(c[2].args, "--fail-on", "none") ||
+				!hasSeq(c[2].args, "--format", tt.format, "--sbom-name", "shop", "--out", azureReport(tool, tmp, tt.file), "--quiet") {
+				t.Errorf("%s %s: SBOM run = %v", tool, tt.format, c[2].args)
+			}
+			if _, err := os.Stat(filepath.Join(tmp, "orbit-reports", tt.file)); err != nil {
+				t.Errorf("%s %s: SBOM not written: %v", tool, tt.format, err)
+			}
+			if !strings.Contains(r.output, "##vso[task.setvariable variable=ORBIT_SBOM_FILE]"+tt.file) {
+				t.Errorf("%s %s: ORBIT_SBOM_FILE not set:\n%s", tool, tt.format, r.output)
+			}
+		}
+		tmp := t.TempDir()
+		r := runScript(t, "bash", script, tmp, azureEnv(tmp, nil))
+		if len(r.of(tool)) != 2 || strings.Contains(r.output, "ORBIT_SBOM_FILE") {
+			t.Errorf("%s without sbomFormat: calls %+v; output:\n%s", tool, r.calls, r.output)
+		}
+	}
+}
+
+func TestAzureSBOMRunScope(t *testing.T) {
+	scope := map[string]string{
+		"ORBIT_SBOM_FORMAT": "spdx", "ORBIT_FAIL_ON_KEV": "true", "ORBIT_NO_EXPLOIT_DATA": "true",
+		"ORBIT_LICENSES": "true", "ORBIT_DENY_LICENSE": denyList, "ORBIT_IGNORE_FILE": ".orbitignore",
+	}
+	for tool, script := range azureBashScripts(t) {
+		ignore := func(tmp string) string {
+			if tool == "docker" {
+				return "/src/.orbitignore"
+			}
+			return filepath.Join(tmp, ".orbitignore")
+		}
+		// Recording: the SBOM run sits between the SARIF and the recording run,
+		// which stays as it was.
+		tmp := t.TempDir()
+		r := runScript(t, "bash", script, tmp, azureEnv(tmp, withEnv(recordingEnv, scope)))
+		c := r.of(tool)
+		if len(c) != 4 || !strings.Contains(r.output, "variable=ORBIT_EXIT]0") {
+			t.Fatalf("%s recording: calls %+v; output:\n%s", tool, r.calls, r.output)
+		}
+		checkSBOMScope(t, tool+" recording", sbomRun(t, c), ignore(tmp))
+		if !hasSeq(c[3].args, "--format", "json") || slices.Contains(c[3].args, "--sbom-name") || hasLicenseFlag(c[3].args) {
+			t.Errorf("%s: recording run = %v, want it unchanged", tool, c[3].args)
+		}
+		// Comparing: the SBOM lists every finding, so it gets no --baseline.
+		tmp = t.TempDir()
+		writeAzureBaseline(t, tmp)
+		r = runScript(t, "bash", script, tmp, azureEnv(tmp, withEnv(scope, map[string]string{"ORBIT_BASELINE_BRANCH": "refs/heads/main"})))
+		c = r.of(tool)
+		if len(c) != 3 || !slices.Contains(c[0].args, "--baseline") {
+			t.Fatalf("%s comparing: calls %+v; output:\n%s", tool, r.calls, r.output)
+		}
+		checkSBOMScope(t, tool+" comparing", sbomRun(t, c), ignore(tmp))
+	}
+}
+
+// A failed SBOM run only warns and publishes nothing; the exit code stays the
+// first run's. An error in the first run skips it.
+func TestAzureSBOMFailureOnlyWarns(t *testing.T) {
+	for tool, script := range azureBashScripts(t) {
+		for _, rc := range []int{0, 1} {
+			tmp := t.TempDir()
+			r := runScript(t, "bash", script, tmp, azureEnv(tmp, map[string]string{
+				"ORBIT_SBOM_FORMAT": "cyclonedx", "FAKE_RC": strconv.Itoa(rc), "FAKE_SBOM_RC": "2",
+			}))
+			if len(r.of(tool)) != 3 || !strings.Contains(r.output, "variable=ORBIT_EXIT]"+strconv.Itoa(rc)) ||
+				!strings.Contains(r.output, "warning: could not write orbit.cdx.json") || strings.Contains(r.output, "ORBIT_SBOM_FILE") {
+				t.Errorf("%s rc %d: calls %+v; output:\n%s", tool, rc, r.calls, r.output)
+			}
+		}
+		tmp := t.TempDir()
+		r := runScript(t, "bash", script, tmp, azureEnv(tmp, map[string]string{"ORBIT_SBOM_FORMAT": "cyclonedx", "FAKE_RC": "2"}))
+		if len(r.of(tool)) != 1 || !strings.Contains(r.output, "variable=ORBIT_EXIT]2") {
+			t.Errorf("%s first run errors: calls %+v; output:\n%s", tool, r.calls, r.output)
+		}
+	}
+}
+
+// The PowerShell step cannot run here, so its SBOM run is checked as text:
+// it sits inside the rc -ne 2 block after the SARIF run, takes the ignore,
+// exploit-data and SBOM arguments but not the KEV gate, the license policy or
+// the baseline, and a failure only warns.
+func TestAzurePowerShellSBOMRun(t *testing.T) {
+	var script string
+	for _, s := range azureSteps(t) {
+		if p, ok := s["powershell"].(string); ok && s["displayName"] == "Orbit scan" {
+			script = p
+		}
+	}
+	lines := strings.Split(script, "\n")
+	find := func(sub string) int {
+		for i, l := range lines {
+			if strings.Contains(l, sub) {
+				return i
+			}
+		}
+		return -1
+	}
+	block, sarif, sbom, record := find("if ($rc -ne 2) {"), find("'orbit.sarif') --quiet"), find("(Join-Path $reports $sbomOut) --quiet"), find("if ($record) {")
+	if block < 0 || sarif < 0 || sbom < 0 || record < 0 || !(block < sarif && sarif < sbom && sbom < record) {
+		t.Fatalf("SBOM run not between the SARIF and the recording run (block %d, sarif %d, sbom %d, record %d):\n%s",
+			block, sarif, sbom, record, script)
+	}
+	run := lines[sbom]
+	for _, want := range []string{"& $exe scan --path $env:ORBIT_PATH --fail-on none", "@ignoreArgs", "@exploitArgs", "@sbomArgs",
+		"--format $env:ORBIT_SBOM_FORMAT"} {
+		if !strings.Contains(run, want) {
+			t.Errorf("SBOM run lacks %q: %s", want, strings.TrimSpace(run))
+		}
+	}
+	for _, not := range []string{"@licenseArgs", "@kevArgs", "@baseArgs"} {
+		if strings.Contains(run, not) {
+			t.Errorf("SBOM run has %s: %s", not, strings.TrimSpace(run))
+		}
+	}
+	if check := lines[sbom+1]; !strings.Contains(check, "$LASTEXITCODE -ne 0") || !strings.Contains(check, "warning: could not write") ||
+		strings.Contains(check, "$rc") {
+		t.Errorf("SBOM run check = %q, want a warning that leaves $rc alone", strings.TrimSpace(check))
+	}
+	for _, want := range []string{"if ($env:ORBIT_LICENSES) { $sbomArgs += '--licenses' }",
+		"if ($env:ORBIT_SBOM_NAME) { $sbomArgs += @('--sbom-name', $env:ORBIT_SBOM_NAME) }",
+		"##vso[task.setvariable variable=ORBIT_SBOM_FILE]$sbomOut"} {
 		if !strings.Contains(script, want) {
 			t.Errorf("script lacks %q", want)
 		}
