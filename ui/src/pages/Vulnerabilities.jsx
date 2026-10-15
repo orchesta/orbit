@@ -5,6 +5,7 @@ import { vulnerabilityApi } from '../services/api';
 import Spinner from '../components/Spinner';
 import ErrorState from '../components/ErrorState';
 import Pagination from '../components/Pagination';
+import MaliciousBadge from '../components/MaliciousBadge';
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'unknown'];
 
@@ -65,6 +66,14 @@ export default function Vulnerabilities() {
       {unverified > 0 && (
         <div className="mb-6 rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800" role="alert">
           {unverified} {unverified === 1 ? 'repository has' : 'repositories have'} no successful vulnerability check
+        </div>
+      )}
+
+      {counts.malicious > 0 && (
+        <div className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800" role="alert">
+          {counts.malicious === 1
+            ? '1 finding is a known malicious package. Remove it and treat machines that installed it as compromised.'
+            : `${counts.malicious} findings are known malicious packages. Remove them and treat machines that installed them as compromised.`}
         </div>
       )}
 
@@ -132,6 +141,7 @@ export default function Vulnerabilities() {
                          {vuln.aliases?.length > 0 && (
                            <span className="text-gray-400 text-xs">({vuln.aliases[0]})</span>
                          )}
+                         {vuln.malicious && <MaliciousBadge />}
                       </div>
                     </td>
                     <td className="px-6 py-4">

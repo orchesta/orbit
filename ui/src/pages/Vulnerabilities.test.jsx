@@ -76,4 +76,38 @@ describe('Vulnerabilities', () => {
     expect(screen.queryByText(/Great job/)).not.toBeInTheDocument();
     expect(screen.queryByText('No vulnerabilities found')).not.toBeInTheDocument();
   });
+
+  it('marks malicious packages and warns about them', async () => {
+    mockFetch({ 'GET /vulnerabilities': { body: { data: page({
+      data: [
+        finding({ id: 'm', osv_id: 'MAL-2025-46969', aliases: ['GHSA-2v46-p5h4-248w'], summary: 'Malicious code in chalk (npm)',
+          severity: 'critical', fixed_version: null, package_name: 'chalk', current_version: '5.6.1', malicious: true }),
+        finding({ malicious: false }),
+      ],
+      total: 2,
+      counts: { critical: 1, high: 1, medium: 0, low: 0, unknown: 0, malicious: 1 },
+    }) } } });
+    renderWithProviders(<Vulnerabilities />);
+    expect(await screen.findByText('Malicious code in chalk (npm)')).toBeInTheDocument();
+    expect(screen.getAllByText('Malicious')).toHaveLength(1);
+    expect(screen.getByRole('alert')).toHaveTextContent('1 finding is a known malicious package. Remove it and treat machines that installed it as compromised.');
+  });
+
+  it('pluralises the malicious warning for several findings', async () => {
+    mockFetch({ 'GET /vulnerabilities': { body: { data: page({
+      data: [finding({ malicious: true }), finding({ id: 'v2', malicious: true })],
+      total: 2,
+      counts: { critical: 0, high: 2, medium: 0, low: 0, unknown: 0, malicious: 2 },
+    }) } } });
+    renderWithProviders(<Vulnerabilities />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('2 findings are known malicious packages. Remove them and treat machines that installed them as compromised.');
+  });
+
+  it('shows no malicious warning when the server reports none', async () => {
+    mockFetch({ 'GET /vulnerabilities': { body: { data: page({ data: [finding()], total: 1, counts: { critical: 0, high: 1, medium: 0, low: 0, unknown: 0, malicious: 0 } }) } } });
+    renderWithProviders(<Vulnerabilities />);
+    await screen.findByText('Prototype pollution');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText('Malicious')).not.toBeInTheDocument();
+  });
 });

@@ -49,4 +49,13 @@ describe('Dashboard', () => {
     await screen.findByText('Active Repos');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
+
+  it('shows how many findings are malicious packages', async () => {
+    mockFetch({
+      'GET /dashboard/stats': { body: { data: { ...stats, malicious_vulns: 2 } } },
+      'GET /repositories': { body: { data: { data: [], total: 0, page: 1, per_page: 5, total_pages: 1 } } },
+    });
+    renderWithProviders(<Dashboard />);
+    expect(await screen.findByText('2 malicious')).toBeInTheDocument();
+  });
 });

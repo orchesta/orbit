@@ -5,6 +5,7 @@ import { repositoryApi, scanApi } from '../services/api';
 import { useScanTracker } from '../hooks/useScanTracker';
 import Spinner from '../components/Spinner';
 import ErrorState from '../components/ErrorState';
+import MaliciousBadge from '../components/MaliciousBadge';
 
 const isActive = (scan) => scan?.status === 'pending' || scan?.status === 'running';
 
@@ -274,6 +275,7 @@ export default function RepoDetail() {
                              <a href={`https://osv.dev/vulnerability/${vuln.osv_id}`} target="_blank" rel="noopener" className="text-blue-600 hover:underline text-xs">
                                {vuln.osv_id}
                              </a>
+                             {vuln.malicious && <MaliciousBadge />}
                           </div>
                         </td>
                         <td className="px-6 py-4">

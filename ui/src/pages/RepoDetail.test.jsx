@@ -48,6 +48,22 @@ describe('RepoDetail', () => {
 
   const done = { id: 's1', status: 'completed', total_deps: 3, outdated_deps: 1, vulnerable_deps: 1, total_vulns: 1, duration: 1e9, started_at: '2026-01-01T00:00:00Z' };
 
+  it('marks malicious packages in the vulnerability table', async () => {
+    mockFetch({
+      'GET /repositories/r1': { body: { data: repo } },
+      'GET /repositories/r1/scans': { body: { data: [done] } },
+      'GET /scans/s1/dependencies': { body: { data: [{ id: 'd1', name: 'chalk', ecosystem: 'npm', current_version: '5.6.1', is_direct: true, is_resolved: true, is_dev: false }] } },
+      'GET /scans/s1/vulnerabilities': { body: { data: [
+        { id: 'v1', dependency_id: 'd1', osv_id: 'MAL-2025-46969', summary: 'Malicious code in chalk (npm)', severity: 'critical', malicious: true },
+        { id: 'v2', dependency_id: 'd1', osv_id: 'GHSA-xxxx-yyyy-zzzz', summary: 'Prototype pollution', severity: 'high', malicious: false },
+      ] } },
+    });
+    renderWithProviders(<RepoDetail />, at);
+    await userEvent.click(await screen.findByRole('button', { name: /^Vulnerabilities/ }));
+    expect(await screen.findByText('Malicious code in chalk (npm)')).toBeInTheDocument();
+    expect(screen.getAllByText('Malicious')).toHaveLength(1);
+  });
+
   it('shows an error, not an empty list, when vulnerabilities fail to load', async () => {
     mockFetch({
       'GET /repositories/r1': { body: { data: repo } },
