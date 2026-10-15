@@ -48,6 +48,11 @@ type ParsedDependency struct {
 	// as a registry dependency.
 	Internal bool
 	Dir      string
+	// Via names the direct dependencies that pull a lockfile entry in, when
+	// the lockfile records the dependency graph (today only npm
+	// package-lock.json v2 and v3). Sorted and without repeats; nil when
+	// unknown or when the project declares the entry itself.
+	Via []string
 }
 
 // ManifestKind tells Resolve how a matched file is used.

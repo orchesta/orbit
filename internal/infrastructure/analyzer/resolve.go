@@ -57,7 +57,7 @@ type ResolvedDependency struct {
 // Resolved: only exact pins set it. Names are compared the way the ecosystem
 // compares them (PyPI and NuGet names are case-insensitive). Entries with the same ecosystem, file, name
 // and version are reported once: direct if any of them is, dev only if all
-// of them are. The result is sorted by ecosystem, file, name and version.
+// of them are, with the union of their Via. The result is sorted by ecosystem, file, name and version.
 //
 // A lockfile that could not be read or parsed can be passed with no Deps:
 // its directory then keeps its manifests' results instead of falling to a
@@ -317,8 +317,20 @@ func (c *collector) add(eco entity.Ecosystem, file string, dep ParsedDependency)
 		c.deps[i].IsDirect = c.deps[i].IsDirect || dep.IsDirect
 		c.deps[i].Dev = c.deps[i].Dev && dep.Dev
 		c.deps[i].Resolved = c.deps[i].Resolved || dep.Resolved
+		c.deps[i].Via = MergeNames(c.deps[i].Via, dep.Via)
 		return
 	}
 	c.index[key] = len(c.deps)
 	c.deps = append(c.deps, ResolvedDependency{ParsedDependency: dep, Ecosystem: eco, ManifestFile: file})
+}
+
+// MergeNames returns the sorted union of a and b without repeats, or nil
+// when both are empty. The inputs are not modified.
+func MergeNames(a, b []string) []string {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	out := slices.Concat(a, b)
+	slices.Sort(out)
+	return slices.Compact(out)
 }

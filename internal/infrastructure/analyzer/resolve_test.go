@@ -3,6 +3,7 @@ package analyzer
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -494,5 +495,37 @@ func TestResolveIgnoresFailedVersionsFile(t *testing.T) {
 	}
 	if got := Resolve(files); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestMergeNames(t *testing.T) {
+	if got := MergeNames(nil, nil); got != nil {
+		t.Errorf("MergeNames(nil, nil) = %v, want nil", got)
+	}
+	a := []string{"mocha", "express"}
+	got := MergeNames(a, []string{"express", "body-parser"})
+	if want := []string{"body-parser", "express", "mocha"}; !slices.Equal(got, want) {
+		t.Errorf("MergeNames = %v, want %v", got, want)
+	}
+	if !slices.Equal(a, []string{"mocha", "express"}) {
+		t.Errorf("input modified: %v", a)
+	}
+}
+
+// One package and version installed twice in one lockfile (two nested
+// copies) is reported once, pulled in by every parent of either copy.
+func TestResolveMergesVia(t *testing.T) {
+	lock := lockfile(fakeNpm, "package-lock.json",
+		ParsedDependency{Name: "qs", CurrentVersion: "6.7.0", Via: []string{"express"}},
+		ParsedDependency{Name: "qs", CurrentVersion: "6.7.0", Via: []string{"body-parser", "express"}},
+		ParsedDependency{Name: "ms", CurrentVersion: "2.0.0"},
+	)
+	via := map[string][]string{}
+	for _, r := range Resolve([]ParsedFile{lock}) {
+		via[r.Name+"@"+r.CurrentVersion] = r.Via
+	}
+	want := map[string][]string{"ms@2.0.0": nil, "qs@6.7.0": {"body-parser", "express"}}
+	if !reflect.DeepEqual(via, want) {
+		t.Fatalf("via = %v, want %v", via, want)
 	}
 }
