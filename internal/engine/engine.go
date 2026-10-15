@@ -12,10 +12,12 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/orchesta/orbit/internal/domain/entity"
 	"github.com/orchesta/orbit/internal/infrastructure/analyzer"
+	"github.com/orchesta/orbit/internal/infrastructure/exploit"
 	"github.com/orchesta/orbit/internal/infrastructure/git"
 )
 
@@ -27,16 +29,32 @@ type VulnLookup interface {
 	Lookup(ctx context.Context, deps []*entity.Dependency) ([]*entity.Vulnerability, int, error)
 }
 
+// ExploitEnricher adds exploit signals (CISA KEV, FIRST EPSS) to
+// vulnerabilities in place and says which sources answered;
+// *exploit.Enricher implements it.
+type ExploitEnricher interface {
+	Enrich(ctx context.Context, vulns []*entity.Vulnerability) exploit.Result
+}
+
 // Options tunes an Engine.
 type Options struct {
 	CheckLatest bool         // query registries for the latest version (outdated info)
 	Concurrency int          // registry lookups in flight; default 5
 	Logger      *slog.Logger // nil discards logs
+	// Exploit adds KEV and EPSS data after the vulnerability lookup; nil
+	// skips it (orbit scan --no-exploit-data, ORBIT_EXPLOIT_ENABLED=false).
+	Exploit ExploitEnricher
+	// ExploitTimeout bounds Exploit; default 60s. Running out is a warning.
+	ExploitTimeout time.Duration
 }
 
 // defaultConcurrency is the number of registry lookups in flight when
 // Options.Concurrency is not set.
 const defaultConcurrency = 5
+
+// defaultExploitTimeout bounds the exploit data step when
+// Options.ExploitTimeout is not set.
+const defaultExploitTimeout = 60 * time.Second
 
 // Engine analyzes source trees. It is safe for concurrent use.
 type Engine struct {
@@ -54,6 +72,9 @@ type Engine struct {
 func New(registry *analyzer.Registry, lookup VulnLookup, opts Options) *Engine {
 	if opts.Concurrency <= 0 {
 		opts.Concurrency = defaultConcurrency
+	}
+	if opts.ExploitTimeout <= 0 {
+		opts.ExploitTimeout = defaultExploitTimeout
 	}
 	logger := opts.Logger
 	if logger == nil {
@@ -82,7 +103,10 @@ type Result struct {
 	VulnerableDeps  int
 	OutdatedDeps    int
 	Manifests       []string // files that were parsed, relative to root
-	Warnings        []string // unreadable/unparseable files, unresolved-version notice
+	Warnings        []string // unreadable/unparseable files, unresolved-version notice, exploit data failures
+	// Exploit says which exploit data sources answered; nil when
+	// Options.Exploit is nil or the vulnerability check failed.
+	Exploit *exploit.Result
 }
 
 // ErrVulnerabilityCheck marks a failed advisory lookup: the error Analyze
@@ -123,6 +147,7 @@ func (e *Engine) Analyze(ctx context.Context, root string) (*Result, error) {
 		// Only the CLI shows Warnings; a wrong --path should not pass as a
 		// clean scan without a word.
 		res.Warnings = append(res.Warnings, "no manifest or lockfile found under "+root)
+		res.Exploit = e.skippedExploit()
 		return res, nil
 	}
 
@@ -165,8 +190,38 @@ func (e *Engine) Analyze(ctx context.Context, root string) (*Result, error) {
 		}
 		res.Vulnerabilities = vulns
 		res.VulnerableDeps = vulnerable
+		if e.opts.Exploit != nil {
+			if err := e.enrich(ctx, res); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return res, nil
+}
+
+// enrich adds exploit signals within ExploitTimeout. A source that fails
+// or runs out of time becomes a warning; the vulnerabilities stay as the
+// lookup returned them. Only the end of ctx itself is returned.
+func (e *Engine) enrich(ctx context.Context, res *Result) error {
+	ectx, cancel := context.WithTimeout(ctx, e.opts.ExploitTimeout)
+	defer cancel()
+	er := e.opts.Exploit.Enrich(ectx, res.Vulnerabilities)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	res.Exploit = &er
+	res.Warnings = append(res.Warnings, er.Warnings()...)
+	return nil
+}
+
+// skippedExploit is the exploit result of a scan with nothing to look up,
+// or nil when exploit data is off.
+func (e *Engine) skippedExploit() *exploit.Result {
+	if e.opts.Exploit == nil {
+		return nil
+	}
+	skipped := exploit.SourceResult{Status: exploit.StatusSkipped}
+	return &exploit.Result{KEV: skipped, EPSS: skipped}
 }
 
 // unresolvedWarning tells how many dependencies have only an approximate

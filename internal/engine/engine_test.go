@@ -23,11 +23,15 @@ import (
 	"github.com/orchesta/orbit/internal/infrastructure/analyzer/npm"
 	"github.com/orchesta/orbit/internal/infrastructure/analyzer/nuget"
 	"github.com/orchesta/orbit/internal/infrastructure/analyzer/pip"
+	"github.com/orchesta/orbit/internal/infrastructure/exploit"
 	"github.com/orchesta/orbit/internal/usecase/vulnerability"
 )
 
 // The advisory lookup the server and CLI use fits the engine.
 var _ engine.VulnLookup = (*vulnerability.UseCase)(nil)
+
+// The exploit data enricher the server and CLI use fits the engine.
+var _ engine.ExploitEnricher = (*exploit.Enricher)(nil)
 
 // stubRegistry wraps a real analyzer: parsing is the analyzer's own, while
 // GetLatestVersion is answered from latest (a missing name is an error) and
@@ -516,5 +520,120 @@ func TestWithLoggerLogsToTheNewLoggerOnly(t *testing.T) {
 	analyze(t, e, "testdata/npm-lock")
 	if !strings.Contains(base.String(), "discovered manifests") || strings.Contains(base.String(), "repo=") {
 		t.Fatalf("original engine changed:\n%s", base.String())
+	}
+}
+
+// fakeEnricher marks the advisory named kevID as known exploited and
+// returns result; with block it waits for its context and fails.
+type fakeEnricher struct {
+	kevID  string
+	result exploit.Result
+	block  bool
+	onCall func()
+	calls  atomic.Int32
+	got    []*entity.Vulnerability
+}
+
+func (f *fakeEnricher) Enrich(ctx context.Context, vulns []*entity.Vulnerability) exploit.Result {
+	f.calls.Add(1)
+	f.got = vulns
+	if f.onCall != nil {
+		f.onCall()
+	}
+	if f.block {
+		<-ctx.Done()
+		failed := exploit.SourceResult{Status: exploit.StatusFailed, Err: ctx.Err()}
+		return exploit.Result{KEV: failed, EPSS: failed}
+	}
+	for _, v := range vulns {
+		if v.OSVID == f.kevID {
+			v.KEV = true
+		}
+	}
+	return f.result
+}
+
+var okExploit = exploit.Result{
+	KEV:  exploit.SourceResult{Status: exploit.StatusOK, Version: "2026.10.14"},
+	EPSS: exploit.SourceResult{Status: exploit.StatusOK, Version: "2026-10-14"},
+}
+
+func TestAnalyzeAddsExploitDataAfterTheLookup(t *testing.T) {
+	reg, _ := newRegistry(nil)
+	lookup := &fakeLookup{vulnerable: map[string]string{"express": "GHSA-1", "accepts": "GHSA-2"}}
+	enricher := &fakeEnricher{kevID: "GHSA-1", result: okExploit}
+	res := analyze(t, engine.New(reg, lookup, engine.Options{Exploit: enricher}), "testdata/npm-lock")
+
+	if enricher.calls.Load() != 1 || len(enricher.got) != 2 || enricher.got[0] != res.Vulnerabilities[0] {
+		t.Fatalf("enricher got %d vulnerabilities in %d calls; want the lookup's 2 in one call", len(enricher.got), enricher.calls.Load())
+	}
+	kev := 0
+	for _, v := range res.Vulnerabilities {
+		if v.KEV {
+			kev++
+		}
+	}
+	if kev != 1 || res.Exploit == nil || res.Exploit.KEV.Version != "2026.10.14" || len(res.Warnings) != 0 {
+		t.Fatalf("KEV findings %d, exploit %+v, warnings %q", kev, res.Exploit, res.Warnings)
+	}
+}
+
+func TestAnalyzeTurnsAnExploitFailureIntoAWarning(t *testing.T) {
+	reg, _ := newRegistry(nil)
+	failed := okExploit
+	failed.KEV = exploit.SourceResult{Status: exploit.StatusFailed, Err: errors.New("fetch KEV catalog: HTTP 503")}
+	e := engine.New(reg, &fakeLookup{vulnerable: map[string]string{"express": "GHSA-1"}}, engine.Options{Exploit: &fakeEnricher{result: failed}})
+	res, err := e.Analyze(context.Background(), "testdata/npm-lock")
+	if err != nil {
+		t.Fatalf("Analyze = %v; an exploit data failure must not fail the scan", err)
+	}
+	if len(res.Vulnerabilities) != 1 || !slices.ContainsFunc(res.Warnings, func(w string) bool { return strings.Contains(w, "HTTP 503") }) {
+		t.Fatalf("vulnerabilities %d, warnings %q", len(res.Vulnerabilities), res.Warnings)
+	}
+}
+
+func TestAnalyzeBoundsExploitDataWithItsOwnTimeout(t *testing.T) {
+	reg, _ := newRegistry(nil)
+	e := engine.New(reg, &fakeLookup{vulnerable: map[string]string{"express": "GHSA-1"}},
+		engine.Options{Exploit: &fakeEnricher{block: true}, ExploitTimeout: 20 * time.Millisecond})
+	res, err := e.Analyze(context.Background(), "testdata/npm-lock")
+	if err != nil || res.Exploit == nil || res.Exploit.KEV.Status != exploit.StatusFailed {
+		t.Fatalf("Analyze = %+v, %v; want a result with failed exploit data", res, err)
+	}
+	if !slices.ContainsFunc(res.Warnings, func(w string) bool { return strings.Contains(w, "deadline exceeded") }) {
+		t.Fatalf("warnings = %q, want the timeout", res.Warnings)
+	}
+}
+
+func TestAnalyzeReturnsContextErrorWhenCancelledDuringExploitData(t *testing.T) {
+	reg, _ := newRegistry(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	e := engine.New(reg, &fakeLookup{vulnerable: map[string]string{"express": "GHSA-1"}},
+		engine.Options{Exploit: &fakeEnricher{result: okExploit, onCall: cancel}})
+	res, err := e.Analyze(ctx, "testdata/npm-lock")
+	if !errors.Is(err, context.Canceled) || res != nil {
+		t.Fatalf("Analyze = %+v, %v; want nil, context.Canceled", res, err)
+	}
+}
+
+func TestAnalyzeSkipsExploitDataWhenTheLookupFails(t *testing.T) {
+	reg, _ := newRegistry(nil)
+	enricher := &fakeEnricher{result: okExploit}
+	res, err := engine.New(reg, &fakeLookup{err: errors.New("osv.dev unreachable")}, engine.Options{Exploit: enricher}).
+		Analyze(context.Background(), "testdata/npm-lock")
+	if !errors.Is(err, engine.ErrVulnerabilityCheck) || enricher.calls.Load() != 0 || res.Exploit != nil {
+		t.Fatalf("err %v, enricher calls %d, exploit %+v", err, enricher.calls.Load(), res.Exploit)
+	}
+}
+
+func TestAnalyzeTreeWithoutManifestsMarksExploitDataSkipped(t *testing.T) {
+	reg, _ := newRegistry(nil)
+	res := analyze(t, engine.New(reg, &fakeLookup{}, engine.Options{Exploit: &fakeEnricher{}}), writeTree(t, map[string]string{"README.md": "x"}))
+	if res.Exploit == nil || res.Exploit.KEV.Status != exploit.StatusSkipped || res.Exploit.EPSS.Status != exploit.StatusSkipped {
+		t.Fatalf("exploit = %+v, want both skipped", res.Exploit)
+	}
+	if res := analyze(t, engine.New(reg, &fakeLookup{}, engine.Options{}), writeTree(t, map[string]string{"README.md": "x"})); res.Exploit != nil {
+		t.Fatalf("exploit data off: Exploit = %+v, want nil", res.Exploit)
 	}
 }
