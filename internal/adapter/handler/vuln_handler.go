@@ -32,6 +32,32 @@ func (h *VulnHandler) RegisterRoutes(r chi.Router) {
 	r.Get("/vulnerabilities/{id}", h.GetByID)
 }
 
+// vulnerabilityJSON is a stored vulnerability as the API returns it: its
+// fields plus "malicious", derived from its IDs (entity.Vulnerability.IsMalicious),
+// so rows stored before the flag existed are marked too.
+type vulnerabilityJSON struct {
+	*entity.Vulnerability
+	Malicious bool `json:"malicious"`
+}
+
+// vulnerabilitiesJSON wraps vs; nil stays nil, so an empty result is still null.
+func vulnerabilitiesJSON(vs []*entity.Vulnerability) []vulnerabilityJSON {
+	if vs == nil {
+		return nil
+	}
+	out := make([]vulnerabilityJSON, len(vs))
+	for i, v := range vs {
+		out[i] = vulnerabilityJSON{Vulnerability: v, Malicious: v.IsMalicious()}
+	}
+	return out
+}
+
+// findingJSON is a finding of GET /vulnerabilities with "malicious".
+type findingJSON struct {
+	*entity.VulnerabilityFinding
+	Malicious bool `json:"malicious"`
+}
+
 // GetByScenResult handles GET /api/v1/scans/{id}/vulnerabilities
 func (h *VulnHandler) GetByScenResult(w http.ResponseWriter, r *http.Request) {
 	scanID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -46,7 +72,7 @@ func (h *VulnHandler) GetByScenResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	RespondJSON(w, http.StatusOK, vulns)
+	RespondJSON(w, http.StatusOK, vulnerabilitiesJSON(vulns))
 }
 
 // GetByRepository handles GET /api/v1/repositories/{id}/vulnerabilities
@@ -63,7 +89,7 @@ func (h *VulnHandler) GetByRepository(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	RespondJSON(w, http.StatusOK, vulns)
+	RespondJSON(w, http.StatusOK, vulnerabilitiesJSON(vulns))
 }
 
 // GetByID handles GET /api/v1/vulnerabilities/{id}
@@ -84,18 +110,18 @@ func (h *VulnHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	RespondJSON(w, http.StatusOK, vuln)
+	RespondJSON(w, http.StatusOK, vulnerabilityJSON{Vulnerability: vuln, Malicious: vuln.IsMalicious()})
 }
 
 // vulnerabilityPage is the paginated response of GET /vulnerabilities.
 type vulnerabilityPage struct {
-	Data                   []*entity.VulnerabilityFinding `json:"data"`
-	Total                  int                            `json:"total"`
-	Page                   int                            `json:"page"`
-	PerPage                int                            `json:"per_page"`
-	TotalPages             int                            `json:"total_pages"`
-	Counts                 entity.SeverityCounts          `json:"counts"`
-	UnverifiedRepositories int                            `json:"unverified_repositories"`
+	Data                   []findingJSON         `json:"data"`
+	Total                  int                   `json:"total"`
+	Page                   int                   `json:"page"`
+	PerPage                int                   `json:"per_page"`
+	TotalPages             int                   `json:"total_pages"`
+	Counts                 entity.SeverityCounts `json:"counts"`
+	UnverifiedRepositories int                   `json:"unverified_repositories"`
 }
 
 // maxVulnerabilityPage is the highest page GET /vulnerabilities accepts.
@@ -135,15 +161,16 @@ func (h *VulnHandler) List(w http.ResponseWriter, r *http.Request) {
 		RespondServerError(w, r, err)
 		return
 	}
-	if findings == nil {
-		findings = []*entity.VulnerabilityFinding{}
+	data := make([]findingJSON, len(findings)) // never null, even when empty
+	for i, f := range findings {
+		data[i] = findingJSON{VulnerabilityFinding: f, Malicious: f.IsMalicious()}
 	}
 	totalPages := (total + perPage - 1) / perPage
 	if totalPages < 1 {
 		totalPages = 1
 	}
 	RespondJSON(w, http.StatusOK, vulnerabilityPage{
-		Data: findings, Total: total, Page: page, PerPage: perPage, TotalPages: totalPages,
+		Data: data, Total: total, Page: page, PerPage: perPage, TotalPages: totalPages,
 		Counts: counts, UnverifiedRepositories: unverified,
 	})
 }
