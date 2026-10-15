@@ -101,6 +101,7 @@ export const scanApi = {
   getById: (id) => request(`/scans/${id}`),
   getDependencies: (id) => request(`/scans/${id}/dependencies`),
   getVulnerabilities: (id) => request(`/scans/${id}/vulnerabilities`),
+  getRecommendations: (id) => request(`/scans/${id}/recommendations`),
 };
 
 // Dashboard / Health API

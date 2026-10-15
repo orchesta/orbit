@@ -44,6 +44,12 @@ export default function RepoDetail() {
     queryFn: () => scanApi.getVulnerabilities(latestScan.id),
     enabled: !!latestScan,
   });
+  // Only on the vulnerabilities tab, and only when there is something to fix.
+  const recsQuery = useQuery({
+    queryKey: ['scan', latestScan?.id, 'recommendations'],
+    queryFn: () => scanApi.getRecommendations(latestScan.id),
+    enabled: !!latestScan && activeTab === 'vulnerabilities' && (vulnsQuery.data?.length ?? 0) > 0,
+  });
   const tracker = useScanTracker({
     onFinished: (repoId) => {
       queryClient.invalidateQueries({ queryKey: ['repository', repoId] });
@@ -256,51 +262,54 @@ export default function RepoDetail() {
             ) : vulns.length === 0 ? (
               <EmptyState icon="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.040L3 5.618a11.986 11.986 0 001.274 13.92 11.987 11.987 0 0015.452 0c.935-1.12 1.587-2.43 1.944-3.834l-1.07-.356z" message={noScanMsg('No vulnerabilities detected')} />
             ) : (
-              <table className="w-full text-left text-sm">
-                <thead className="bg-gray-50 text-gray-500 border-b border-gray-200">
-                  <tr>
-                    <th className="px-6 py-3 font-medium">Vulnerability</th>
-                    <th className="px-6 py-3 font-medium">Package</th>
-                    <th className="px-6 py-3 font-medium text-center">Severity</th>
-                    <th className="px-6 py-3 font-medium">Exploit</th>
-                    <th className="px-6 py-3 font-medium text-right">Fixed In</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {vulns.map(vuln => {
-                    const dep = deps.find(d => d.id === vuln.dependency_id);
-                    return (
-                      <tr key={vuln.id} className="hover:bg-gray-50">
-                        <td className="px-6 py-4">
-                          <div className="font-medium text-gray-900 mb-1">{vuln.summary || 'Summary unavailable'}</div>
-                          <div className="flex items-center gap-2">
-                             <a href={`https://osv.dev/vulnerability/${vuln.osv_id}`} target="_blank" rel="noopener" className="text-blue-600 hover:underline text-xs">
-                               {vuln.osv_id}
-                             </a>
-                             {vuln.malicious && <MaliciousBadge />}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="font-medium text-gray-900">{dep ? dep.name : 'Unknown'}</div>
-                          <div className="text-xs text-gray-500 font-mono">{dep ? dep.current_version : ''}</div>
-                        </td>
-                        <td className="px-6 py-4 text-center">
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize
-                            ${vuln.severity === 'critical' ? 'bg-red-100 text-red-800' :
-                              vuln.severity === 'high' ? 'bg-orange-100 text-orange-800' :
-                              vuln.severity === 'medium' ? 'bg-yellow-100 text-yellow-800' :
-                              vuln.severity === 'low' ? 'bg-green-100 text-green-800' :
-                              'bg-gray-100 text-gray-800'}`}>
-                            {vuln.severity}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4"><ExploitSignals vuln={vuln} /></td>
-                        <td className="px-6 py-4 text-gray-500 font-mono text-xs text-right">{vuln.fixed_version || '-'}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <>
+                <Recommendations query={recsQuery} />
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-gray-50 text-gray-500 border-b border-gray-200">
+                    <tr>
+                      <th className="px-6 py-3 font-medium">Vulnerability</th>
+                      <th className="px-6 py-3 font-medium">Package</th>
+                      <th className="px-6 py-3 font-medium text-center">Severity</th>
+                      <th className="px-6 py-3 font-medium">Exploit</th>
+                      <th className="px-6 py-3 font-medium text-right">Fixed In</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {vulns.map(vuln => {
+                      const dep = deps.find(d => d.id === vuln.dependency_id);
+                      return (
+                        <tr key={vuln.id} className="hover:bg-gray-50">
+                          <td className="px-6 py-4">
+                            <div className="font-medium text-gray-900 mb-1">{vuln.summary || 'Summary unavailable'}</div>
+                            <div className="flex items-center gap-2">
+                               <a href={`https://osv.dev/vulnerability/${vuln.osv_id}`} target="_blank" rel="noopener" className="text-blue-600 hover:underline text-xs">
+                                 {vuln.osv_id}
+                               </a>
+                               {vuln.malicious && <MaliciousBadge />}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="font-medium text-gray-900">{dep ? dep.name : 'Unknown'}</div>
+                            <div className="text-xs text-gray-500 font-mono">{dep ? dep.current_version : ''}</div>
+                          </td>
+                          <td className="px-6 py-4 text-center">
+                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize
+                              ${vuln.severity === 'critical' ? 'bg-red-100 text-red-800' :
+                                vuln.severity === 'high' ? 'bg-orange-100 text-orange-800' :
+                                vuln.severity === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                                vuln.severity === 'low' ? 'bg-green-100 text-green-800' :
+                                'bg-gray-100 text-gray-800'}`}>
+                              {vuln.severity}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4"><ExploitSignals vuln={vuln} /></td>
+                          <td className="px-6 py-4 text-gray-500 font-mono text-xs text-right">{vuln.fixed_version || '-'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </>
             )}
            </div>
         )}
@@ -387,4 +396,46 @@ function EmptyState({ icon, message }) {
       <p className="font-medium text-gray-900">{message}</p>
     </div>
   )
+}
+
+// Recommendations lists the smallest upgrade per vulnerable package. It is
+// advice: an upgrade can still break a build.
+function Recommendations({ query }) {
+  if (query.isPending) return null;
+  if (query.isError) {
+    return <p className="px-6 py-3 border-b border-gray-200 text-sm text-gray-500">Upgrade recommendations could not be loaded.</p>;
+  }
+  const recs = query.data || [];
+  if (recs.length === 0) return null;
+  return (
+    <section aria-labelledby="recs-title" className="px-6 py-4 border-b border-gray-200 bg-gray-50">
+      <h3 id="recs-title" className="text-sm font-semibold text-gray-900 mb-2">Recommended upgrades</h3>
+      <ul className="space-y-1 text-sm text-gray-700">
+        {recs.map((r) => (
+          <li key={`${r.ecosystem}|${r.manifest}|${r.package}|${r.current}`}>
+            <span className="font-medium">{r.package}</span>{' '}
+            <span className="font-mono text-xs">{r.current}</span>
+            {r.malicious ? (
+              <span>
+                {' '}— reported as malicious; remove it
+                {r.upgrade && <span className="text-gray-500"> (a non-malicious advisory names {r.upgrade} as fixed)</span>}
+              </span>
+            ) : (
+              <>
+                {r.upgrade && (
+                  <span> → <span className="font-mono text-xs">{r.upgrade}</span> fixes {r.fixes.length} {r.fixes.length === 1 ? 'advisory' : 'advisories'}</span>
+                )}
+                {r.no_fix.length > 0 && (
+                  <span className="text-gray-500">{r.upgrade ? '; ' : ' — '}no known fix for {r.no_fix.join(', ')}</span>
+                )}
+              </>
+            )}
+            {r.via && <span className="text-gray-500"> (pulled in by {r.via})</span>}
+            <span className="text-xs text-gray-400"> · {r.manifest}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-xs text-gray-500">Each upgrade is the lowest version at or above every known fix. It can still break your build; check the release notes.</p>
+    </section>
+  );
 }

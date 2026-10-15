@@ -53,6 +53,7 @@ describe('RepoDetail', () => {
       'GET /repositories/r1': { body: { data: repo } },
       'GET /repositories/r1/scans': { body: { data: [done] } },
       'GET /scans/s1/dependencies': { body: { data: [{ id: 'd1', name: 'chalk', ecosystem: 'npm', current_version: '5.6.1', is_direct: true, is_resolved: true, is_dev: false }] } },
+      'GET /scans/s1/recommendations': { body: { data: [] } },
       'GET /scans/s1/vulnerabilities': { body: { data: [
         { id: 'v1', dependency_id: 'd1', osv_id: 'MAL-2025-46969', summary: 'Malicious code in chalk (npm)', severity: 'critical', malicious: true },
         { id: 'v2', dependency_id: 'd1', osv_id: 'GHSA-xxxx-yyyy-zzzz', summary: 'Prototype pollution', severity: 'high', malicious: false },
@@ -196,11 +197,63 @@ describe('RepoDetail', () => {
     });
   });
 
+  describe('upgrade recommendations', () => {
+    const deps = [{ id: 'd1', name: 'lodash', ecosystem: 'npm', current_version: '4.17.15', is_direct: true, is_resolved: true, is_dev: false }];
+    const vulns = [{ id: 'v1', dependency_id: 'd1', osv_id: 'CVE-2021-23337', summary: 'Command injection', severity: 'high', fixed_version: '4.17.21' }];
+    const recs = [
+      { ecosystem: 'npm', package: 'lodash', current: '4.17.15', upgrade: '4.17.21', fixes: ['CVE-2020-8203', 'CVE-2021-23337'], no_fix: [], manifest: 'package-lock.json', via: '', malicious: false },
+      { ecosystem: 'npm', package: 'express', current: '4.18.2', upgrade: '', fixes: [], no_fix: ['GHSA-esc-0005'], manifest: 'package-lock.json', via: '', malicious: false },
+      { ecosystem: 'npm', package: 'evil-pkg', current: '1.0.0', upgrade: '', fixes: [], no_fix: ['MAL-2025-1234'], manifest: 'package-lock.json', via: '', malicious: true },
+      { ecosystem: 'npm', package: 'debug', current: '4.4.2', upgrade: '4.4.3', fixes: ['CVE-2025-59144'], no_fix: [], manifest: 'package-lock.json', via: '', malicious: true },
+    ];
+    const routes = (recsRoute) => ({
+      'GET /repositories/r1': { body: { data: repo } },
+      'GET /repositories/r1/scans': { body: { data: [done] } },
+      'GET /scans/s1/dependencies': { body: { data: deps } },
+      'GET /scans/s1/vulnerabilities': { body: { data: vulns } },
+      'GET /scans/s1/recommendations': recsRoute,
+    });
+
+    it('shows the smallest upgrade per package with a caution', async () => {
+      mockFetch(routes({ body: { data: recs } }));
+      renderWithProviders(<RepoDetail />, at);
+      await userEvent.click(await screen.findByRole('button', { name: /^Vulnerabilities/ }));
+      const panel = await screen.findByRole('region', { name: 'Recommended upgrades' });
+      const items = within(panel).getAllByRole('listitem');
+      expect(items[0]).toHaveTextContent('lodash 4.17.15 → 4.17.21 fixes 2 advisories');
+      expect(items[1]).toHaveTextContent('express 4.18.2 — no known fix for GHSA-esc-0005');
+      expect(items[2]).toHaveTextContent('evil-pkg 1.0.0 — reported as malicious; remove it');
+      expect(items[3]).toHaveTextContent('debug 4.4.2 — reported as malicious; remove it (a non-malicious advisory names 4.4.3 as fixed)');
+      expect(items[3]).not.toHaveTextContent('→');
+      expect(panel).toHaveTextContent('It can still break your build; check the release notes.');
+      expect(screen.getByText('Command injection')).toBeInTheDocument();
+    });
+
+    it('asks for recommendations only on the vulnerabilities tab', async () => {
+      const { calls } = mockFetch(routes({ body: { data: recs } }));
+      renderWithProviders(<RepoDetail />, at);
+      await screen.findByText('lodash');
+      expect(calls.some((c) => c.path === '/scans/s1/recommendations')).toBe(false);
+      await userEvent.click(screen.getByRole('button', { name: /^Vulnerabilities/ }));
+      expect(await screen.findByRole('region', { name: 'Recommended upgrades' })).toBeInTheDocument();
+    });
+
+    it('keeps the vulnerability list when recommendations fail', async () => {
+      mockFetch(routes({ status: 500, body: { error: 'boom' } }));
+      renderWithProviders(<RepoDetail />, at);
+      await userEvent.click(await screen.findByRole('button', { name: /^Vulnerabilities/ }));
+      expect(await screen.findByText('Upgrade recommendations could not be loaded.')).toBeInTheDocument();
+      expect(screen.getByText('Command injection')).toBeInTheDocument();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+  });
+
   it('marks known exploited vulnerabilities of the scan', async () => {
     mockFetch({
       'GET /repositories/r1': { body: { data: repo } },
       'GET /repositories/r1/scans': { body: { data: [done] } },
       'GET /scans/s1/dependencies': { body: { data: [{ id: 'd1', name: 'jquery', current_version: '3.4.1', ecosystem: 'npm' }] } },
+      'GET /scans/s1/recommendations': { body: { data: [] } },
       'GET /scans/s1/vulnerabilities': { body: { data: [{ id: 'v1', dependency_id: 'd1', osv_id: 'CVE-2020-11023', summary: 'XSS in jQuery', severity: 'medium', kev: true, kev_date_added: '2025-01-23T00:00:00Z', epss: 0.84887, epss_percentile: 0.9971 }] } },
     });
     renderWithProviders(<RepoDetail />, at);
