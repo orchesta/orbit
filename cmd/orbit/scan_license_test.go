@@ -210,6 +210,35 @@ func TestScanSummaryWithALicensePolicyAndNoThreshold(t *testing.T) {
 	}
 }
 
+// A baseline that holds every finding clears the vulnerability gate only:
+// the license policy still fails the scan.
+func TestScanBaselineDoesNotFilterTheLicensePolicy(t *testing.T) {
+	res := resultWith(entity.SeverityHigh, entity.SeverityHigh)
+	res.Dependencies[0].License = "GPL-3.0-only" // lodash, as recorded in the lockfile
+	code, stdout, stderr := runFake(t, &fakeEngine{res: res}, "--path", t.TempDir(), "--format", "json",
+		"--baseline", writeBaseline(t, "GHSA-0", "GHSA-1"), "--deny-license", "GPL-3.0-only")
+	if code != exitFailed {
+		t.Fatalf("exit = %d, want %d\n%s", code, exitFailed, stderr)
+	}
+	var doc struct {
+		Summary struct {
+			Failed        bool `json:"failed"`
+			LicenseFailed bool `json:"license_failed"`
+			New           int  `json:"new"`
+		} `json:"summary"`
+		LicenseViolations []struct {
+			Package string `json:"package"`
+		} `json:"license_violations"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.Summary.Failed || !doc.Summary.LicenseFailed || doc.Summary.New != 0 ||
+		len(doc.LicenseViolations) != 1 || doc.LicenseViolations[0].Package != "lodash" {
+		t.Fatalf("report = %+v", doc)
+	}
+}
+
 // The real engine reads the lockfile's license, so a policy works without
 // any network lookup.
 func TestScanRealEngineDeniesALockfileLicense(t *testing.T) {
