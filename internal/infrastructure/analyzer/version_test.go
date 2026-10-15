@@ -45,3 +45,33 @@ func TestCompareVersions(t *testing.T) {
 		}
 	}
 }
+
+func TestCompareVersionOrder(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want int
+		ok   bool
+	}{
+		{"4.17.21", "4.17.15", 1, true},             // npm semver
+		{"1.0.0-beta.2", "1.0.0-beta.11", -1, true}, // numeric pre-release identifiers
+		{"1.0.0-rc.1", "1.0.0", -1, true},
+		{"3.0.7", "3.0.7", 0, true},
+		{"3.0.10", "3.0.7", 1, true},   // not string order
+		{"2.0rc1", "2.0", -1, true},    // PEP 440 pre-release
+		{"1.0.post1", "1.0", 1, true},  // PEP 440 post-release
+		{"1!1.0", "2.0", 1, true},      // PEP 440 epoch
+		{"6.0.0.1", "6.0.0", 1, true},  // NuGet four segments
+		{"v0.17.0", "0.17.0", 0, true}, // Go with and without v
+		{"v0.0.0-20230101000000-abcdef", "v0.1.0", -1, true},
+		{"v2.0.0+incompatible", "v2.0.1+incompatible", -1, true},
+		{"", "1.0.0", 0, false},
+		{"1.0.0", "latest", 0, false},
+		{">=1.0.0 <2", "1.0.0", 0, false},
+	}
+	for _, tt := range tests {
+		got, ok := CompareVersionOrder(tt.a, tt.b)
+		if got != tt.want || ok != tt.ok {
+			t.Errorf("CompareVersionOrder(%q, %q) = %d, %v; want %d, %v", tt.a, tt.b, got, ok, tt.want, tt.ok)
+		}
+	}
+}
