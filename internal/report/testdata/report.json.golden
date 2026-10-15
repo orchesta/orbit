@@ -31,7 +31,9 @@
       "kev_catalog_version": "",
       "epss": "disabled",
       "epss_date": ""
-    }
+    },
+    "denied_licenses": [],
+    "license_failed": false
   },
   "dependencies": [
     {
@@ -41,7 +43,8 @@
       "manifest": "package-lock.json",
       "direct": false,
       "dev": true,
-      "resolved": true
+      "resolved": true,
+      "license": ""
     },
     {
       "name": "lodash",
@@ -50,7 +53,8 @@
       "manifest": "package-lock.json",
       "direct": true,
       "dev": false,
-      "resolved": true
+      "resolved": true,
+      "license": ""
     },
     {
       "name": "django",
@@ -59,7 +63,8 @@
       "manifest": "requirements.txt",
       "direct": true,
       "dev": false,
-      "resolved": true
+      "resolved": true,
+      "license": ""
     }
   ],
   "findings": [
@@ -216,5 +221,6 @@
       "via": "",
       "malicious": false
     }
-  ]
+  ],
+  "license_violations": []
 }

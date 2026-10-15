@@ -28,6 +28,11 @@ type jsonSummary struct {
 	KEVFindings  int                     `json:"kev_findings"`
 	FailOnKEV    bool                    `json:"fail_on_kev"`
 	ExploitData  jsonExploitData         `json:"exploit_data"`
+	// DeniedLicenses is the --deny-license policy; LicenseFailed tells
+	// whether it failed. Failed covers both: it is true when orbit scan
+	// exits 1.
+	DeniedLicenses []string `json:"denied_licenses"`
+	LicenseFailed  bool     `json:"license_failed"`
 }
 
 type jsonExploitData struct {
@@ -45,6 +50,18 @@ type jsonDependency struct {
 	Direct    bool   `json:"direct"`
 	Dev       bool   `json:"dev"`
 	Resolved  bool   `json:"resolved"`
+	License   string `json:"license"` // SPDX expression, "" when unknown
+}
+
+type jsonLicenseViolation struct {
+	Package      string   `json:"package"`
+	Version      string   `json:"version"`
+	Ecosystem    string   `json:"ecosystem"`
+	Manifest     string   `json:"manifest"`
+	License      string   `json:"license"`
+	Denied       []string `json:"denied"`
+	Ignored      bool     `json:"ignored"`
+	IgnoreReason string   `json:"ignore_reason"`
 }
 
 type jsonFinding struct {
@@ -69,12 +86,13 @@ type jsonFinding struct {
 }
 
 type jsonReport struct {
-	SchemaVersion   int              `json:"schema_version"`
-	Tool            jsonTool         `json:"tool"`
-	Summary         jsonSummary      `json:"summary"`
-	Dependencies    []jsonDependency `json:"dependencies"`
-	Findings        []jsonFinding    `json:"findings"`
-	Recommendations []Recommendation `json:"recommendations"`
+	SchemaVersion     int                    `json:"schema_version"`
+	Tool              jsonTool               `json:"tool"`
+	Summary           jsonSummary            `json:"summary"`
+	Dependencies      []jsonDependency       `json:"dependencies"`
+	Findings          []jsonFinding          `json:"findings"`
+	Recommendations   []Recommendation       `json:"recommendations"`
+	LicenseViolations []jsonLicenseViolation `json:"license_violations"`
 }
 
 func nonNil(s []string) []string {
@@ -92,20 +110,31 @@ func WriteJSON(w io.Writer, f []Finding, s Summary, tool ToolInfo) error {
 		Tool:          jsonTool{tool.Name, tool.Version, tool.InformationURI},
 		Summary: jsonSummary{
 			Dependencies: s.Dependencies, Vulnerable: s.Vulnerable, Malicious: s.Malicious, BySeverity: s.BySeverity,
-			Threshold: string(s.Threshold), Failed: s.Failed, New: s.New, Baseline: s.Baseline,
+			Threshold: string(s.Threshold), Failed: s.Failed || s.LicenseFailed, New: s.New, Baseline: s.Baseline,
 			Warnings: nonNil(s.Warnings), KEVFindings: s.KEVFindings, FailOnKEV: s.FailOnKEV,
-			ExploitData: jsonExploitData{s.Exploit.KEV, s.Exploit.KEVCatalogVersion, s.Exploit.EPSS, s.Exploit.EPSSDate},
+			ExploitData:    jsonExploitData{s.Exploit.KEV, s.Exploit.KEVCatalogVersion, s.Exploit.EPSS, s.Exploit.EPSSDate},
+			DeniedLicenses: nonNil(s.DeniedLicenses), LicenseFailed: s.LicenseFailed,
 		},
-		Dependencies: []jsonDependency{},
-		Findings:     []jsonFinding{},
+		Dependencies:      []jsonDependency{},
+		Findings:          []jsonFinding{},
+		LicenseViolations: []jsonLicenseViolation{},
 	}
 	r.Summary.BySeverity = map[entity.Severity]int{}
 	for _, sev := range severityOrder {
 		r.Summary.BySeverity[sev] = s.BySeverity[sev]
 	}
 	for _, d := range s.Deps {
-		r.Dependencies = append(r.Dependencies, jsonDependency{d.Name, d.CurrentVersion, string(d.Ecosystem),
-			d.ManifestFile, d.IsDirect, d.IsDev, d.IsResolved})
+		r.Dependencies = append(r.Dependencies, jsonDependency{
+			Name: d.Name, Version: d.CurrentVersion, Ecosystem: string(d.Ecosystem), Manifest: d.ManifestFile,
+			Direct: d.IsDirect, Dev: d.IsDev, Resolved: d.IsResolved, License: d.License,
+		})
+	}
+	for _, v := range s.LicenseViolations {
+		d := v.Dependency
+		r.LicenseViolations = append(r.LicenseViolations, jsonLicenseViolation{
+			Package: d.Name, Version: d.CurrentVersion, Ecosystem: string(d.Ecosystem), Manifest: d.ManifestFile,
+			License: d.License, Denied: nonNil(v.Denied), Ignored: v.Ignored, IgnoreReason: v.IgnoreReason,
+		})
 	}
 	for _, x := range f {
 		v, d := x.Vulnerability, x.Dependency

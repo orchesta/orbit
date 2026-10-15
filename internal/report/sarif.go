@@ -126,11 +126,14 @@ type SARIFOptions struct {
 	RootURI string
 }
 
-// WriteSARIF writes a SARIF 2.1.0 log with one rule per distinct advisory. A
+// WriteSARIF writes a SARIF 2.1.0 log with one rule per distinct advisory
+// and one rule "license/<ID>" per denied license that a violation names;
+// a violation naming several denied licenses is one result per license. A
 // rule with a malicious finding is tagged "malicious" and rated 10.0. A rule listed in CISA KEV is also tagged "known-exploited";
 // its security-severity is not raised. With a baseline (s.Baseline) every
-// result has baselineState "new" or "unchanged"; "updated" and "absent" are
-// not produced.
+// finding's result has baselineState "new" or "unchanged"; "updated" and
+// "absent" are not produced. License results have none: the baseline does
+// not apply to license violations.
 func WriteSARIF(w io.Writer, f []Finding, s Summary, tool ToolInfo, opts SARIFOptions) error {
 	recs := make(map[[4]string]Recommendation, len(s.Recommendations))
 	for _, r := range s.Recommendations {
@@ -207,6 +210,34 @@ func WriteSARIF(w io.Writer, f []Finding, s Summary, tool ToolInfo, opts SARIFOp
 		}
 		results = append(results, r)
 	}
+	for _, v := range s.LicenseViolations {
+		d := v.Dependency
+		for _, id := range v.Denied {
+			ruleID := "license/" + id
+			if _, ok := ruleIdx[ruleID]; !ok {
+				ruleIdx[ruleID] = len(rules)
+				props := map[string]any{}
+				addRuleTag(props, "license")
+				rules = append(rules, sarifRule{
+					ID:               ruleID,
+					ShortDescription: sarifText{"Denied license " + id},
+					HelpURI:          licenseHelpURI(id),
+					Properties:       props,
+				})
+			}
+			var r sarifResult
+			r.RuleID, r.Level = ruleID, "error"
+			r.Message = sarifText{d.Name + "@" + d.CurrentVersion + " is licensed under " + d.License + ", and the license policy denies " + id}
+			r.Locations = make([]sarifLocation, 1)
+			r.Locations[0].PhysicalLocation.ArtifactLocation = opts.artifactLocation(d.ManifestFile)
+			sum := sha256.Sum256([]byte(strings.Join([]string{ruleID, string(d.Ecosystem), d.Name, d.CurrentVersion, d.ManifestFile}, "|")))
+			r.PartialFingerprints = map[string]string{"orbit/v1": hex.EncodeToString(sum[:])}
+			if v.Ignored {
+				r.Suppressions = []sarifSuppression{{Kind: "external", Justification: v.IgnoreReason}}
+			}
+			results = append(results, r)
+		}
+	}
 	for i := range rules {
 		if rules[i].ShortDescription.Text == "" {
 			rules[i].ShortDescription.Text = rules[i].ID
@@ -262,4 +293,13 @@ func fixedText(r Recommendation, id, fv string) string {
 		return fmt.Sprintf(" (fixed in %s; this also fixes %d other %s for this package)", fv, n, word)
 	}
 	return fmt.Sprintf(" (fixed in %s). Upgrading to %s fixes this and %d other %s for this package.", fv, r.Upgrade, n, word)
+}
+
+// licenseHelpURI links an SPDX-listed license to its page on spdx.org; a
+// LicenseRef has none.
+func licenseHelpURI(id string) string {
+	if strings.Contains(id, "LicenseRef-") {
+		return ""
+	}
+	return "https://spdx.org/licenses/" + id + ".html"
 }

@@ -40,7 +40,9 @@ func colorize(s string, sev entity.Severity) string {
 	return "\x1b[" + code + "m" + s + "\x1b[0m"
 }
 
-// WriteTable prints findings in severity order followed by a summary and
+// WriteTable prints findings in severity order, the upgrade
+// recommendations, then the license policy violations, followed by a
+// summary and warnings. With nil findings it prints only the summary and
 // warnings. Color is used only on a terminal with NO_COLOR unset. Control
 // characters in cells and warnings are shown as U+FFFD, so every finding is
 // one line.
@@ -67,10 +69,15 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 	}
 	if len(f) > 0 {
 		exploitCols := showExploit(s)
-		header := []string{"SEVERITY", "ID", "PACKAGE", "FIXED", "MANIFEST"}
+		header := []string{"SEVERITY"}
 		if exploitCols {
-			header = []string{"SEVERITY", "KEV", "EPSS", "ID", "PACKAGE", "FIXED", "MANIFEST"}
+			header = append(header, "KEV", "EPSS")
 		}
+		header = append(header, "ID", "PACKAGE")
+		if s.ShowLicenses {
+			header = append(header, "LICENSE")
+		}
+		header = append(header, "FIXED", "MANIFEST")
 		rows := [][]string{header}
 		for _, x := range f {
 			fixed := fixedIn(x.Vulnerability)
@@ -89,8 +96,11 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 				row = append(row, kev, formatEPSS(x.Vulnerability.EPSS))
 			}
 			row = append(row, singleLine(x.Vulnerability.OSVID),
-				singleLine(x.Dependency.Name+"@"+x.Dependency.CurrentVersion), singleLine(fixed),
-				singleLine(x.Dependency.ManifestFile))
+				singleLine(x.Dependency.Name+"@"+x.Dependency.CurrentVersion))
+			if s.ShowLicenses {
+				row = append(row, singleLine(licenseCell(x.Dependency)))
+			}
+			row = append(row, singleLine(fixed), singleLine(x.Dependency.ManifestFile))
 			rows = append(rows, row)
 		}
 		style := func(ri, ci int, c string) string {
@@ -116,6 +126,24 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 	}
 	if lines := recommendationLines(s.Recommendations); len(lines) > 0 {
 		for _, line := range lines {
+			printf("%s\n", line)
+		}
+		printf("\n")
+	}
+	// A nil f is the summary-only call (cmd/orbit's writeSummary): the
+	// violations are listed in the report, not again on stderr.
+	if f != nil && len(s.LicenseViolations) > 0 {
+		rows := [][]string{{"DENIED", "PACKAGE", "LICENSE", "MANIFEST"}}
+		for _, v := range s.LicenseViolations {
+			d := v.Dependency
+			denied := strings.Join(v.Denied, ", ")
+			if v.Ignored {
+				denied += " (ignored)"
+			}
+			rows = append(rows, []string{singleLine(denied), singleLine(d.Name + "@" + d.CurrentVersion),
+				singleLine(d.License), singleLine(d.ManifestFile)})
+		}
+		for _, line := range alignRows(rows, func(_, _ int, c string) string { return c }) {
 			printf("%s\n", line)
 		}
 		printf("\n")
@@ -161,6 +189,10 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 			status = "FAILED"
 		}
 		printf("fail on KEV%s: %s\n", scope, status)
+	}
+	if len(s.DeniedLicenses) > 0 {
+		// Not scoped by the baseline: it does not filter license violations.
+		printf("%s\n", licensePolicyLine(s))
 	}
 	for _, msg := range s.Warnings {
 		printf("warning: %s\n", singleLine(msg))
@@ -266,4 +298,33 @@ func viaCell(via string) string {
 		return singleLine(strings.Join(names[:3], ", ")) + fmt.Sprintf(" and %d more", len(names)-3)
 	}
 	return singleLine(via)
+}
+
+// licenseCell is a dependency's license for the table, "-" when unknown.
+func licenseCell(d *entity.Dependency) string {
+	if d.License == "" {
+		return "-"
+	}
+	return d.License
+}
+
+// licensePolicyLine is the table's verdict line for the license policy. It
+// counts the violations that are not ignored; the denied identifiers are
+// canonical SPDX IDs (spdx.ParseIDs), so they need no singleLine.
+func licensePolicyLine(s Summary) string {
+	n := 0
+	for _, v := range s.LicenseViolations {
+		if !v.Ignored {
+			n++
+		}
+	}
+	status := "passed"
+	if s.LicenseFailed {
+		status = "FAILED"
+	}
+	noun := "violations"
+	if n == 1 {
+		noun = "violation"
+	}
+	return fmt.Sprintf("license policy (deny %s): %d %s, %s", strings.Join(s.DeniedLicenses, ", "), n, noun, status)
 }
