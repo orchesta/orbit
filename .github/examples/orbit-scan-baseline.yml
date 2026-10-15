@@ -21,6 +21,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Only the cache may provide the baseline. A checked-in orbit-baseline.json would be
+      # used on a cache miss, and a pull request could add one that lists its own findings.
+      - name: Remove any checked-in Orbit baseline
+        env:
+          ORBIT_BASELINE_FILE: orbit-baseline.json
+        run: rm -f -- "$ORBIT_BASELINE_FILE"
+
       # Pull requests restore the newest baseline saved on the base branch. The exact key
       # never exists; restore-keys picks the most recently created match.
       - name: Restore Orbit baseline

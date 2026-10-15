@@ -247,6 +247,52 @@ func TestActionWritesBaselineOutput(t *testing.T) {
 	}
 }
 
+// A file already at baseline-output (committed, or left by an earlier step)
+// is removed before the scans: if they do not write a new one, the cache
+// save step finds nothing and the previous cache keeps serving. A failed
+// baseline scan only warns.
+func TestActionRemovesAStaleBaselineOutput(t *testing.T) {
+	_, script := actionScript(t)
+	for name, env := range map[string]map[string]string{
+		"first scan errors":    {"FAKE_RC": "2"},
+		"baseline scan errors": {"FAKE_RECORD_RC": "2"},
+	} {
+		ws := t.TempDir()
+		stale := filepath.Join(ws, "orbit-baseline.json")
+		if err := os.WriteFile(stale, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		env["INPUT_BASELINE_OUTPUT"] = "orbit-baseline.json"
+		r := runScript(t, "bash", script, ws, actionEnv(ws, env))
+		if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s: orbit-baseline.json left behind (%v); exit %d, output:\n%s", name, err, r.code, r.output)
+		}
+		if name == "baseline scan errors" && (r.code != 0 || !strings.Contains(r.output, "::warning::Orbit: could not write the baseline report")) {
+			t.Errorf("%s: exit %d (want 0 and a warning); output:\n%s", name, r.code, r.output)
+		}
+	}
+}
+
+// When baseline and baseline-output name the same file, the first scan
+// still compares with it; it is replaced only afterwards.
+func TestActionReadsTheBaselineBeforeReplacingIt(t *testing.T) {
+	_, script := actionScript(t)
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "orbit-baseline.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := runScript(t, "bash", script, ws, actionEnv(ws, map[string]string{
+		"INPUT_BASELINE": "orbit-baseline.json", "INPUT_BASELINE_OUTPUT": "orbit-baseline.json",
+	}))
+	d := r.of("docker")
+	if r.code != 0 || len(d) != 2 || !hasSeq(d[0].args, "--baseline", "/src/orbit-baseline.json") {
+		t.Fatalf("exit %d, calls %+v; output:\n%s", r.code, r.calls, r.output)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "orbit-baseline.json")); err != nil {
+		t.Errorf("baseline not rewritten: %v", err)
+	}
+}
+
 func TestActionSkipsBaselineOutputAfterAnError(t *testing.T) {
 	_, script := actionScript(t)
 	ws := t.TempDir()
@@ -329,10 +375,20 @@ func TestBaselineExampleWorkflowParses(t *testing.T) {
 	doc := loadYAML(t, "../.github/examples/orbit-scan-baseline.yml")
 	steps := doc["jobs"].(map[string]any)["orbit"].(map[string]any)["steps"].([]any)
 	var uses []string
+	removed := false // a checked-in baseline is removed before the cache restore
 	for _, s := range steps {
-		if u, ok := s.(map[string]any)["uses"].(string); ok {
+		m := s.(map[string]any)
+		if u, ok := m["uses"].(string); ok {
 			uses = append(uses, strings.SplitN(u, "@", 2)[0])
 		}
+		env, _ := m["env"].(map[string]any)
+		if run, _ := m["run"].(string); len(uses) == 1 && env["ORBIT_BASELINE_FILE"] == "orbit-baseline.json" &&
+			strings.TrimSpace(run) == `rm -f -- "$ORBIT_BASELINE_FILE"` {
+			removed = true
+		}
+	}
+	if !removed {
+		t.Error("no step removes orbit-baseline.json between checkout and the cache restore")
 	}
 	want := []string{"actions/checkout", "actions/cache/restore", "orchesta/orbit", "actions/cache/save", "github/codeql-action/upload-sarif"}
 	if !slices.Equal(uses, want) {

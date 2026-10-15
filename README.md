@@ -278,9 +278,12 @@ The templates pull `orchestalabs/orbit-cli` from Docker Hub, which limits pulls 
 
 The GitHub Action, the GitLab template and the Azure Pipelines template have a baseline mode. Runs of the default branch scan as usual, also write `orbit-baseline.json` and store it. Their findings are reported but do not fail the run: on the default branch every finding is an existing one, so exit 1 becomes a warning there (the action does this whenever it writes `baseline-output`). Errors (exit 2) still fail it, and on GitLab and Azure Pipelines so does a failed `orbit-baseline.json` scan: a failed job leaves the previous successful run's baseline in place, while a passing job without the file would become the latest successful run and leave pull requests with no baseline. The GitHub Action only warns then: without the file the save step is skipped and the previous cache keeps serving. Pull and merge requests fetch the newest stored baseline and fail only on new findings and on malicious packages. When there is none yet (the first run, or it expired) they warn and every finding counts. Schedule a daily run of the default branch so advisories published since the last merge are part of the baseline.
 
-**GitHub Actions** uses the cache: a pull request can restore caches of its base branch, also from forks, and caches written by pull requests stay scoped to them, so a pull request cannot replace the baseline. GitHub removes caches nobody used for 7 days. The full workflow is [`.github/examples/orbit-scan-baseline.yml`](.github/examples/orbit-scan-baseline.yml); the parts that matter:
+**GitHub Actions** uses the cache: a pull request can restore caches of its base branch, also from forks, and caches written by pull requests stay scoped to them, so a pull request cannot replace the baseline. Any workflow that runs in the default branch's cache scope, such as `pull_request_target` or `workflow_run`, can save an `orbit-baseline-*` key, and `restore-keys` takes the newest one, so do not run such workflows on untrusted input. GitHub removes caches nobody used for 7 days. The full workflow is [`.github/examples/orbit-scan-baseline.yml`](.github/examples/orbit-scan-baseline.yml); the parts that matter:
 
 ```yaml
+- env:
+    ORBIT_BASELINE_FILE: orbit-baseline.json
+  run: rm -f -- "$ORBIT_BASELINE_FILE"   # only the cache may provide the baseline
 - if: github.event_name == 'pull_request'
   uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
   with:

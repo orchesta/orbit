@@ -43,7 +43,8 @@ inputs:
       their baseline. This is a second scan with fail-on none, skipped when the first one errored
       (exit 2) or when the report itself is that JSON file. A run that writes it records the
       baseline, so its findings do not fail the step (exit 1 becomes a warning); errors (exit 2)
-      still do. Empty skips it.
+      still do. A file already at that path is removed first, so a run whose scans fail leaves
+      none behind for a cache save step to store. Empty skips it.
     required: false
     default: ""
   fail-on-kev:
@@ -140,6 +141,12 @@ runs:
           true|"") ;;
           *) echo "::error::Orbit: 'exploit-data' must be true or false, got '$INPUT_EXPLOIT_DATA'"; exit 2 ;;
         esac
+        # A file already at baseline-output (committed, or left by an earlier step) must not
+        # be stored as this run's baseline when the scans below do not write one. When it is
+        # also the baseline input, the first scan reads it and it is removed after that.
+        if [ -n "$INPUT_BASELINE_OUTPUT" ] && [ "$INPUT_BASELINE_OUTPUT" != "$INPUT_BASELINE" ]; then
+          rm -f -- "$GITHUB_WORKSPACE/$INPUT_BASELINE_OUTPUT"
+        fi
         if [ -n "$INPUT_BASELINE" ]; then
           if [ -f "$GITHUB_WORKSPACE/$INPUT_BASELINE" ]; then
             args+=(--baseline "/src/${INPUT_BASELINE}")
@@ -164,8 +171,13 @@ runs:
         orbit "${args[@]}" || rc=$?
 
         if [ -n "$INPUT_BASELINE_OUTPUT" ]; then
+          if [ "$INPUT_BASELINE_OUTPUT" = "$INPUT_BASELINE" ]; then
+            rm -f -- "$GITHUB_WORKSPACE/$INPUT_BASELINE_OUTPUT"
+          fi
           # A JSON report for later runs to compare with, unless the scan errored or its
-          # report already is that file.
+          # report already is that file. A failed baseline scan only warns: it leaves no
+          # file, so a cache save step guarded by hashFiles is skipped and the previous
+          # cache keeps serving the baseline.
           if [ "$rc" -ne 2 ] && ! { [ "$INPUT_FORMAT" = json ] && [ "$output" = "$INPUT_BASELINE_OUTPUT" ]; }; then
             orbit "${record[@]}" \
               || echo "::warning::Orbit: could not write the baseline report '$INPUT_BASELINE_OUTPUT'"
