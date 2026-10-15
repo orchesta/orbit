@@ -390,6 +390,7 @@ Paginated responses carry `data`, `total`, `page`, `per_page` and `total_pages` 
 | `GET` | `/repositories/{id}/scans` | Scan history |
 | `GET` | `/scans/{id}` | Scan result |
 | `GET` | `/scans/{id}/dependencies` | Dependencies found by a scan |
+| `GET` | `/scans/{id}/recommendations` | Smallest upgrade per vulnerable package of a completed scan (`via` is always empty on the server); 409 while the scan is not completed or after it failed |
 
 **Vulnerabilities**
 

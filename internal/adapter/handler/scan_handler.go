@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/orchesta/orbit/internal/report"
 	"github.com/orchesta/orbit/internal/usecase/scan"
 )
 
@@ -25,6 +26,7 @@ func (h *ScanHandler) RegisterRoutes(r chi.Router) {
 	r.Get("/repositories/{id}/scans", h.GetScanHistory)
 	r.Get("/scans/{id}", h.GetScanResult)
 	r.Get("/scans/{id}/dependencies", h.GetScanDependencies)
+	r.Get("/scans/{id}/recommendations", h.GetRecommendations)
 }
 
 // TriggerScan handles POST /api/v1/repositories/{id}/scan
@@ -105,4 +107,37 @@ func (h *ScanHandler) GetScanDependencies(w http.ResponseWriter, r *http.Request
 	}
 
 	RespondJSON(w, http.StatusOK, deps)
+}
+
+// GetRecommendations handles GET /api/v1/scans/{id}/recommendations: the
+// smallest upgrade per vulnerable package of a completed scan (see
+// report.Recommend). Via is always "": the server does not store the
+// dependency graph.
+func (h *ScanHandler) GetRecommendations(w http.ResponseWriter, r *http.Request) {
+	scanID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "invalid scan id")
+		return
+	}
+	_, res, err := h.useCase.CompletedScanResult(r.Context(), scanID)
+	if err != nil {
+		respondScanLoadError(w, r, err)
+		return
+	}
+	RespondJSON(w, http.StatusOK, report.RecommendFor(res.Dependencies, res.Vulnerabilities))
+}
+
+// respondScanLoadError answers a failed CompletedScanResult: 404 for an
+// unknown scan, 409 for a scan that is pending, running or failed, and a
+// server error otherwise. Every endpoint built from a stored scan's
+// findings answers this way.
+func respondScanLoadError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, scan.ErrScanNotFound):
+		RespondError(w, http.StatusNotFound, "scan result not found")
+	case errors.Is(err, scan.ErrScanNotCompleted):
+		RespondError(w, http.StatusConflict, "scan is not completed")
+	default:
+		RespondServerError(w, r, err)
+	}
 }
