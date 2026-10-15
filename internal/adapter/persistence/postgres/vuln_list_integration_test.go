@@ -198,3 +198,52 @@ func TestLatestSummaryCountsMaliciousFindings(t *testing.T) {
 		t.Fatalf("LatestMaliciousCount = %d, %v; want 2 (the superseded scan does not count)", n, err)
 	}
 }
+
+// TestMaliciousVulnMatchesHasMaliciousID keeps the SQL rule maliciousVuln in
+// step with entity.HasMaliciousID, which duplicates it in Go.
+func TestMaliciousVulnMatchesHasMaliciousID(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	scans, deps, vulns := NewScanResultPostgresRepo(pool), NewDependencyPostgresRepo(pool), NewVulnerabilityPostgresRepo(pool)
+	repoID := newQueueRepo(t, ctx, pool, "web")
+	scan := seedScanWithVulns(t, ctx, repoID, time.Now(), scans, deps, vulns)
+
+	cases := []struct {
+		name    string
+		osvID   string
+		aliases []string
+	}{
+		{"upper", "MAL-1", nil},
+		{"lower", "mal-1", nil},
+		{"mixed case", "Mal-1", nil},
+		{"prefix only", "MAL", nil},
+		{"prefix and dash only", "MAL-", nil},
+		{"embedded prefix", "XMAL-1", nil},
+		{"underscore", "MAL_1", nil},
+		{"alias only", "CVE-2025-1", []string{"mal-2025-9"}},
+		{"nil aliases", "CVE-2025-1", nil},
+		{"empty aliases", "CVE-2025-1", []string{}},
+		{"later alias", "CVE-2025-1", []string{"GHSA-aaaa-bbbb-cccc", "CVE-2025-2", "MAL-2025-3"}},
+		{"no match in list", "CVE-2025-1", []string{"GHSA-aaaa-bbbb-cccc", "XMAL-1"}},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := entity.NewDependency(repoID, scan.ID, "pkg-"+string(rune('a'+i)), "1.0.0", "package-lock.json", entity.EcosystemNpm)
+			if err := deps.CreateBatch(ctx, []*entity.Dependency{d}); err != nil {
+				t.Fatal(err)
+			}
+			v := entity.NewVulnerability(d.ID, tc.osvID, "summary", entity.SeverityUnknown)
+			v.Aliases = tc.aliases
+			if err := vulns.CreateBatch(ctx, []*entity.Vulnerability{v}); err != nil {
+				t.Fatal(err)
+			}
+			var got bool
+			if err := pool.QueryRow(ctx, `SELECT `+maliciousVuln+` FROM vulnerabilities v WHERE v.id = $1`, v.ID).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			if want := entity.HasMaliciousID(tc.osvID, tc.aliases); got != want {
+				t.Fatalf("SQL = %v, HasMaliciousID = %v for %q %q", got, want, tc.osvID, tc.aliases)
+			}
+		})
+	}
+}
