@@ -330,3 +330,51 @@ func TestSARIFLicenseResultLocationFollowsOptions(t *testing.T) {
 		}
 	}
 }
+
+// An entry that accepts one of several denied licenses leaves the violation
+// active, and every report names only the licenses still denied: no
+// unsuppressed SARIF result for the accepted one.
+func TestPartlyAcceptedViolationNamesOnlyTheStillDeniedLicenses(t *testing.T) {
+	ignores, err := ParseIgnoreFile(strings.NewReader("license:GPL-3.0-only package=x  approved\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := licenseResult()
+	res.Dependencies = append(res.Dependencies[:0], &entity.Dependency{Name: "x", CurrentVersion: "1.0.0", Ecosystem: entity.EcosystemNpm,
+		ManifestFile: "package-lock.json", IsResolved: true, License: "MIT AND GPL-3.0-only AND AGPL-3.0-only"})
+	_, s := Build(res, ignores, entity.SeverityHigh, fixedNow)
+	ApplyLicensePolicy(&s, []string{"AGPL-3.0-only", "GPL-3.0-only"}, ignores, fixedNow)
+	if got := violationNames(s); !slices.Equal(got, []string{"x=AGPL-3.0-only"}) || !s.LicenseFailed {
+		t.Errorf("violations = %q, LicenseFailed = %v; want [x=AGPL-3.0-only], true", got, s.LicenseFailed)
+	}
+
+	var b bytes.Buffer
+	if err := WriteSARIF(&b, nil, s, testTool, SARIFOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	var doc sarifLicenseRun
+	if err := json.Unmarshal(b.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	var rules []string
+	for _, r := range doc.Runs[0].Results {
+		rules = append(rules, r.RuleID)
+	}
+	if !slices.Equal(rules, []string{"license/AGPL-3.0-only"}) {
+		t.Errorf("SARIF results = %q, want [license/AGPL-3.0-only]", rules)
+	}
+
+	b.Reset()
+	if err := WriteJUnit(&b, nil, s); err != nil {
+		t.Fatal(err)
+	}
+	var suite junitSuite
+	if err := xml.Unmarshal(b.Bytes(), &suite); err != nil {
+		t.Fatal(err)
+	}
+	c := suite.Cases[0]
+	if suite.Failures != 1 || c.Failure == nil || c.Failure.Message != "denied license: AGPL-3.0-only" ||
+		c.Failure.Body != "x@1.0.0 is licensed under MIT AND GPL-3.0-only AND AGPL-3.0-only; the license policy denies AGPL-3.0-only" {
+		t.Fatalf("JUnit case = %+v, failure = %+v", c, c.Failure)
+	}
+}

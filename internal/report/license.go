@@ -13,9 +13,12 @@ import (
 // LicenseViolation is a dependency whose license the policy denies: its
 // expression cannot be satisfied without one of the denied licenses.
 type LicenseViolation struct {
-	Dependency   *entity.Dependency
-	Denied       []string // the denied identifiers the expression cannot avoid, sorted
-	Ignored      bool     // accepted by license: entries of the ignore file
+	Dependency *entity.Dependency
+	// Denied lists, sorted, the denied identifiers the expression cannot
+	// avoid. For a violation that is not Ignored, it leaves out those that
+	// license: entries accept.
+	Denied       []string
+	Ignored      bool // accepted by license: entries of the ignore file
 	IgnoreReason string
 }
 
@@ -66,12 +69,16 @@ func ApplyLicensePolicy(s *Summary, deny []string, ignores *IgnoreList, now time
 				}
 			}
 		}
-		_, still := spdx.Evaluate(d.License, func(id string) bool {
+		// Evaluate again without the accepted licenses: a violation that
+		// remains names only the licenses still denied, so no report
+		// shows an accepted license as an active violation.
+		remaining, still := spdx.Evaluate(d.License, func(id string) bool {
 			_, ok := accepted[id]
 			return denied[id] && !ok
 		})
 		if still {
 			s.LicenseFailed = true
+			v.Denied = remaining
 		} else {
 			// Only accepted licenses stood in the way, and every denied
 			// license that matters is in hits, so first is set.

@@ -99,7 +99,7 @@ func TestLicenseIgnoreEntries(t *testing.T) {
 	want := []string{
 		// Accepting one OR branch is enough; py-pkg matches Py_Pkg (PEP 503).
 		"Py_Pkg=AGPL-3.0-only+AGPL-3.0-or-later (ignored: normalised name matches)",
-		"both=AGPL-3.0-only+GPL-3.0-only", // AGPL-3.0-only is not accepted for both
+		"both=AGPL-3.0-only", // GPL-3.0-only is accepted for both, AGPL-3.0-only is not
 		"gpl=GPL-3.0-only (ignored: Legal approved, LEGAL-7)",
 	}
 	if got := violationNames(s); !slices.Equal(got, want) {
@@ -147,6 +147,7 @@ func TestParseLicenseIgnoreErrors(t *testing.T) {
 		"license:MIT  no package",
 		"license: package=a  empty",
 		"license:Apache-2.0+ package=a  plus",
+		"license:GPL-2.0-with-classpath-exception package=a  a license WITH an exception",
 	} {
 		if _, err := ParseIgnoreFile(strings.NewReader(line + "\n")); err == nil || !strings.Contains(err.Error(), "line 1") {
 			t.Errorf("%q: err = %v, want a line 1 error", line, err)
