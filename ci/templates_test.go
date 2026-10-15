@@ -16,22 +16,25 @@ import (
 
 // fakeTool stands in for docker and orbit. It logs its name and arguments,
 // one per line, ending the call with "---". It exits with $FAKE_RC, except
-// that "--fail-on none" always exits 0; unless it exits 2 it writes "{}" to
-// the --out file. As docker, an --out path inside a -v mount is written on
-// the host side of that mount.
+// that "--fail-on none" always exits 0 and that, when $FAKE_RECORD_RC is set,
+// a "--format json" run (the one that records the baseline) exits with it;
+// unless it exits 2 it writes "{}" to the --out file. As docker, an --out
+// path inside a -v mount is written on the host side of that mount.
 const fakeTool = `#!/bin/sh
 { basename "$0"; for a in "$@"; do printf '%s\n' "$a"; done; echo ---; } >> "$FAKE_LOG"
-mounts=""; out=""; failon=""; prev=""
+mounts=""; out=""; failon=""; format=""; prev=""
 for a in "$@"; do
   case "$prev" in
     -v) mounts="$mounts $a" ;;
     --out) out="$a" ;;
     --fail-on) failon="$a" ;;
+    --format) format="$a" ;;
   esac
   prev="$a"
 done
 rc="${FAKE_RC:-0}"
 [ "$failon" = none ] && rc=0
+[ "$format" = json ] && [ -n "${FAKE_RECORD_RC:-}" ] && rc="$FAKE_RECORD_RC"
 if [ -n "$out" ] && [ "$rc" -ne 2 ]; then
   target="$out"
   for m in $mounts; do
@@ -440,6 +443,29 @@ func TestGitLabAutoRecordingStillFailsOnErrors(t *testing.T) {
 	}
 }
 
+// A failed recording scan fails the job (exit 2), also when the findings
+// alone would only have warned: a passing job without orbit-baseline.json
+// would become the latest successful pipeline and leave every merge request
+// without a baseline. A file left from before is removed, not kept.
+func TestGitLabAutoRecordingFailsWhenTheBaselineScanFails(t *testing.T) {
+	for _, rc := range []int{0, 1} {
+		dir := t.TempDir()
+		stale := filepath.Join(dir, "orbit-baseline.json")
+		if err := os.WriteFile(stale, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		r := runScript(t, "sh", gitlabScript(t), dir, gitlabEnv(map[string]string{
+			"ORBIT_BASELINE": "auto", "CI_COMMIT_BRANCH": "main", "FAKE_RC": strconv.Itoa(rc), "FAKE_RECORD_RC": "2",
+		}))
+		if r.code != 2 || len(r.of("orbit")) != 3 || !strings.Contains(r.output, "error: could not write orbit-baseline.json") {
+			t.Fatalf("rc %d: exit %d (want 2), calls %+v; output:\n%s", rc, r.code, r.calls, r.output)
+		}
+		if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("rc %d: orbit-baseline.json left behind: %v", rc, err)
+		}
+	}
+}
+
 func TestGitLabAutoInMergeRequestDownloadsTheBaseline(t *testing.T) {
 	tmp := t.TempDir()
 	r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{
@@ -698,8 +724,10 @@ func TestAzureTemplateBaselineSteps(t *testing.T) {
 	if download["continueOnError"] != true {
 		t.Error("a missing baseline must not fail the build")
 	}
-	if c, _ := download["condition"].(string); !strings.Contains(c, "ne(variables['Build.SourceBranch'], '${{ parameters.baselineBranch }}')") {
-		t.Errorf("download condition = %q, want it skipped on the baseline branch", c)
+	// not(canceled()) like the scan steps, whose conditions have no status
+	// function: they run after a failed earlier step, so the download must too.
+	if c, _ := download["condition"].(string); c != "and(not(canceled()), ne(variables['Build.SourceBranch'], '${{ parameters.baselineBranch }}'))" {
+		t.Errorf("download condition = %q, want it skipped on the baseline branch and when canceled only", c)
 	}
 	pin := publish["inputs"].(map[string]any)
 	if pin["PathtoPublish"] != "$(ORBIT_REPORTS)/orbit-baseline.json" ||
@@ -755,6 +783,39 @@ func TestAzureContainerRecordingStillFailsOnErrors(t *testing.T) {
 	}
 }
 
+// A failed recording scan fails the build (exit 2) and publishes no
+// baseline, so the download keeps taking the previous good build's. A file
+// left from before is removed, not published.
+func azureRecordFailure(t *testing.T, script, tool string) {
+	t.Helper()
+	for _, rc := range []int{0, 1} {
+		tmp := t.TempDir()
+		stale := filepath.Join(tmp, "orbit-reports", "orbit-baseline.json")
+		if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(stale, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		r := runScript(t, "bash", script, tmp, azureEnv(tmp, map[string]string{
+			"ORBIT_BASELINE_BRANCH": "refs/heads/main", "BUILD_SOURCEBRANCH": "refs/heads/main",
+			"FAKE_RC": strconv.Itoa(rc), "FAKE_RECORD_RC": "2",
+		}))
+		if len(r.of(tool)) != 3 || !strings.Contains(r.output, "variable=ORBIT_EXIT]2") ||
+			!strings.Contains(r.output, "type=error]Orbit: could not write orbit-baseline.json") ||
+			strings.Contains(r.output, "ORBIT_HAS_BASELINE") {
+			t.Fatalf("rc %d: calls %+v; output:\n%s", rc, r.calls, r.output)
+		}
+		if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("rc %d: orbit-baseline.json left behind: %v", rc, err)
+		}
+	}
+}
+
+func TestAzureContainerRecordingFailsWhenTheBaselineScanFails(t *testing.T) {
+	azureRecordFailure(t, azureScanScript(t, "docker run"), "docker")
+}
+
 func TestAzureContainerComparesWithTheBaseline(t *testing.T) {
 	tmp := t.TempDir()
 	writeAzureBaseline(t, tmp)
@@ -778,7 +839,7 @@ func TestAzureContainerWarnsWithoutBaseline(t *testing.T) {
 	r := runScript(t, "bash", azureScanScript(t, "docker run"), tmp, azureEnv(tmp, map[string]string{
 		"ORBIT_BASELINE_BRANCH": "refs/heads/main", "FAKE_RC": "1",
 	}))
-	if !strings.Contains(r.output, "##vso[task.logissue type=warning]No Orbit baseline from refs/heads/main yet") ||
+	if !strings.Contains(r.output, "##vso[task.logissue type=warning]Orbit: no baseline was downloaded from refs/heads/main;") ||
 		!strings.Contains(r.output, "variable=ORBIT_EXIT]1") {
 		t.Fatalf("output:\n%s", r.output)
 	}
@@ -871,7 +932,7 @@ func TestAzureBinaryWarnsWithoutBaseline(t *testing.T) {
 		"ORBIT_BASELINE_BRANCH": "refs/heads/main", "FAKE_RC": "1",
 	}))
 	o := r.of("orbit")
-	if len(o) != 2 || !strings.Contains(r.output, "type=warning]No Orbit baseline from refs/heads/main yet") ||
+	if len(o) != 2 || !strings.Contains(r.output, "type=warning]Orbit: no baseline was downloaded from refs/heads/main;") ||
 		!strings.Contains(r.output, "variable=ORBIT_EXIT]1") {
 		t.Fatalf("calls %+v; output:\n%s", o, r.output)
 	}
@@ -901,6 +962,10 @@ func TestAzureBinaryRecordingStillFailsOnErrors(t *testing.T) {
 	if len(r.of("orbit")) != 1 || !strings.Contains(r.output, "variable=ORBIT_EXIT]2") {
 		t.Fatalf("calls %+v; output:\n%s", r.calls, r.output)
 	}
+}
+
+func TestAzureBinaryRecordingFailsWhenTheBaselineScanFails(t *testing.T) {
+	azureRecordFailure(t, azureBinaryScript(t), "orbit")
 }
 
 func TestAzureBinaryBaselineKeepsExploitFlags(t *testing.T) {

@@ -34,7 +34,10 @@
 #                 publish it as the build artifact "orbit-baseline". Every finding there is an
 #                 existing one, so exit 1 is reported as a warning and does not fail the build
 #                 (not even for a malicious package or a KEV entry): the download below skips
-#                 failed builds. Exit 2 still fails it. Other builds, pull requests included,
+#                 failed builds. Exit 2 still fails it, and so does a failed orbit-baseline.json
+#                 scan: nothing is published and the previous good build keeps serving its
+#                 baseline, while a passing build without it would leave pull requests with
+#                 none. Other builds, pull requests included,
 #                 download that artifact from the latest successful or partially succeeded build
 #                 of baselineBranch in this pipeline and pass it to --baseline: they fail only on
 #                 new findings and on malicious packages. With none yet the download step fails
@@ -84,7 +87,9 @@ steps:
   - ${{ if eq(parameters.baseline, true) }}:
       - task: DownloadBuildArtifacts@0
         displayName: Download Orbit baseline
-        condition: and(succeeded(), ne(variables['Build.SourceBranch'], '${{ parameters.baselineBranch }}'))
+        # not(canceled()), not succeeded(): the scan steps run after a failed earlier step
+        # too (their conditions have no status function), so the download does as well.
+        condition: and(not(canceled()), ne(variables['Build.SourceBranch'], '${{ parameters.baselineBranch }}'))
         continueOnError: true   # a first run has no baseline yet
         inputs:
           buildType: specific
@@ -120,7 +125,7 @@ steps:
             elif [ -f "$baseline_dir/orbit-baseline.json" ]; then
               baseline=/baseline/orbit-baseline.json
             else
-              echo "##vso[task.logissue type=warning]No Orbit baseline from $ORBIT_BASELINE_BRANCH yet;" \
+              echo "##vso[task.logissue type=warning]Orbit: no baseline was downloaded from $ORBIT_BASELINE_BRANCH;" \
                 "every finding counts."
             fi
           fi
@@ -142,11 +147,16 @@ steps:
             orbit_run --fail-on none ${baseline:+--baseline "$baseline"} \
               --format sarif --out /out/orbit.sarif --quiet \
               || echo "warning: could not write orbit.sarif" >&2
-            if [ "$record" = true ]; then
-              orbit_run --fail-on none --format json --out /out/orbit-baseline.json --quiet \
-                || echo "warning: could not write orbit-baseline.json" >&2
+            # A failed recording scan fails the build and publishes nothing, so the
+            # download keeps taking the previous good build's baseline.
+            if [ "$record" = true ] && ! orbit_run --fail-on none --format json --out /out/orbit-baseline.json --quiet; then
+              echo "##vso[task.logissue type=error]Orbit: could not write orbit-baseline.json;" \
+                "failing the build so the previous good build keeps serving its baseline."
+              rm -f "$reports/orbit-baseline.json"
+              rc=2
             fi
           fi
+          # Only exit 1 (findings) is turned into a warning; exit 2 from either scan stays.
           if [ "$record" = true ] && [ "$rc" -eq 1 ]; then
             echo "##vso[task.logissue type=warning]Orbit: $ORBIT_BASELINE_BRANCH records the baseline;" \
               "its findings are reported and do not fail the build."
@@ -231,7 +241,7 @@ steps:
             elif [ -f "$baseline_file" ]; then
               baseline="$baseline_file"
             else
-              echo "##vso[task.logissue type=warning]No Orbit baseline from $ORBIT_BASELINE_BRANCH yet;" \
+              echo "##vso[task.logissue type=warning]Orbit: no baseline was downloaded from $ORBIT_BASELINE_BRANCH;" \
                 "every finding counts."
             fi
           fi
@@ -249,11 +259,16 @@ steps:
             orbit_run --fail-on none ${baseline:+--baseline "$baseline"} \
               --format sarif --out "$reports/orbit.sarif" --quiet \
               || echo "warning: could not write orbit.sarif" >&2
-            if [ "$record" = true ]; then
-              orbit_run --fail-on none --format json --out "$reports/orbit-baseline.json" --quiet \
-                || echo "warning: could not write orbit-baseline.json" >&2
+            # A failed recording scan fails the build and publishes nothing, so the
+            # download keeps taking the previous good build's baseline.
+            if [ "$record" = true ] && ! orbit_run --fail-on none --format json --out "$reports/orbit-baseline.json" --quiet; then
+              echo "##vso[task.logissue type=error]Orbit: could not write orbit-baseline.json;" \
+                "failing the build so the previous good build keeps serving its baseline."
+              rm -f "$reports/orbit-baseline.json"
+              rc=2
             fi
           fi
+          # Only exit 1 (findings) is turned into a warning; exit 2 from either scan stays.
           if [ "$record" = true ] && [ "$rc" -eq 1 ]; then
             echo "##vso[task.logissue type=warning]Orbit: $ORBIT_BASELINE_BRANCH records the baseline;" \
               "its findings are reported and do not fail the build."
@@ -335,7 +350,7 @@ steps:
             } elseif (Test-Path -LiteralPath $baselineFile -PathType Leaf) {
               $baseArgs = @('--baseline', $baselineFile)
             } else {
-              Write-Host "##vso[task.logissue type=warning]No Orbit baseline from $($env:ORBIT_BASELINE_BRANCH) yet; every finding counts."
+              Write-Host "##vso[task.logissue type=warning]Orbit: no baseline was downloaded from $($env:ORBIT_BASELINE_BRANCH); every finding counts."
             }
           }
           & $exe scan --path $env:ORBIT_PATH --fail-on $env:ORBIT_FAIL_ON @ignoreArgs @exploitArgs @kevArgs @baseArgs --format junit --out (Join-Path $reports 'orbit-junit.xml')
@@ -344,11 +359,19 @@ steps:
             # No @kevArgs in the runs below: they only write reports.
             & $exe scan --path $env:ORBIT_PATH --fail-on none @ignoreArgs @exploitArgs @baseArgs --format sarif --out (Join-Path $reports 'orbit.sarif') --quiet
             if ($LASTEXITCODE -ne 0) { Write-Host 'warning: could not write orbit.sarif' }
+            # A failed recording scan fails the build and publishes nothing, so the
+            # download keeps taking the previous good build's baseline.
             if ($record) {
               & $exe scan --path $env:ORBIT_PATH --fail-on none @ignoreArgs @exploitArgs --format json --out (Join-Path $reports 'orbit-baseline.json') --quiet
-              if ($LASTEXITCODE -ne 0) { Write-Host 'warning: could not write orbit-baseline.json' }
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host ('##vso[task.logissue type=error]Orbit: could not write orbit-baseline.json; ' +
+                  'failing the build so the previous good build keeps serving its baseline.')
+                Remove-Item -LiteralPath (Join-Path $reports 'orbit-baseline.json') -Force -ErrorAction SilentlyContinue
+                $rc = 2
+              }
             }
           }
+          # Only exit 1 (findings) is turned into a warning; exit 2 from either scan stays.
           if ($record -and $rc -eq 1) {
             Write-Host ("##vso[task.logissue type=warning]Orbit: $($env:ORBIT_BASELINE_BRANCH) records the baseline; " +
               'its findings are reported and do not fail the build.')

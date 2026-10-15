@@ -43,12 +43,22 @@
 #     orbit-baseline.json, one more scan, and keeps it as an artifact. Every finding there is
 #     an existing one, so exit 1 is reported as a warning but does not fail the job (not even
 #     for a malicious package or a KEV entry): GitLab hands out artifacts only from the
-#     latest successful pipeline of a branch. Exit 2 still fails it.
+#     latest successful pipeline of a branch. Exit 2 still fails it, and so does a failed
+#     orbit-baseline.json scan: a passing job without the file would become the latest
+#     successful pipeline and leave merge requests without a baseline, while a failed job
+#     leaves the previous pipeline's baseline in place.
 #   - Everywhere else the job downloads orbit-baseline.json of the latest successful pipeline
 #     of the merge request's target branch (the default branch otherwise) through the job
 #     artifacts API with CI_JOB_TOKEN, and passes it to --baseline. This works on every tier;
 #     needs:project is not used. With no baseline yet (a first run, or a target branch that
 #     never recorded one) it warns and every finding counts.
+#   - The API looks only at the latest successful pipeline of that branch. If that pipeline
+#     did not run the orbit job (rules skipped it, or it ran other jobs only), the download
+#     gets a 404, and the job warns as above.
+#   - GitLab may answer the download with a redirect to object storage or a CDN. busybox
+#     wget follows it and sends the JOB-TOKEN header there as well. The token is scoped to
+#     this job and expires with it. On self-managed GitLab use an https CI_API_V4_URL and,
+#     with object storage, proxy_download so artifacts are served by GitLab itself.
 #   - GitLab keeps the artifacts of each branch's latest successful pipeline regardless of
 #     expire_in ("Keep artifacts from most recent successful jobs", on by default).
 #   - Merge request pipelines that run in a fork download from the fork's own pipelines.
@@ -56,6 +66,9 @@
 #     the last merge are part of the baseline.
 # Any other ORBIT_BASELINE value is a path to a report you provide; it is passed to
 # --baseline as is, and a missing file is an error (exit 2).
+# Every job that does not record (the default mode, merge requests) logs
+# "orbit-baseline.json: no matching files" when it uploads artifacts. That is expected:
+# the path is listed for the recording job.
 
 variables:
   ORBIT_VERSION: latest   # pin to a release tag such as v1.0.0
@@ -129,13 +142,19 @@ variables:
           ${baseline:+--baseline "$baseline"} \
           --format sarif --out orbit.sarif --quiet \
           || echo "warning: could not write orbit.sarif" >&2
-        if [ "$record" = true ]; then
-          orbit scan --path "$path" --fail-on none $exploit_flag \
+        # A failed recording scan fails the job: a passing job without the file would
+        # become the latest successful pipeline, and merge requests would find no
+        # baseline. A failed one leaves the previous pipeline's baseline in place.
+        if [ "$record" = true ] && ! orbit scan --path "$path" --fail-on none $exploit_flag \
             ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_IGNORE_FILE"} \
-            --format json --out orbit-baseline.json --quiet \
-            || echo "warning: could not write orbit-baseline.json" >&2
+            --format json --out orbit-baseline.json --quiet; then
+          echo "error: could not write orbit-baseline.json; failing the job so the previous" \
+            "successful pipeline keeps serving its baseline" >&2
+          rm -f orbit-baseline.json
+          rc=2
         fi
       fi
+      # Only exit 1 (findings) is turned into a warning; exit 2 from either scan stays.
       if [ "$record" = true ] && [ "$rc" -eq 1 ]; then
         echo "warning: Orbit findings are reported in orbit-junit.xml but do not fail the job:" \
           "$CI_DEFAULT_BRANCH records the baseline" >&2
@@ -144,7 +163,8 @@ variables:
       # Keep the first run's exit code: 0 clean, 1 findings at or above the threshold, a
       # malicious package (unless the threshold is none), or in KEV with ORBIT_FAIL_ON_KEV
       # (with a baseline only new findings count, malicious packages always do), 2 error.
-      # The default branch in baseline mode turns 1 into 0, see above.
+      # The default branch in baseline mode turns 1 into 0 and a failed recording scan
+      # into 2, see above.
       exit "$rc"
   artifacts:
     when: always
