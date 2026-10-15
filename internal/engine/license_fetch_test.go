@@ -134,6 +134,9 @@ func TestAnalyzeWarnsAboutOneFailedLicenseLookupInSingular(t *testing.T) {
 	if !slices.Contains(res.Warnings, "license lookup failed for 1 package: deps.dev unreachable") {
 		t.Fatalf("Warnings = %q", res.Warnings)
 	}
+	if res.LicenseLookupErr == nil || res.LicenseLookupErr.Error() != "deps.dev unreachable" {
+		t.Fatalf("LicenseLookupErr = %v, want the first failure", res.LicenseLookupErr)
+	}
 }
 
 // blockingLicenses holds every lookup until the test sends on release, and

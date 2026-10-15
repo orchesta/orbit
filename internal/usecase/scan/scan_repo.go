@@ -191,6 +191,14 @@ func (uc *UseCase) Run(ctx context.Context, scan *entity.ScanResult) error {
 		}
 	}
 
+	// Licenses are advisory too: a failed deps.dev lookup leaves those
+	// licenses unknown, and only the log says so.
+	if res.LicenseLookupFailed > 0 {
+		uc.logger.Warn("license lookup on deps.dev failed; the scan is saved with those licenses unknown",
+			slog.String("repo", repo.Name), slog.Int("failed", res.LicenseLookupFailed),
+			slog.Any("error", res.LicenseLookupErr))
+	}
+
 	for _, dep := range res.Dependencies {
 		dep.RepositoryID = scan.RepositoryID
 		dep.ScanResultID = scan.ID

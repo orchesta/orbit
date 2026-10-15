@@ -4,6 +4,7 @@ import "testing"
 
 func TestLoadScannerLicensesIsOffByDefault(t *testing.T) {
 	setRequiredEnv(t)
+	t.Setenv("ORBIT_SCANNER_LICENSES", "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)

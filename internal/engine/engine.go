@@ -137,6 +137,9 @@ type Result struct {
 	// (see Options.Licenses); their License stays "". A warning names the
 	// first error.
 	LicenseLookupFailed int
+	// LicenseLookupErr is the first failed license lookup's error; nil when
+	// LicenseLookupFailed is 0.
+	LicenseLookupErr error
 }
 
 // ErrVulnerabilityCheck marks a failed advisory lookup: the error Analyze
@@ -483,6 +486,7 @@ func (e *Engine) fetchLicenses(ctx context.Context, res *Result) {
 	e.logger.Info("looked up licenses", slog.Int("versions", len(keys)), slog.Int("failed", failed))
 	if failed > 0 {
 		res.LicenseLookupFailed = failed
+		res.LicenseLookupErr = firstErr
 		noun := "packages"
 		if failed == 1 {
 			noun = "package"

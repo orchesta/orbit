@@ -788,3 +788,55 @@ func TestRunCompletesAndWarnsWhenExploitDataFails(t *testing.T) {
 		t.Fatalf("logs lack the warning:\n%s", out)
 	}
 }
+
+// failingLicenses fails every license lookup, as deps.dev does when it is
+// unreachable.
+type failingLicenses struct{}
+
+func (failingLicenses) License(context.Context, entity.Ecosystem, string, string) (string, error) {
+	return "", errors.New("api.deps.dev: HTTP 503")
+}
+
+func TestRunCompletesAndWarnsWhenLicenseLookupsFail(t *testing.T) {
+	scans, deps := &fakeScanRepo{}, &fakeDepRepo{}
+	var logs bytes.Buffer
+	registry := analyzer.NewRegistry()
+	registry.Register(lockAnalyzer{})
+	provider := fakeProvider{clone: func(_ context.Context, opts git.CloneOptions) error {
+		if err := os.MkdirAll(opts.DestPath, 0o755); err != nil {
+			return err
+		}
+		for _, name := range []string{"package.json", "package-lock.json"} {
+			if err := os.WriteFile(filepath.Join(opts.DestPath, name), []byte("{}"), 0o644); err != nil {
+				return err
+			}
+		}
+		return nil
+	}}
+	eng := engine.New(registry, fakeLookup{}, engine.Options{Logger: discardLogger(), Licenses: failingLicenses{}})
+	uc := NewUseCase(&fakeRepoRepo{}, scans, deps, nil, eng,
+		func(entity.GitProvider) (git.Cloner, error) { return provider, nil },
+		nil, Options{WorkDir: t.TempDir()}, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err := uc.Run(context.Background(), claimedScan()); err != nil {
+		t.Fatal(err)
+	}
+	if scans.last.Status != entity.ScanStatusCompleted || len(deps.saved) != 2 {
+		t.Fatalf("scan %s with %d dependencies; want completed with 2", scans.last.Status, len(deps.saved))
+	}
+	for _, d := range deps.saved {
+		if d.License != "" {
+			t.Fatalf("%s license = %q, want unknown", d.Name, d.License)
+		}
+	}
+	var warning string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "level=WARN") && strings.Contains(line, "license lookup on deps.dev failed") {
+			warning = line
+		}
+	}
+	for _, want := range []string{"repo=app", "failed=2", "api.deps.dev: HTTP 503"} {
+		if !strings.Contains(warning, want) {
+			t.Fatalf("license warning %q lacks %q; logs:\n%s", warning, want, logs.String())
+		}
+	}
+}
