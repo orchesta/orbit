@@ -1,0 +1,21 @@
+# pinned output of pip-compile
+requests==2.31.0 \
+    --hash=sha256:aaa \
+    --hash=sha256:bbb
+Django==4.2.1  # inline comment
+Flask_Cors == 4.0.0
+numpy>=1.24,<2.0
+pandas~=2.0.1
+scipy===1.11.0
+six<2
+attrs!=22.1.0
+wildcard==1.*
+multi==1.0,!=1.0.1
+click	# note
+typing_extensions[extra]==4.8.0 ; python_version < "3.12"
+mylib @ https://example.com/mylib-1.0.tar.gz
+legacy (>=1.5)
+tabbed==2.0	# tab comment
+-r base.txt
+-e .
+https://example.com/x.tar.gz

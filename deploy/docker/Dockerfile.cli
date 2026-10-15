@@ -1,0 +1,38 @@
+# Orbit CLI image: `orbit scan` only, no server, no database.
+#
+#   docker run --rm -v "$PWD":/src:ro ghcr.io/aligoren/orbit-cli
+#
+# The CLI only reads the scanned tree, so a read-only mount owned by any uid works.
+# Writing a report with --out needs a writable directory; pass --user "$(id -u):$(id -g)"
+# or mount a separate writable directory.
+
+# Build on the host platform and cross-compile, the compile step needs no emulation.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
+
+ARG VERSION=dev
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath \
+    -ldflags "-s -w -X github.com/aligoren/orbit/internal/buildinfo.Version=${VERSION}" \
+    -o /orbit ./cmd/orbit
+
+FROM alpine:3.24
+
+# ca-certificates: TLS to api.osv.dev. No git: the CLI scans a local path.
+RUN apk add --no-cache ca-certificates \
+    && adduser -D -u 10001 -g '' orbit
+
+COPY --from=builder /orbit /usr/local/bin/orbit
+
+USER 10001
+WORKDIR /src
+
+ENTRYPOINT ["/usr/local/bin/orbit"]
+CMD ["scan", "--path", "/src"]

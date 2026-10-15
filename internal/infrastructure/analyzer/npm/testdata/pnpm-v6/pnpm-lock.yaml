@@ -1,0 +1,45 @@
+lockfileVersion: '6.0'
+
+settings:
+  autoInstallPeers: true
+
+dependencies:
+  '@scope/lib':
+    specifier: ^2.0.0
+    version: 2.1.0
+  express:
+    specifier: ^4.18.0
+    version: 4.18.2
+
+devDependencies:
+  jest:
+    specifier: ^29.0.0
+    version: 29.7.0(@types/node@20.0.0)
+
+packages:
+
+  /@scope/lib@2.1.0:
+    resolution: {integrity: sha512-aaa}
+    dev: false
+
+  /express@4.18.2:
+    resolution: {integrity: sha512-bbb}
+    dev: false
+
+  /jest@29.7.0(@types/node@20.0.0):
+    resolution: {integrity: sha512-ccc}
+    dev: true
+
+  /ms@2.0.0:
+    resolution: {integrity: sha512-ddd}
+    dev: false
+
+  /@types/node@20.0.0:
+    resolution: {integrity: sha512-eee}
+    dev: true
+
+  github.com/user/from-git/abc123:
+    resolution: {tarball: https://codeload.github.com/user/from-git/tar.gz/abc123}
+    name: from-git
+    version: 1.0.0
+    dev: false

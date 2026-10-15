@@ -1,0 +1,12 @@
+{
+    "_meta": {"hash": {"sha256": "x"}, "requires": {"python_version": "3.11"}},
+    "default": {
+        "requests": {"hashes": ["sha256:1"], "index": "pypi", "version": "==2.31.0"},
+        "Flask_Cors": {"version": "==4.0.0"},
+        "anyver": {"version": "*"},
+        "gitdep": {"git": "https://example.com/x.git", "ref": "abc"}
+    },
+    "develop": {
+        "pytest": {"version": "==7.4.0"}
+    }
+}

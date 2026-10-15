@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "ruleId": "GHSA-crit-0003",
+          "level": "error",
+          "message": {
+            "text": "lodash@4.17.15 is affected by GHSA-crit-0003 (no fix available)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "package-lock.json"
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "orbit/v1": "706b38fbab13f9b55b716bb0ec21e4c7b0bff2f34dc8a53d886470048226c490"
+          }
+        },
+        {
+          "ruleId": "GHSA-esc-0005",
+          "level": "error",
+          "message": {
+            "text": "express@4.18.2 is affected by GHSA-esc-0005 (no fix available)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "package-lock.json"
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "orbit/v1": "c2ee33edf8bc902bd49b417cd508a6bfdf4e745eb4ba0572c3a77f687495e20a"
+          }
+        },
+        {
+          "ruleId": "GHSA-high-0002",
+          "level": "error",
+          "message": {
+            "text": "django@3.0.0 is affected by GHSA-high-0002 (fixed in 3.0.7)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "requirements.txt"
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "orbit/v1": "6bbc4efdb351bb5b070cc36176fe864245a3aeb70b7d3f876fb009410efddfc6"
+          }
+        },
+        {
+          "ruleId": "GHSA-medium-0001",
+          "level": "warning",
+          "message": {
+            "text": "lodash@4.17.15 is affected by GHSA-medium-0001 (fixed in 4.17.21)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "package-lock.json"
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "orbit/v1": "ddf4bc2de084b3cc7d4645259cd6f8a2099d553908f8ffc8c0fb913e4755cb92"
+          }
+        },
+        {
+          "ruleId": "GHSA-low-0004",
+          "level": "note",
+          "message": {
+            "text": "django@3.0.0 is affected by GHSA-low-0004 (fixed in 3.0.8)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "requirements.txt"
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "orbit/v1": "90c30ba0eae05f9ff661d0b8617ffaad62dacb2ba788ccab0d60caa4d4d0646e"
+          },
+          "suppressions": [
+            {
+              "kind": "external",
+              "justification": "accepted risk"
+            }
+          ]
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://example.com/orbit",
+          "name": "orbit",
+          "rules": [
+            {
+              "id": "GHSA-crit-0003",
+              "shortDescription": {
+                "text": "Remote code execution"
+              },
+              "properties": {
+                "security-severity": "9.5"
+              }
+            },
+            {
+              "id": "GHSA-esc-0005",
+              "shortDescription": {
+                "text": "a \u0026 b \u003c c \u003e d \" e\nline2"
+              },
+              "properties": {
+                "security-severity": "7.5"
+              }
+            },
+            {
+              "id": "GHSA-high-0002",
+              "shortDescription": {
+                "text": "SQL injection"
+              },
+              "helpUri": "https://example.com/h2",
+              "properties": {
+                "security-severity": "7.5"
+              }
+            },
+            {
+              "id": "GHSA-medium-0001",
+              "shortDescription": {
+                "text": "Prototype pollution"
+              },
+              "helpUri": "https://example.com/m1",
+              "properties": {
+                "security-severity": "5.0"
+              }
+            },
+            {
+              "id": "GHSA-low-0004",
+              "shortDescription": {
+                "text": "Info leak"
+              },
+              "helpUri": "https://example.com/l4",
+              "properties": {
+                "security-severity": "2.0"
+              }
+            }
+          ],
+          "version": "1.2.3"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

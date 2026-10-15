@@ -1,0 +1,8 @@
+[project]
+name = "demo"
+version = "1.0"
+
+[dependency-groups]
+dev = ["pytest>=7.4", {include-group = "docs"}]
+docs = ["sphinx==7.0"]
+runtime = ["Attrs>=23.1", "mylib @ https://example.com/mylib.tar.gz"]

@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "tool": {
+    "name": "orbit",
+    "version": "1.2.3",
+    "information_uri": "https://example.com/orbit"
+  },
+  "summary": {
+    "dependencies": 3,
+    "vulnerable": 3,
+    "by_severity": {
+      "critical": 1,
+      "high": 2,
+      "low": 0,
+      "medium": 1,
+      "unknown": 0
+    },
+    "threshold": "high",
+    "failed": true,
+    "warnings": [
+      "go.mod: unresolved version",
+      "ignore entry GHSA-high-0002 expired on 2026-10-15"
+    ]
+  },
+  "dependencies": [
+    {
+      "name": "express",
+      "version": "4.18.2",
+      "ecosystem": "npm",
+      "manifest": "package-lock.json",
+      "direct": false,
+      "dev": true,
+      "resolved": true
+    },
+    {
+      "name": "lodash",
+      "version": "4.17.15",
+      "ecosystem": "npm",
+      "manifest": "package-lock.json",
+      "direct": true,
+      "dev": false,
+      "resolved": true
+    },
+    {
+      "name": "django",
+      "version": "3.0.0",
+      "ecosystem": "PyPI",
+      "manifest": "requirements.txt",
+      "direct": true,
+      "dev": false,
+      "resolved": true
+    }
+  ],
+  "findings": [
+    {
+      "id": "GHSA-crit-0003",
+      "aliases": [],
+      "severity": "critical",
+      "summary": "Remote code execution",
+      "package": "lodash",
+      "version": "4.17.15",
+      "ecosystem": "npm",
+      "manifest": "package-lock.json",
+      "fixed_version": null,
+      "references": [],
+      "ignored": false,
+      "ignore_reason": ""
+    },
+    {
+      "id": "GHSA-esc-0005",
+      "aliases": [],
+      "severity": "high",
+      "summary": "a \u0026 b \u003c c \u003e d \" e\nline2",
+      "package": "express",
+      "version": "4.18.2",
+      "ecosystem": "npm",
+      "manifest": "package-lock.json",
+      "fixed_version": null,
+      "references": [],
+      "ignored": false,
+      "ignore_reason": ""
+    },
+    {
+      "id": "GHSA-high-0002",
+      "aliases": [
+        "CVE-2020-0002"
+      ],
+      "severity": "high",
+      "summary": "SQL injection",
+      "package": "django",
+      "version": "3.0.0",
+      "ecosystem": "PyPI",
+      "manifest": "requirements.txt",
+      "fixed_version": "3.0.7",
+      "references": [
+        "https://example.com/h2"
+      ],
+      "ignored": false,
+      "ignore_reason": ""
+    },
+    {
+      "id": "GHSA-medium-0001",
+      "aliases": [
+        "CVE-2020-0001"
+      ],
+      "severity": "medium",
+      "summary": "Prototype pollution",
+      "package": "lodash",
+      "version": "4.17.15",
+      "ecosystem": "npm",
+      "manifest": "package-lock.json",
+      "fixed_version": "4.17.21",
+      "references": [
+        "https://example.com/m1"
+      ],
+      "ignored": false,
+      "ignore_reason": ""
+    },
+    {
+      "id": "GHSA-low-0004",
+      "aliases": [],
+      "severity": "low",
+      "summary": "Info leak",
+      "package": "django",
+      "version": "3.0.0",
+      "ecosystem": "PyPI",
+      "manifest": "requirements.txt",
+      "fixed_version": "3.0.8",
+      "references": [
+        "https://example.com/l4"
+      ],
+      "ignored": true,
+      "ignore_reason": "accepted risk"
+    }
+  ]
+}

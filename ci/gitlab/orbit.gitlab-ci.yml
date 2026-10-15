@@ -1,0 +1,77 @@
+# Orbit dependency scan for GitLab CI.
+#
+# Use it from your .gitlab-ci.yml:
+#
+#   include:
+#     - remote: 'https://raw.githubusercontent.com/aligoren/orbit/v1.0.0/ci/gitlab/orbit.gitlab-ci.yml'
+#
+#   variables:
+#     ORBIT_VERSION: v1.0.0   # image tag; pin it, the template default is latest
+#     ORBIT_FAIL_ON: high     # optional: critical|high|medium|low|unknown|none
+#     ORBIT_IGNORE_FILE: ""   # optional: empty = <path>/.orbitignore when present
+#     ORBIT_PATH: ""          # optional: directory to scan, default $CI_PROJECT_DIR
+#
+# Variables you set in your own .gitlab-ci.yml (top level or on the job) override the
+# template, because the template only declares ORBIT_VERSION at its top level (needed for
+# the image tag) and applies every other default inside the script with ${VAR:-default}.
+# Do not copy defaults into a job-level `variables:` of your own unless you mean to
+# override them.
+#
+# Or extend the hidden job to customise it:
+#
+#   orbit-scan:
+#     extends: .orbit-scan
+#     variables:
+#       ORBIT_FAIL_ON: critical
+#
+# Two reports are written, one scan each:
+#   orbit-junit.xml  shown in the merge request test report, run with ORBIT_FAIL_ON
+#   orbit.sarif      kept as a job artifact, run with --fail-on none
+# Why two runs and not "JSON once, convert with jq": the CLI image (alpine based) has no
+# jq, and installing it at job time would add another network dependency. A second run is
+# one extra osv.dev round trip.
+# Only the first run decides the job result, so the job fails at most once.
+
+variables:
+  ORBIT_VERSION: latest   # pin to a release tag such as v1.0.0
+
+.orbit-scan:
+  image:
+    name: ghcr.io/aligoren/orbit-cli:$ORBIT_VERSION
+    entrypoint: [""]
+    # The image runs as uid 10001, which cannot write to the checkout GitLab creates
+    # as root. Run as root inside the throwaway container so reports can be written.
+    # image:docker:user works with the Docker and Kubernetes executors and needs a
+    # recent GitLab (and Runner). If yours is too old, use a derived image with
+    # `USER root` instead.
+    docker:
+      user: "0"
+  script:
+    - |
+      path="${ORBIT_PATH:-$CI_PROJECT_DIR}"
+      fail_on="${ORBIT_FAIL_ON:-high}"
+      rc=0
+      orbit scan --path "$path" --fail-on "$fail_on" \
+        ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_IGNORE_FILE"} \
+        --format junit --out orbit-junit.xml || rc=$?
+      # Exit 2 is an error (osv.dev unreachable, timeout, bad flag): no report was written
+      # and a second run would most likely fail the same way.
+      if [ "$rc" -ne 2 ]; then
+        orbit scan --path "$path" --fail-on none \
+          ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_IGNORE_FILE"} \
+          --format sarif --out orbit.sarif --quiet \
+          || echo "warning: could not write orbit.sarif" >&2
+      fi
+      # Keep the first run's exit code: 0 clean, 1 findings at or above the threshold, 2 error.
+      exit "$rc"
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - orbit.sarif
+    reports:
+      junit: orbit-junit.xml
+
+orbit-scan:
+  extends: .orbit-scan
+  stage: test

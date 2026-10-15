@@ -1,0 +1,1 @@
+{ "name": "demo", "private": true, "dependencies": { "@mono/shared": "^1.0.0" } }

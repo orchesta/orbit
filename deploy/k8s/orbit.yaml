@@ -1,0 +1,153 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orbit
+  labels:
+    app: orbit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orbit
+  template:
+    metadata:
+      labels:
+        app: orbit
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: orbit
+          image: orbit:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ORBIT_DATABASE_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: orbit-config
+                  key: database-host
+            - name: ORBIT_DATABASE_PORT
+              value: "5432"
+            - name: ORBIT_DATABASE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: orbit-secrets
+                  key: database-user
+            - name: ORBIT_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: orbit-secrets
+                  key: database-password
+            - name: ORBIT_DATABASE_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: orbit-config
+                  key: database-name
+            - name: ORBIT_DATABASE_SSL_MODE
+              value: "require"
+            - name: ORBIT_SERVER_HOST
+              value: "0.0.0.0"
+            - name: ORBIT_SERVER_PORT
+              value: "8080"
+            - name: ORBIT_SCANNER_WORK_DIR
+              value: "/tmp/orbit-scans"
+            - name: ORBIT_LOG_LEVEL
+              value: "info"
+            - name: ORBIT_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: orbit-secrets
+                  key: jwt-secret
+            - name: ORBIT_CRYPTO_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: orbit-secrets
+                  key: encryption-key
+            # Recommended before first setup: require this token in the first-run
+            # setup form so nobody else can create the first admin. Add a
+            # setup-token key to orbit-secrets (openssl rand -hex 32).
+            - name: ORBIT_SETUP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: orbit-secrets
+                  key: setup-token
+                  optional: true
+            # Optional: behind an ingress or reverse proxy, use X-Forwarded-For
+            # as the client IP for login rate limiting.
+            # - name: ORBIT_SERVER_TRUST_PROXY_HEADERS
+            #   value: "true"
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orbit
+  labels:
+    app: orbit
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+  selector:
+    app: orbit
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orbit-config
+data:
+  database-host: "postgres-service"
+  database-name: "orbit_db"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: orbit-secrets
+type: Opaque
+stringData:
+  database-user: "orbit"
+  database-password: "change-me-in-production"
+  # Required, >= 32 chars. Orbit refuses to start while this is empty.
+  # Generate with: openssl rand -hex 32
+  jwt-secret: ""
+  # Required, 64 hex chars. Encrypts stored access tokens; back it up — losing
+  # it makes stored tokens unrecoverable. Generate with: openssl rand -hex 32
+  encryption-key: ""

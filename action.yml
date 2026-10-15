@@ -1,0 +1,97 @@
+name: Orbit dependency scan
+description: Scan a repository for vulnerable Go, npm, Python and NuGet dependencies with the Orbit CLI. No server or database needed.
+author: aligoren
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  path:
+    description: Directory to scan, relative to the workspace.
+    required: false
+    default: "."
+  fail-on:
+    description: Fail (exit 1) on a finding at or above this severity - critical, high, medium, low, unknown or none.
+    required: false
+    default: high
+  format:
+    description: Report format - table, json, sarif or junit.
+    required: false
+    default: sarif
+  output:
+    description: >-
+      Report file, relative to the workspace. Use "-" to print the report to the log.
+      Empty picks a name from format - orbit.sarif, orbit.json, orbit.xml (junit) or
+      orbit.txt (table).
+    required: false
+    default: ""
+  ignore-file:
+    description: Ignore file, relative to the workspace. Empty uses <path>/.orbitignore when it exists.
+    required: false
+    default: ""
+  version:
+    description: >-
+      Tag of the ghcr.io/aligoren/orbit-cli image, for example v1.2.3. Empty uses
+      the ref the action was used with when it is a full release tag (vMAJOR.MINOR.PATCH,
+      prerelease suffix allowed), otherwise "latest" with a warning. Major-version
+      refs such as @v1 have no matching image tag, so pin this input.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Run Orbit scan
+      shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_OUTPUT: ${{ inputs.output }}
+        INPUT_IGNORE_FILE: ${{ inputs.ignore-file }}
+        INPUT_VERSION: ${{ inputs.version }}
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        set -euo pipefail
+
+        version="${INPUT_VERSION:-}"
+        if [ -z "$version" ]; then
+          if [[ "${ACTION_REF:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            version="$ACTION_REF"
+          else
+            version=latest
+            echo "::warning::Orbit: no release tag to derive the image from (action ref '${ACTION_REF:-}'); using 'latest'. Set the 'version' input to pin it."
+          fi
+        fi
+
+        case "$INPUT_PATH" in
+          /*) echo "::error::Orbit: 'path' must be relative to the workspace, got '$INPUT_PATH'"; exit 2 ;;
+        esac
+
+        output="${INPUT_OUTPUT:-}"
+        if [ -z "$output" ]; then
+          case "$INPUT_FORMAT" in
+            json) output=orbit.json ;;
+            junit) output=orbit.xml ;;
+            table) output=orbit.txt ;;
+            *) output=orbit.sarif ;;
+          esac
+        fi
+
+        # The container sees the workspace as /src. Paths stay workspace-relative.
+        args=(scan --path "/src/${INPUT_PATH}" --fail-on "$INPUT_FAIL_ON" --format "$INPUT_FORMAT")
+        if [ "$output" != "-" ]; then
+          args+=(--out "/src/${output}")
+        fi
+        if [ -n "$INPUT_IGNORE_FILE" ]; then
+          args+=(--ignore-file "/src/${INPUT_IGNORE_FILE}")
+        fi
+
+        # Exit 0 = clean, 1 = finding at or above fail-on, 2 = error (no report is left behind).
+        # A non-zero exit fails this step; use `if: always()` on a later upload step.
+        exec docker run --rm \
+          --user "$(id -u):$(id -g)" \
+          -v "$GITHUB_WORKSPACE":/src \
+          -w /src \
+          "ghcr.io/aligoren/orbit-cli:${version}" \
+          "${args[@]}"

@@ -1,0 +1,33 @@
+# Orbit configuration
+# Can also be set via environment variables with ORBIT_ prefix
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  shutdown_timeout: 25
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "orbit"
+  password: "orbit_secret"
+  name: "orbit_db"
+  ssl_mode: "disable"
+
+auth:
+  jwt_secret: "" # Required (>= 32 chars). Set via ORBIT_JWT_SECRET env var
+
+crypto:
+  encryption_key: "" # Required (64 hex chars). Set via ORBIT_CRYPTO_ENCRYPTION_KEY env var
+
+log:
+  level: "info"   # debug, info, warn, error
+  format: "json"  # json or text
+
+scanner:
+  work_dir: "/tmp/orbit-repos"
+  clone_timeout: 120
+  default_schedule: "0 */6 * * *"
+  max_concurrent_scans: 3
+  scan_timeout: 900
+  retain_scans: 10

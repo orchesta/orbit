@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "runs": [
+    {
+      "originalUriBaseIds": {
+        "ORBITROOT": {
+          "uri": "file:///work/my%20repo/"
+        }
+      },
+      "results": [
+        {
+          "ruleId": "GHSA-1",
+          "level": "error",
+          "message": {
+            "text": "lodash@4.17.15 is affected by GHSA-1 (no fix available)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "my%20app/a%3Ab/100%25/package-lock.json",
+                  "uriBaseId": "ORBITROOT"
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "orbit/v1": "053bd491e4893ef465e362fba843d06d77b698757d0be76821949a2ae2c7d33c"
+          }
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://example.com/orbit",
+          "name": "orbit",
+          "rules": [
+            {
+              "id": "GHSA-1",
+              "shortDescription": {
+                "text": "s"
+              },
+              "properties": {
+                "security-severity": "7.5"
+              }
+            }
+          ],
+          "version": "1.2.3"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

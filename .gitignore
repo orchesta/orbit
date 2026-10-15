@@ -1,0 +1,29 @@
+# Binaries
+bin/
+*.exe
+
+# Test
+coverage.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+._*
+Thumbs.db
+
+# Environment
+.env
+*.env.local
+
+# Temporary
+/tmp/
+orbit-repos/
+
+# Config with secrets
+orbit.local.yaml
+/deploy/docker/backups/

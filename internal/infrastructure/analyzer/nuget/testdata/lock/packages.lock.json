@@ -1,0 +1,47 @@
+{
+  "version": 2,
+  "dependencies": {
+    "net6.0": {
+      "Newtonsoft.Json": {
+        "type": "Direct",
+        "requested": "[13.0.3, )",
+        "resolved": "13.0.3",
+        "contentHash": "HrC5BXdl00IP9zeV+0Z848QWPAoCr9P3bDEZguI+gkLcBKAOxix/tLEAAHC+UvDNPv4a2d18lOReHMOLF1/KXw=="
+      },
+      "Serilog": {
+        "type": "Transitive",
+        "resolved": "3.1.1",
+        "contentHash": "x7NsDe5SAMsrdc47G0kkc2lgJn1vBQSr4pPdFxw2lSqn6UJe0e5gK44Cr0Z9XeV9Q8vB0aFwRcOv0Q0O7g8yA==",
+        "dependencies": { "System.Memory": "4.5.5" }
+      },
+      "System.Memory": {
+        "type": "CentralTransitive",
+        "requested": "[4.5.5, )",
+        "resolved": "4.5.5",
+        "contentHash": "XIWiDvKPXaTveaB7HVgXRtvRedqi4VhM7P6Tz6IFB+0pT0lzQtFm7XJbJW9CDOhnpRb3d0uHU8Uc6E4zWqZNQ=="
+      },
+      "Orbit.Shared": {
+        "type": "Project",
+        "dependencies": { "Newtonsoft.Json": "[13.0.3, )" }
+      }
+    },
+    "net8.0": {
+      "newtonsoft.json": {
+        "type": "Direct",
+        "requested": "[13.0.3, )",
+        "resolved": "13.0.3",
+        "contentHash": "HrC5BXdl00IP9zeV+0Z848QWPAoCr9P3bDEZguI+gkLcBKAOxix/tLEAAHC+UvDNPv4a2d18lOReHMOLF1/KXw=="
+      },
+      "Serilog": {
+        "type": "Transitive",
+        "resolved": "3.1.1",
+        "contentHash": "x7NsDe5SAMsrdc47G0kkc2lgJn1vBQSr4pPdFxw2lSqn6UJe0e5gK44Cr0Z9XeV9Q8vB0aFwRcOv0Q0O7g8yA=="
+      },
+      "System.Memory": {
+        "type": "Transitive",
+        "resolved": "4.5.6",
+        "contentHash": "abc"
+      }
+    }
+  }
+}

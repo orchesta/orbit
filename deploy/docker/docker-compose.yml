@@ -1,0 +1,69 @@
+services:
+  orbit:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      ORBIT_DATABASE_HOST: postgres
+      ORBIT_DATABASE_PORT: 5432
+      ORBIT_DATABASE_USER: orbit
+      ORBIT_DATABASE_PASSWORD: ${ORBIT_DATABASE_PASSWORD:-orbit_secret}
+      ORBIT_DATABASE_NAME: orbit_db
+      ORBIT_DATABASE_SSL_MODE: disable
+      ORBIT_SERVER_HOST: 0.0.0.0
+      ORBIT_SERVER_PORT: 8080
+      ORBIT_SCANNER_WORK_DIR: /tmp/orbit-scans
+      ORBIT_LOG_LEVEL: info
+      ORBIT_JWT_SECRET: ${ORBIT_JWT_SECRET:?ORBIT_JWT_SECRET is required - run.sh generates one in deploy/docker/.env}
+      ORBIT_CRYPTO_ENCRYPTION_KEY: ${ORBIT_CRYPTO_ENCRYPTION_KEY:?ORBIT_CRYPTO_ENCRYPTION_KEY is required - run.sh generates one in deploy/docker/.env}
+      ORBIT_SETUP_TOKEN: ${ORBIT_SETUP_TOKEN:?ORBIT_SETUP_TOKEN is required - run.sh generates one in deploy/docker/.env}
+      # Optional; set them in deploy/docker/.env. Empty values are ignored.
+      ORBIT_SERVER_TRUST_PROXY_HEADERS: ${ORBIT_SERVER_TRUST_PROXY_HEADERS:-false}
+      ORBIT_SERVER_CORS_ALLOWED_ORIGINS: ${ORBIT_SERVER_CORS_ALLOWED_ORIGINS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=${ORBIT_TMP_SIZE:-1g},mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    # Longer than ORBIT_SERVER_SHUTDOWN_TIMEOUT (25s) so running scans can be
+    # handed back to the queue before the container is killed.
+    stop_grace_period: 40s
+    networks:
+      - orbit-net
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: orbit
+      POSTGRES_PASSWORD: ${ORBIT_DATABASE_PASSWORD:-orbit_secret}
+      POSTGRES_DB: orbit_db
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # PostgreSQL 18 keeps its cluster in a versioned subdirectory, so it gets its own
+      # volume. The PostgreSQL 16 volume (orbit-data) is never mounted here; see
+      # deploy/docker/upgrade-postgres.sh to migrate it.
+      - orbit-pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orbit -d orbit_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - orbit-net
+
+volumes:
+  orbit-pgdata:
+
+networks:
+  orbit-net:
+    driver: bridge

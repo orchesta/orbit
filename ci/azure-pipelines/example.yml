@@ -1,0 +1,23 @@
+# Complete example: scan on every push to main and on pull requests.
+# Copy this file next to the template, or reference the template from a repository resource.
+
+trigger:
+  branches:
+    include: [main]
+
+pr:
+  branches:
+    include: [main]
+
+pool:
+  vmImage: ubuntu-latest   # self-hosted works too; Windows agents need useContainer: false
+
+steps:
+  - checkout: self
+
+  - template: orbit-scan.yml
+    parameters:
+      path: $(Build.SourcesDirectory)
+      failOn: high
+      version: v1.0.0
+      useContainer: true

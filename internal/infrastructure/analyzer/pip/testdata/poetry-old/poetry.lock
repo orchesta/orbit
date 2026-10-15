@@ -1,0 +1,26 @@
+[[package]]
+name = "Requests"
+version = "2.31.0"
+description = "HTTP"
+category = "main"
+optional = false
+python-versions = ">=3.7"
+
+[[package]]
+name = "pytest"
+version = "7.4.0"
+category = "dev"
+optional = false
+python-versions = ">=3.7"
+
+[[package]]
+name = "typing_extensions"
+version = "4.8.0"
+category = "main"
+optional = false
+python-versions = ">=3.8"
+
+[metadata]
+lock-version = "1.1"
+python-versions = "^3.8"
+content-hash = "abc"

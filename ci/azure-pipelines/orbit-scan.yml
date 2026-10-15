@@ -1,0 +1,234 @@
+# Orbit dependency scan, Azure Pipelines step template.
+#
+#   steps:
+#     - checkout: self
+#     - template: ci/azure-pipelines/orbit-scan.yml   # or from a repository resource
+#       parameters:
+#         failOn: high
+#         ignoreFile: ''   # optional, relative to path; empty uses <path>/.orbitignore
+#
+# Publishes a JUnit test run ("Orbit") and a SARIF file as the "CodeAnalysisLogs" build
+# artifact, then fails the job with the CLI's exit code (0 clean, 1 findings at or above
+# failOn, 2 error). Only that last step decides the build result; a missing report just
+# skips its publish step. Needs Azure DevOps Server 2020 or later (typed parameters; for
+# Server 2019 convert `parameters:` to the untyped map form). Use the template once per
+# job: it shares the ORBIT_* variables.
+#
+# useContainer: true   runs the CLI image with docker (Linux agents with Docker).
+# useContainer: false  downloads the release binary and verifies it against checksums.txt
+#                      (Linux, macOS and Windows agents, no Docker needed).
+# Air-gapped: mirror the image and set imageName, or mirror the release assets and set
+# binaryBaseUrl. See docs/ci/README.md.
+
+parameters:
+  - name: path
+    type: string
+    default: $(Build.SourcesDirectory)
+  - name: failOn
+    type: string
+    default: high
+  - name: ignoreFile
+    type: string
+    default: ''   # relative to path; empty uses <path>/.orbitignore when it exists
+  - name: version
+    type: string
+    default: latest   # a release tag such as v1.0.0; required (not "latest") when useContainer is false
+  - name: useContainer
+    type: boolean
+    default: true
+  - name: imageName
+    type: string
+    default: ghcr.io/aligoren/orbit-cli
+  - name: binaryBaseUrl
+    type: string
+    default: https://github.com/aligoren/orbit/releases/download
+
+steps:
+  # ---- container mode (Linux agents with Docker) -------------------------------------
+  - ${{ if eq(parameters.useContainer, true) }}:
+      - bash: |
+          echo "##vso[task.logissue type=error]useContainer: true needs a Linux agent with Docker; set useContainer: false on ${AGENT_OS}."
+          exit 1
+        displayName: Orbit scan (unsupported agent)
+        condition: ne(variables['Agent.OS'], 'Linux')
+      - bash: |
+          set -u
+          reports="$AGENT_TEMPDIRECTORY/orbit-reports"
+          mkdir -p "$reports"
+          rc=0
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$ORBIT_PATH":/src:ro -v "$reports":/out \
+            "$ORBIT_IMAGE:$ORBIT_VERSION" \
+            scan --path /src --fail-on "$ORBIT_FAIL_ON" \
+            ${ORBIT_IGNORE_FILE:+--ignore-file "/src/$ORBIT_IGNORE_FILE"} \
+            --format junit --out /out/orbit-junit.xml || rc=$?
+          if [ "$rc" -ne 2 ]; then
+            docker run --rm --user "$(id -u):$(id -g)" \
+              -v "$ORBIT_PATH":/src:ro -v "$reports":/out \
+              "$ORBIT_IMAGE:$ORBIT_VERSION" \
+              scan --path /src --fail-on none \
+              ${ORBIT_IGNORE_FILE:+--ignore-file "/src/$ORBIT_IGNORE_FILE"} \
+              --format sarif --out /out/orbit.sarif --quiet \
+              || echo "warning: could not write orbit.sarif" >&2
+          fi
+          [ -f "$reports/orbit-junit.xml" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_JUNIT]true"
+          [ -f "$reports/orbit.sarif" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_SARIF]true"
+          echo "##vso[task.setvariable variable=ORBIT_EXIT]$rc"
+          echo "##vso[task.setvariable variable=ORBIT_REPORTS]$reports"
+        displayName: Orbit scan
+        condition: eq(variables['Agent.OS'], 'Linux')
+        env:
+          ORBIT_PATH: ${{ parameters.path }}
+          ORBIT_FAIL_ON: ${{ parameters.failOn }}
+          ORBIT_IGNORE_FILE: ${{ parameters.ignoreFile }}
+          ORBIT_VERSION: ${{ parameters.version }}
+          ORBIT_IMAGE: ${{ parameters.imageName }}
+
+  # ---- binary mode (no Docker) -------------------------------------------------------
+  - ${{ if eq(parameters.useContainer, false) }}:
+      # Linux and macOS agents
+      - bash: |
+          set -u
+          if [ "$ORBIT_VERSION" = latest ]; then
+            echo "##vso[task.logissue type=error]Binary mode needs a release tag in 'version' (for example v1.0.0)."
+            exit 1
+          fi
+          # --- download-begin
+          set -e
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64)         asset="orbit_${ORBIT_VERSION}_linux_amd64" ;;
+            Linux-aarch64|Linux-arm64) asset="orbit_${ORBIT_VERSION}_linux_arm64" ;;
+            Darwin-arm64)         asset="orbit_${ORBIT_VERSION}_darwin_arm64" ;;
+            *) echo "##vso[task.logissue type=error]No Orbit binary for $(uname -s) $(uname -m)"; exit 1 ;;
+          esac
+          bindir="$AGENT_TEMPDIRECTORY/orbit-bin"
+          mkdir -p "$bindir"
+          curl -fsSL --retry 3 -o "$bindir/$asset" "$ORBIT_BASE_URL/$ORBIT_VERSION/$asset"
+          curl -fsSL --retry 3 -o "$bindir/checksums.txt" "$ORBIT_BASE_URL/$ORBIT_VERSION/checksums.txt"
+          want="$(awk -v f="$asset" '{n=$2; sub(/^\*/, "", n); if (n == f) print $1}' "$bindir/checksums.txt")"
+          if [ -z "$want" ]; then
+            echo "##vso[task.logissue type=error]$asset is not listed in checksums.txt"; exit 1
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            got="$(sha256sum "$bindir/$asset" | awk '{print $1}')"
+          else
+            got="$(shasum -a 256 "$bindir/$asset" | awk '{print $1}')"
+          fi
+          if [ "$want" != "$got" ]; then
+            echo "##vso[task.logissue type=error]Checksum mismatch for $asset (expected $want, got $got)"; exit 1
+          fi
+          chmod +x "$bindir/$asset"
+          orbit="$bindir/$asset"
+          # --- download-end
+          set +e
+          reports="$AGENT_TEMPDIRECTORY/orbit-reports"
+          mkdir -p "$reports"
+          "$orbit" scan --path "$ORBIT_PATH" --fail-on "$ORBIT_FAIL_ON" \
+            ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_PATH/$ORBIT_IGNORE_FILE"} \
+            --format junit --out "$reports/orbit-junit.xml"
+          rc=$?
+          if [ "$rc" -ne 2 ]; then
+            "$orbit" scan --path "$ORBIT_PATH" --fail-on none \
+              ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_PATH/$ORBIT_IGNORE_FILE"} \
+              --format sarif --out "$reports/orbit.sarif" --quiet \
+              || echo "warning: could not write orbit.sarif" >&2
+          fi
+          [ -f "$reports/orbit-junit.xml" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_JUNIT]true"
+          [ -f "$reports/orbit.sarif" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_SARIF]true"
+          echo "##vso[task.setvariable variable=ORBIT_EXIT]$rc"
+          echo "##vso[task.setvariable variable=ORBIT_REPORTS]$reports"
+        displayName: Orbit scan
+        condition: in(variables['Agent.OS'], 'Linux', 'Darwin')
+        env:
+          ORBIT_PATH: ${{ parameters.path }}
+          ORBIT_FAIL_ON: ${{ parameters.failOn }}
+          ORBIT_IGNORE_FILE: ${{ parameters.ignoreFile }}
+          ORBIT_VERSION: ${{ parameters.version }}
+          ORBIT_BASE_URL: ${{ parameters.binaryBaseUrl }}
+      # Windows agents (Windows PowerShell 5.1 or later; no pwsh install needed)
+      - powershell: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:ORBIT_VERSION
+          if ($version -eq 'latest') {
+            Write-Host "##vso[task.logissue type=error]Binary mode needs a release tag in 'version' (for example v1.0.0)."
+            exit 1
+          }
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $asset = "orbit_${version}_windows_amd64.exe"
+          $bindir = Join-Path $env:AGENT_TEMPDIRECTORY 'orbit-bin'
+          New-Item -ItemType Directory -Force -Path $bindir | Out-Null
+          $exe = Join-Path $bindir $asset
+          $sums = Join-Path $bindir 'checksums.txt'
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -UseBasicParsing -Uri "$($env:ORBIT_BASE_URL)/$version/$asset" -OutFile $exe
+          Invoke-WebRequest -UseBasicParsing -Uri "$($env:ORBIT_BASE_URL)/$version/checksums.txt" -OutFile $sums
+          $want = $null
+          foreach ($line in Get-Content $sums) {
+            $parts = $line -split '\s+', 2
+            if ($parts.Count -eq 2 -and $parts[1].TrimStart('*') -eq $asset) { $want = $parts[0]; break }
+          }
+          if (-not $want) {
+            Write-Host "##vso[task.logissue type=error]$asset is not listed in checksums.txt"
+            exit 1
+          }
+          $got = (Get-FileHash -Algorithm SHA256 -Path $exe).Hash
+          if ($want.ToLowerInvariant() -ne $got.ToLowerInvariant()) {
+            Write-Host "##vso[task.logissue type=error]Checksum mismatch for $asset (expected $want, got $got)"
+            exit 1
+          }
+          $ErrorActionPreference = 'Continue'
+          $reports = Join-Path $env:AGENT_TEMPDIRECTORY 'orbit-reports'
+          New-Item -ItemType Directory -Force -Path $reports | Out-Null
+          $ignoreArgs = @()
+          if ($env:ORBIT_IGNORE_FILE) { $ignoreArgs = @('--ignore-file', (Join-Path $env:ORBIT_PATH $env:ORBIT_IGNORE_FILE)) }
+          & $exe scan --path $env:ORBIT_PATH --fail-on $env:ORBIT_FAIL_ON @ignoreArgs --format junit --out (Join-Path $reports 'orbit-junit.xml')
+          $rc = $LASTEXITCODE
+          if ($rc -ne 2) {
+            & $exe scan --path $env:ORBIT_PATH --fail-on none @ignoreArgs --format sarif --out (Join-Path $reports 'orbit.sarif') --quiet
+            if ($LASTEXITCODE -ne 0) { Write-Host 'warning: could not write orbit.sarif' }
+          }
+          if (Test-Path (Join-Path $reports 'orbit-junit.xml')) { Write-Host '##vso[task.setvariable variable=ORBIT_HAS_JUNIT]true' }
+          if (Test-Path (Join-Path $reports 'orbit.sarif')) { Write-Host '##vso[task.setvariable variable=ORBIT_HAS_SARIF]true' }
+          Write-Host "##vso[task.setvariable variable=ORBIT_EXIT]$rc"
+          Write-Host "##vso[task.setvariable variable=ORBIT_REPORTS]$reports"
+          exit 0
+        displayName: Orbit scan
+        condition: eq(variables['Agent.OS'], 'Windows_NT')
+        env:
+          ORBIT_PATH: ${{ parameters.path }}
+          ORBIT_FAIL_ON: ${{ parameters.failOn }}
+          ORBIT_IGNORE_FILE: ${{ parameters.ignoreFile }}
+          ORBIT_VERSION: ${{ parameters.version }}
+          ORBIT_BASE_URL: ${{ parameters.binaryBaseUrl }}
+
+  # ---- publish (always, so findings are visible even when the build fails) -----------
+  - task: PublishTestResults@2
+    displayName: Publish Orbit results (JUnit)
+    condition: and(always(), eq(variables['ORBIT_HAS_JUNIT'], 'true'))
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: orbit-junit.xml
+      searchFolder: $(ORBIT_REPORTS)
+      testRunTitle: Orbit
+      failTaskOnFailedTests: false   # the CLI exit code decides, in the last step
+
+  # "CodeAnalysisLogs" is the artifact name the SARIF SAST Scans Tab extension reads.
+  # Azure DevOps Server may not have that extension; the JUnit run above works everywhere.
+  - task: PublishBuildArtifacts@1
+    displayName: Publish Orbit SARIF
+    condition: and(always(), eq(variables['ORBIT_HAS_SARIF'], 'true'))
+    inputs:
+      PathtoPublish: $(ORBIT_REPORTS)/orbit.sarif
+      ArtifactName: CodeAnalysisLogs
+
+  # ---- fail the build with the CLI's exit code ---------------------------------------
+  - bash: |
+      echo "##vso[task.logissue type=error]Orbit scan exited with code ${ORBIT_EXIT}"
+      exit "$ORBIT_EXIT"
+    displayName: Orbit scan result
+    condition: and(always(), in(variables['Agent.OS'], 'Linux', 'Darwin'), ne(variables['ORBIT_EXIT'], ''), ne(variables['ORBIT_EXIT'], '0'))
+  - powershell: |
+      Write-Host "##vso[task.logissue type=error]Orbit scan exited with code $env:ORBIT_EXIT"
+      exit [int]$env:ORBIT_EXIT
+    displayName: Orbit scan result
+    condition: and(always(), eq(variables['Agent.OS'], 'Windows_NT'), ne(variables['ORBIT_EXIT'], ''), ne(variables['ORBIT_EXIT'], '0'))

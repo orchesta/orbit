@@ -1,0 +1,13 @@
+{
+  "count": 1,
+  "value": [
+    {
+      "id": "66666666-6666-6666-6666-666666666666",
+      "name": "Repo",
+      "webUrl": "https://{{HOST}}/tfs/Col/Project/_git/Repo",
+      "remoteUrl": "https://{{HOST}}/tfs/Col/Project/_git/Repo",
+      "defaultBranch": "refs/heads/master",
+      "project": {"id": "p3", "name": "Project", "visibility": "private"}
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+# VCS
+.git
+
+# macOS hidden files
+._*
+.DS_Store
+
+# Go
+bin/
+orbit
+*.exe
+*.test
+*.prof
+
+# Node
+node_modules/
+ui/dist/
+ui/node_modules/
+.npm
+npm-debug.log
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project specific
+tmp/
+logs/
+.env
+.env.local
