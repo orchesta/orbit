@@ -224,3 +224,27 @@ func TestBuildMergedGroupKeepsTheStrongestExploitSignal(t *testing.T) {
 		t.Fatalf("KEV findings = %d, want 1", s.KEVFindings)
 	}
 }
+
+// newer and aboveInstalled share versionOrder: versions in order, two
+// spellings of one version equal, string order only when one cannot be parsed.
+func TestVersionOrderIsTheOneComparison(t *testing.T) {
+	tests := []struct {
+		a, b         string
+		newer, above bool
+	}{
+		{"3.0.10", "3.0.7", true, true}, // not string order
+		{"3.0.7", "3.0.10", false, false},
+		{"2.0.0", "2.0", false, false}, // equal: not newer, not above
+		{"2.0", "2.0.0", false, false},
+		{"1.3.0", ">=1.0.0 <2", false, true}, // not comparable: string order, but still above
+		{"latest", "1.0.0", true, true},
+	}
+	for _, tt := range tests {
+		if got := newer(tt.a, tt.b); got != tt.newer {
+			t.Errorf("newer(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.newer)
+		}
+		if got := aboveInstalled(tt.a, tt.b); got != tt.above {
+			t.Errorf("aboveInstalled(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.above)
+		}
+	}
+}

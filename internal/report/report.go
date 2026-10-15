@@ -49,6 +49,10 @@ type Summary struct {
 	// Deps lists every dependency (sorted), including those without findings.
 	// The JSON report needs it because WriteJSON only receives findings.
 	Deps []*entity.Dependency
+
+	// Recommendations is the smallest upgrade per vulnerable installed
+	// package, from the findings that are not ignored (see Recommend).
+	Recommendations []Recommendation
 }
 
 // ToolInfo identifies the producing tool in JSON and SARIF output.
@@ -300,6 +304,7 @@ func BuildWithOptions(res *engine.Result, ignores *IgnoreList, opts BuildOptions
 	s.KEVFailed = kevGateFailed(findings, s)
 	s.ThresholdFailed = thresholdGateFailed(findings, s)
 	s.Vulnerable = len(vulnerable)
+	s.Recommendations = Recommend(findings)
 	return findings, s
 }
 

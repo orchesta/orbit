@@ -193,16 +193,23 @@ func highestFix(members []*entity.Vulnerability) *string {
 	return &best
 }
 
-// newer reports whether version a is higher than b. Versions the analyzer
-// cannot compare fall back to string order, so the choice stays stable.
+// newer reports whether version a is higher than b (see versionOrder).
+// Two spellings of one version, such as "2.0" and "2.0.0", are equal, so
+// neither is newer.
 func newer(a, b string) bool {
-	if analyzer.CompareVersions(b, a) != "none" {
-		return true
+	order, _ := versionOrder(a, b)
+	return order > 0
+}
+
+// versionOrder orders a and b: -1 when a is lower, 0 when equal, 1 when
+// higher. It is the one comparison that highestFix and Recommend share.
+// comparable is false when analyzer.CompareVersionOrder cannot parse one of
+// them; the order is then string order, so the choice stays stable.
+func versionOrder(a, b string) (order int, comparable bool) {
+	if order, ok := analyzer.CompareVersionOrder(a, b); ok {
+		return order, true
 	}
-	if analyzer.CompareVersions(a, b) != "none" {
-		return false
-	}
-	return a > b
+	return strings.Compare(a, b), false
 }
 
 // maliciousAdvisory reports whether v is itself an OpenSSF malicious package
