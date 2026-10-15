@@ -27,3 +27,6 @@ orbit-repos/
 # Config with secrets
 orbit.local.yaml
 /deploy/docker/backups/
+
+# Local planning notes
+/docs/
