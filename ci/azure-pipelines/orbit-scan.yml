@@ -9,16 +9,16 @@
 #         failOnKev: false
 #         exploitData: true
 #
-# Publishes a JUnit test run ("Orbit") and a SARIF file as the "CodeAnalysisLogs" build
-# artifact, then fails the job with the CLI's exit code (0 clean, 1 findings at or above
-# failOn or, with failOnKev, in CISA KEV, or a malicious package unless failOn is none,
-# 2 error). Only that last step decides the build result; a missing report just skips
-# its publish step. Needs Azure DevOps Server 2020 or later (typed parameters; for
-# Server 2019 convert `parameters:` to the untyped map form). Use the template once per
-# job: it shares the ORBIT_* variables.
+# Publishes a JUnit test run ("Orbit") and a SARIF file as the "CodeAnalysisLogs"
+# build artifact, then fails the job with the CLI's exit code (0 clean, 1 findings
+# at or above failOn or, with failOnKev, in CISA KEV, or a malicious package unless
+# failOn is none, 2 error). Only that last step decides the build result; a missing
+# report just skips its publish step. Needs Azure DevOps Server 2020 or later (typed
+# parameters; for Server 2019 convert `parameters:` to the untyped map form). Use the
+# template once per job: it shares the ORBIT_* variables.
 #
-# failOnKev: true      also fails on any finding in CISA KEV; no catalog means exit 2.
-#                      Only the first run gets it, the SARIF run never does.
+# failOnKev: true      also fails on any finding in CISA KEV; no catalog means
+#                      exit 2. Only the first run gets it, the SARIF run never does.
 # exploitData: false   passes --no-exploit-data: nothing goes to www.cisa.gov or
 #                      api.first.org.
 #
@@ -40,10 +40,10 @@ parameters:
     default: ''   # relative to path; empty uses <path>/.orbitignore when it exists
   - name: failOnKev
     type: boolean
-    default: false   # true also fails on any finding in CISA KEV; no catalog then means exit 2
+    default: false   # true also fails on any finding in CISA KEV (no catalog: exit 2)
   - name: exploitData
     type: boolean
-    default: true    # false passes --no-exploit-data: nothing goes to www.cisa.gov or api.first.org
+    default: true    # false passes --no-exploit-data: no www.cisa.gov, no api.first.org
   - name: version
     type: string
     default: latest   # a release tag such as v1.0.0; required (not "latest") when useContainer is false
@@ -100,8 +100,12 @@ steps:
           ORBIT_VERSION: ${{ parameters.version }}
           ${{ if eq(parameters.failOnKev, true) }}:
             ORBIT_FAIL_ON_KEV: 'true'
+          ${{ if eq(parameters.failOnKev, false) }}:
+            ORBIT_FAIL_ON_KEV: ''
           ${{ if eq(parameters.exploitData, false) }}:
             ORBIT_NO_EXPLOIT_DATA: 'true'
+          ${{ if eq(parameters.exploitData, true) }}:
+            ORBIT_NO_EXPLOIT_DATA: ''
           ORBIT_IMAGE: ${{ parameters.imageName }}
 
   # ---- binary mode (no Docker) -------------------------------------------------------
@@ -169,8 +173,12 @@ steps:
           ORBIT_VERSION: ${{ parameters.version }}
           ${{ if eq(parameters.failOnKev, true) }}:
             ORBIT_FAIL_ON_KEV: 'true'
+          ${{ if eq(parameters.failOnKev, false) }}:
+            ORBIT_FAIL_ON_KEV: ''
           ${{ if eq(parameters.exploitData, false) }}:
             ORBIT_NO_EXPLOIT_DATA: 'true'
+          ${{ if eq(parameters.exploitData, true) }}:
+            ORBIT_NO_EXPLOIT_DATA: ''
           ORBIT_BASE_URL: ${{ parameters.binaryBaseUrl }}
       # Windows agents (Windows PowerShell 5.1 or later; no pwsh install needed)
       - powershell: |
@@ -232,8 +240,12 @@ steps:
           ORBIT_VERSION: ${{ parameters.version }}
           ${{ if eq(parameters.failOnKev, true) }}:
             ORBIT_FAIL_ON_KEV: 'true'
+          ${{ if eq(parameters.failOnKev, false) }}:
+            ORBIT_FAIL_ON_KEV: ''
           ${{ if eq(parameters.exploitData, false) }}:
             ORBIT_NO_EXPLOIT_DATA: 'true'
+          ${{ if eq(parameters.exploitData, true) }}:
+            ORBIT_NO_EXPLOIT_DATA: ''
           ORBIT_BASE_URL: ${{ parameters.binaryBaseUrl }}
 
   # ---- publish (always, so findings are visible even when the build fails) -----------
