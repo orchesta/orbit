@@ -241,6 +241,7 @@ func TestScanBadFlagsExitTwo(t *testing.T) {
 		"invalid fail-on":       {"--path", dir, "--fail-on", "hihg"},
 		"empty fail-on":         {"--path", dir, "--fail-on", ""},
 		"invalid format":        {"--path", dir, "--format", "xml"},
+		"invalid sbom format":   {"--path", dir, "--format", "cyclonedx-xml"},
 		"unknown flag":          {"--path", dir, "--nope"},
 		"stray argument":        {"--path", dir, "extra"},
 		"zero timeout":          {"--path", dir, "--timeout", "0s"},
@@ -637,7 +638,7 @@ func hostileFake() *fakeEngine {
 }
 
 func TestScanNeutralisesCILogCommands(t *testing.T) {
-	for _, format := range []string{"table", "json", "sarif", "junit"} {
+	for _, format := range []string{"table", "json", "sarif", "junit", "cyclonedx", "spdx"} {
 		t.Run(format, func(t *testing.T) {
 			dir := t.TempDir()
 			writeFile(t, dir, ".orbitignore", hostileIgnoreID+" never matches\n")

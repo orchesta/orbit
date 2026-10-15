@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/orchesta/orbit/internal/buildinfo"
 	"github.com/orchesta/orbit/internal/domain/entity"
 	"github.com/orchesta/orbit/internal/engine"
 )
@@ -73,8 +74,15 @@ type Summary struct {
 	Recommendations []Recommendation
 }
 
-// ToolInfo identifies the producing tool in JSON and SARIF output.
+// ToolInfo identifies the producing tool in JSON, SARIF, CycloneDX and SPDX
+// output.
 type ToolInfo struct{ Name, Version, InformationURI string }
+
+// OrbitTool describes this build of orbit, for every report that names
+// the tool that wrote it.
+func OrbitTool() ToolInfo {
+	return ToolInfo{Name: "orbit", Version: buildinfo.Version, InformationURI: "https://github.com/orchesta/orbit"}
+}
 
 // IgnoreEntry suppresses one advisory, optionally limited to a package, or
 // accepts one license for one package.

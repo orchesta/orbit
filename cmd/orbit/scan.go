@@ -17,7 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/orchesta/orbit/internal/buildinfo"
+	"github.com/google/uuid"
+
 	"github.com/orchesta/orbit/internal/domain/entity"
 	"github.com/orchesta/orbit/internal/engine"
 	"github.com/orchesta/orbit/internal/infrastructure/depsdev"
@@ -58,10 +59,12 @@ type engineConfig struct {
 }
 
 // scanDeps holds what runScan needs from the outside world, so tests can
-// replace the engine and the clock.
+// replace the engine, the clock and the SBOM serial number. A nil newUUID
+// means uuid.New.
 type scanDeps struct {
 	newEngine func(ec engineConfig, logger *slog.Logger) analyzerEngine
 	now       func() time.Time
+	newUUID   func() uuid.UUID
 }
 
 // defaultScanDeps builds the production engine: all analyzers, a real
@@ -75,7 +78,8 @@ func defaultScanDeps() scanDeps {
 			osvClient.Logger = logger
 			return engine.New(newAnalyzerRegistry(), vulnuc.NewLookup(osvClient, logger), cliEngineOptions(ec, logger))
 		},
-		now: time.Now,
+		now:     time.Now,
+		newUUID: uuid.New,
 	}
 }
 
@@ -102,7 +106,11 @@ var failOnLevels = map[string]entity.Severity{
 	"none":     "",
 }
 
-var scanFormats = []string{"table", "json", "sarif", "junit"}
+var scanFormats = []string{"table", "json", "sarif", "junit", "cyclonedx", "spdx"}
+
+// sbomFormats are the formats that describe every dependency rather than
+// only the findings.
+var sbomFormats = []string{"cyclonedx", "spdx"}
 
 // scanConfig is the validated command line of orbit scan.
 type scanConfig struct {
@@ -124,6 +132,8 @@ type scanConfig struct {
 
 	licenses bool     // --licenses
 	deny     []string // --deny-license, canonical SPDX IDs; nil for no policy
+
+	sbomName string // --sbom-name; "" names the SBOM after the --path directory
 }
 
 // usageError is a problem with the command line.
@@ -139,6 +149,7 @@ func parseScanFlags(args []string, stderr io.Writer) (scanConfig, error) {
 	flags.StringVar(&c.failOn, "fail-on", "high", "exit 1 on a finding at or above: critical|high|medium|low|unknown|none (a known malicious package fails at every threshold except none)")
 	flags.StringVar(&c.format, "format", "table", "report format: "+strings.Join(scanFormats, "|"))
 	flags.StringVar(&c.out, "out", "-", `report file, or "-" for stdout`)
+	flags.StringVar(&c.sbomName, "sbom-name", "", "project name in a cyclonedx or spdx report (default: the --path directory name)")
 	flags.StringVar(&c.ignoreFile, "ignore-file", "", "ignore file (default <path>/"+ignoreFileName+" if it exists)")
 	flags.StringVar(&c.baseline, "baseline", "", "earlier orbit JSON report; only findings not in it fail the scan (malicious packages always do, unless --fail-on none)")
 	flags.BoolVar(&c.outdated, "outdated", false, "also ask the package registries for the latest versions")
@@ -309,21 +320,23 @@ func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, 
 		}
 	}
 
+	now := deps.now()
 	findings, summary := report.BuildWithOptions(res, ignores,
-		report.BuildOptions{Threshold: cfg.threshold, FailOnKEV: cfg.failOnKEV}, deps.now())
+		report.BuildOptions{Threshold: cfg.threshold, FailOnKEV: cfg.failOnKEV}, now)
 	report.ApplyBaseline(findings, &summary, baseline)
 	summary.ShowLicenses = cfg.licenses
 	// Also without --deny-license, so license: entries it does not need are
 	// warned about as unused.
-	report.ApplyLicensePolicy(&summary, cfg.deny, ignores, deps.now())
+	report.ApplyLicensePolicy(&summary, cfg.deny, ignores, now)
+	sb := sbomOptions(cfg, root, now, deps.newUUID)
 
 	if cfg.out == "-" {
-		if err := writeStdout(stdout, cfg.format, findings, summary, sarifOptions(root)); err != nil {
+		if err := writeStdout(stdout, cfg.format, findings, summary, sarifOptions(root), sb); err != nil {
 			return false, fmt.Errorf("write report to stdout: %w", err)
 		}
 	} else {
 		var buf bytes.Buffer
-		if err := writeSafeReport(&buf, cfg.format, findings, summary, false, sarifOptions(root)); err != nil {
+		if err := writeSafeReport(&buf, cfg.format, findings, summary, false, sarifOptions(root), sb); err != nil {
 			return false, fmt.Errorf("render %s report: %w", cfg.format, err)
 		}
 		if err := replaceFile(cfg.out, buf.Bytes()); err != nil {
@@ -338,6 +351,9 @@ func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, 
 	// and the warnings; repeating them on stderr would show them twice.
 	if cfg.out != "-" || cfg.format != "table" {
 		writeSummary(stderr, summary)
+	}
+	if hint := licenseHint(cfg, summary); hint != "" && !cfg.quiet {
+		fmt.Fprintln(stderr, hint)
 	}
 	return summary.Failed || summary.LicenseFailed, nil
 }
@@ -547,19 +563,20 @@ func readRegularFile(path string, maxBytes int64) ([]byte, error) {
 
 // writeStdout writes the report to stdout, a table colored if stdout itself
 // is a terminal (see writeSafeReport).
-func writeStdout(stdout io.Writer, format string, f []report.Finding, s report.Summary, so report.SARIFOptions) error {
-	return writeSafeReport(stdout, format, f, s, format == "table" && report.UseColor(stdout), so)
+func writeStdout(stdout io.Writer, format string, f []report.Finding, s report.Summary, so report.SARIFOptions, sb report.SBOMOptions) error {
+	return writeSafeReport(stdout, format, f, s, format == "table" && report.UseColor(stdout), so, sb)
 }
 
 // writeSafeReport is writeReport with a table passed through a ciLogWriter,
 // on stdout or in an --out file alike: a CI job may print either. JSON,
-// SARIF and JUnit already escape log commands inside their strings.
-func writeSafeReport(w io.Writer, format string, f []report.Finding, s report.Summary, color bool, so report.SARIFOptions) error {
+// SARIF, JUnit, CycloneDX and SPDX already escape log commands inside their
+// strings.
+func writeSafeReport(w io.Writer, format string, f []report.Finding, s report.Summary, color bool, so report.SARIFOptions, sb report.SBOMOptions) error {
 	if format != "table" {
-		return writeReport(w, format, f, s, color, so)
+		return writeReport(w, format, f, s, color, so, sb)
 	}
 	cw := newCILogWriter(w)
-	if err := writeReport(cw, format, f, s, color, so); err != nil {
+	if err := writeReport(cw, format, f, s, color, so, sb); err != nil {
 		return err
 	}
 	return cw.Flush()
@@ -588,11 +605,15 @@ func sarifOptions(root string) report.SARIFOptions {
 	return report.SARIFOptions{RootURI: (&url.URL{Scheme: "file", Path: p}).String()}
 }
 
-func writeReport(w io.Writer, format string, f []report.Finding, s report.Summary, color bool, so report.SARIFOptions) error {
-	tool := report.ToolInfo{Name: "orbit", Version: buildinfo.Version, InformationURI: "https://github.com/orchesta/orbit"}
+func writeReport(w io.Writer, format string, f []report.Finding, s report.Summary, color bool, so report.SARIFOptions, sb report.SBOMOptions) error {
+	tool := report.OrbitTool()
 	switch format {
 	case "json":
 		return report.WriteJSON(w, f, s, tool)
+	case "cyclonedx":
+		return report.WriteCycloneDX(w, f, s, tool, sb)
+	case "spdx":
+		return report.WriteSPDX(w, f, s, tool, sb)
 	case "sarif":
 		return report.WriteSARIF(w, f, s, tool, so)
 	case "junit":
@@ -615,4 +636,40 @@ func writeSummary(w io.Writer, s report.Summary) {
 	for sc.Scan() {
 		fmt.Fprintf(w, "orbit: %s\n", sc.Text())
 	}
+}
+
+// sbomOptions names the SBOM after --sbom-name, or else the scanned
+// directory (root is the resolved --path), and stamps it with now, the scan
+// time, and a new serial number from newUUID (uuid.New if nil).
+func sbomOptions(cfg scanConfig, root string, now time.Time, newUUID func() uuid.UUID) report.SBOMOptions {
+	if newUUID == nil {
+		newUUID = uuid.New
+	}
+	name := cfg.sbomName
+	if name == "" {
+		name = filepath.Base(root)
+		if name == "." || name == string(filepath.Separator) {
+			name = "" // a filesystem root; the writers fall back to "unnamed"
+		}
+	}
+	return report.SBOMOptions{Name: name, Now: now, Serial: newUUID()}
+}
+
+// licenseHint suggests --licenses when an SBOM leaves dependencies without
+// a license that the opt-in lookup might find. The lookup stays off by
+// default: it sends package names and versions to deps.dev.
+func licenseHint(cfg scanConfig, s report.Summary) string {
+	if !slices.Contains(sbomFormats, cfg.format) || cfg.licenses {
+		return ""
+	}
+	missing := 0
+	for _, d := range s.Deps {
+		if d.License == "" {
+			missing++
+		}
+	}
+	if missing == 0 {
+		return ""
+	}
+	return fmt.Sprintf("orbit: %d of %d dependencies have no license in the SBOM; --licenses looks them up on deps.dev", missing, len(s.Deps))
 }

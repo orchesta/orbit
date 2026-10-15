@@ -32,7 +32,7 @@ The backend is Go, the UI is React, and the database is PostgreSQL. Orbit is an 
 - Vulnerability data from osv.dev. Outdated-version checks against npm, PyPI, NuGet and the Go module proxy.
 - Exploit signals: each finding with a CVE ID is marked when it is in CISA's Known Exploited Vulnerabilities (KEV) catalog and carries its FIRST EPSS score, so you can see what to fix first.
 - Server: imports repositories from GitHub, GitLab and Azure DevOps (Services and Server), scans them on a cron schedule per repository with a bounded worker pool, and shows a dashboard, a vulnerability list and scan history.
-- CLI: `orbit scan` with `table`, `json`, `sarif` and `junit` output, a severity threshold, documented exit codes, an upgrade recommendation per vulnerable package, and an `.orbitignore` file for accepted findings with optional expiry dates.
+- CLI: `orbit scan` with `table`, `json`, `sarif`, `junit`, `cyclonedx` and `spdx` output, a severity threshold, documented exit codes, an upgrade recommendation per vulnerable package, and an `.orbitignore` file for accepted findings with optional expiry dates.
 - Flags known malicious packages (OpenSSF Malicious Packages, `MAL-` advisories on osv.dev) separately. They fail `orbit scan` at every `--fail-on` level except `none`.
 - Dependency licenses as SPDX expressions, from npm lockfiles and optionally from deps.dev, with a `--deny-license` policy in the CLI.
 - Ready-made CI templates for GitHub Actions, GitLab CI and Azure Pipelines (Azure DevOps Services and Server 2020+).
@@ -135,6 +135,7 @@ orbit scan                                   # current directory, table on stdou
 orbit scan --path services/api               # one part of a monorepo
 orbit scan --fail-on critical                # fail only on critical findings (and malicious packages)
 orbit scan --format sarif --out orbit.sarif  # also: json, junit
+orbit scan --format cyclonedx --out orbit.cdx.json --fail-on none  # SBOM; also: spdx
 orbit scan --outdated                        # also check for newer versions
 orbit scan --fail-on-kev                     # also fail on anything CISA lists as exploited
 orbit scan --no-exploit-data                 # no requests to cisa.gov or api.first.org
@@ -163,7 +164,8 @@ After the findings, the table recommends one upgrade per installed package: the 
 | --- | --- | --- |
 | `--path` | `.` | Directory to scan |
 | `--fail-on` | `high` | `critical`, `high`, `medium`, `low`, `unknown` or `none`; a known malicious package fails at every value except `none` |
-| `--format` | `table` | `table`, `json`, `sarif` or `junit` |
+| `--format` | `table` | `table`, `json`, `sarif`, `junit`, `cyclonedx` or `spdx` |
+| `--sbom-name` | the `--path` directory name | Project name in a `cyclonedx` or `spdx` report |
 | `--out` | `-` (stdout) | Report file |
 | `--ignore-file` | `<path>/.orbitignore` if it exists | Accepted findings; `""` disables it |
 | `--baseline` | none | Earlier `orbit scan --format json` report; only findings that are not in it fail the scan (see [below](#only-new-findings---baseline)) |
@@ -269,6 +271,27 @@ threshold high: FAILED
 ```
 
 A malicious package version was published with harmful code on purpose. Upgrading may not be enough: remove it, and treat machines and CI runners that installed it as compromised.
+
+### SBOM: CycloneDX and SPDX
+
+`--format cyclonedx` writes a [CycloneDX 1.6](https://cyclonedx.org/docs/1.6/json/) JSON BOM and `--format spdx` an [SPDX 2.3](https://spdx.github.io/spdx-spec/v2.3/) JSON document:
+
+```bash
+orbit scan --format cyclonedx --out orbit.cdx.json --fail-on none
+orbit scan --format spdx --out orbit.spdx.json --fail-on none --sbom-name acme/shop
+```
+
+- Each dependency becomes one component (CycloneDX) or package (SPDX) with a [package URL](https://github.com/package-url/purl-spec), for example `pkg:npm/%40types/node@20.1.0`, `pkg:pypi/django@3.0.0`, `pkg:nuget/Newtonsoft.Json@13.0.1` or `pkg:golang/github.com/BurntSushi/toml@v1.6.0`. A package found in several manifests appears once; the manifests are listed as evidence (CycloneDX) or in `sourceInfo` (SPDX).
+- A version that is a range or a wildcard, as in a manifest without a lockfile, stays the component version but is left out of the purl. The `orbit:resolved` property says whether a lockfile pinned the version.
+- Dev-only dependencies have the scope `optional` in CycloneDX and a `DEV_DEPENDENCY_OF` relationship in SPDX.
+- Licenses are included when Orbit knows them: from npm lockfiles, or from deps.dev with `--licenses`. When some dependencies have no license, the run says how many on stderr and suggests `--licenses`; the lookup stays off unless you ask for it, because it sends package names and versions to deps.dev (see [Licenses](#licenses)). SPDX gets only expressions built from SPDX license list IDs; anything else becomes `NOASSERTION`. CycloneDX keeps other text as a license name.
+- The dependency graph lists only the project's direct dependencies. Orbit does not record which package pulled in a transitive one, so transitive packages have no edges.
+- CycloneDX includes the vulnerabilities, each with its osv.dev source, severity, aliases, advisory links, the affected component and the fixed version. A known malicious package gets a recommendation to remove or replace it instead of an upgrade, in each of its advisories. Findings ignored by `.orbitignore` are kept with `analysis.state` `exploitable` and `response` `will_not_fix`, with the `.orbitignore` reason in `detail`. KEV and EPSS signals, `--baseline` results and license policy violations are not included; use JSON or SARIF for them.
+- SPDX 2.3 has no vulnerability section, so the SPDX document has none; use CycloneDX, JSON or SARIF for them.
+- An SBOM run still looks up vulnerabilities and applies `--fail-on`, `--fail-on-kev`, `--baseline` and `--deny-license`, with the same exit codes, so one step can write the SBOM and gate the build. `--baseline` changes only the exit code; the SBOM lists every vulnerability. Pass `--fail-on none` and no `--deny-license` when you only want the file. If osv.dev cannot be reached the run exits 2 and writes no file, for SPDX as well, and an existing `--out` file is removed.
+- The document goes to stdout or `--out`; the summary and warnings go to stderr.
+- The project is named after the `--path` directory. In a container that is the mount point (for example `src`), so pass `--sbom-name`.
+- Every run gets a new serial number and timestamp, so two SBOMs of the same tree differ in those fields.
 
 ## Quick start: CI
 
@@ -599,6 +622,7 @@ Orbit reports known vulnerabilities for the versions it can see. Please keep the
 - Supported ecosystems are Go, npm, Python and NuGet. Other ecosystems (for example Maven, Gradle, Cargo or Composer) are not scanned.
 - GitHub and GitLab are supported on github.com and gitlab.com only; GitHub Enterprise Server and self-managed GitLab are not.
 - The server stores one row per advisory, so two advisories for the same CVE are counted twice in the UI. The CLI merges them into one finding.
+- SBOMs list the dependencies Orbit found in manifests and lockfiles. They have no hashes, suppliers or download locations, and their dependency graph stops at the project's direct dependencies.
 - The CI templates and Azure DevOps Server support have been tested with stubs and local servers. Please report problems you see on real installations.
 
 ## Development
