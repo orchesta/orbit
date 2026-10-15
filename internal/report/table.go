@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/infrastructure/exploit"
 )
 
 var severityOrder = []entity.Severity{
@@ -77,7 +78,10 @@ func writeTable(w io.Writer, f []Finding, s Summary, color bool) error {
 			row := []string{severityCell(x)}
 			if exploitCols {
 				kev := "-"
-				if x.Vulnerability.KEV {
+				switch {
+				case s.Exploit.KEV != string(exploit.StatusOK):
+					kev = "?" // no catalog: "-" would read as "not in KEV"
+				case x.Vulnerability.KEV:
 					kev = "yes"
 				}
 				row = append(row, kev, formatEPSS(x.Vulnerability.EPSS))
