@@ -348,3 +348,25 @@ func TestSARIFMessageDoesNotSuggestUpgradingAMaliciousPackage(t *testing.T) {
 		}
 	}
 }
+
+// A package to remove comes before every upgrade, whatever the severity of
+// its advisories; the rest keep the severity order.
+func TestRecommendPutsMaliciousPackagesFirst(t *testing.T) {
+	lodash := rdep("lodash", "4.17.15", "npm", "package-lock.json")
+	qs := rdep("qs", "6.7.0", "npm", "package-lock.json")
+	evil := rdep("evil-pkg", "1.0.0", "npm", "package-lock.json")
+	zevil := rdep("zz-evil", "1.0.0", "npm", "package-lock.json")
+	got := recs(t, []*entity.Dependency{lodash, qs, evil, zevil}, []*entity.Vulnerability{
+		rvuln(lodash, "GHSA-l", entity.SeverityCritical, "4.17.21"),
+		rvuln(qs, "GHSA-q", entity.SeverityMedium, "6.7.3"),
+		rvuln(zevil, "MAL-2025-2", entity.SeverityCritical, ""),
+		rvuln(evil, "MAL-2025-1", entity.SeverityUnknown, ""),
+	}, nil)
+	var order []string
+	for _, r := range got {
+		order = append(order, r.Package)
+	}
+	if want := []string{"zz-evil", "evil-pkg", "lodash", "qs"}; !slices.Equal(order, want) {
+		t.Fatalf("order = %v, want %v", order, want)
+	}
+}

@@ -47,10 +47,11 @@ type Recommendation struct {
 // upgrades get the "v" that go get expects. Ignored findings are left out:
 // the project has accepted them.
 //
-// The result is sorted by the most severe advisory, then package, installed
-// version, manifest and ecosystem. Only fixed versions are compared: Orbit
-// does not check that Upgrade exists in the registry, that no other
-// advisory affects it, or that the package's dependents accept it.
+// The result lists the packages to remove (Malicious) first, then sorts by
+// the most severe advisory, package, installed version, manifest and
+// ecosystem. Only fixed versions are compared: Orbit does not check that
+// Upgrade exists in the registry, that no other advisory affects it, or
+// that the package's dependents accept it.
 func Recommend(findings []Finding) []Recommendation {
 	type key struct {
 		eco                     entity.Ecosystem
@@ -92,6 +93,9 @@ func Recommend(findings []Finding) []Recommendation {
 	}
 	sort.SliceStable(groups, func(i, j int) bool {
 		a, b := groups[i], groups[j]
+		if a.rec.Malicious != b.rec.Malicious {
+			return a.rec.Malicious
+		}
 		if a.rank != b.rank {
 			return a.rank > b.rank
 		}
