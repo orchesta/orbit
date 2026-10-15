@@ -10,6 +10,8 @@
 #     ORBIT_FAIL_ON: high     # optional: critical|high|medium|low|unknown|none
 #     ORBIT_IGNORE_FILE: ""   # optional: empty = <path>/.orbitignore when present
 #     ORBIT_PATH: ""          # optional: directory to scan, default $CI_PROJECT_DIR
+#     ORBIT_FAIL_ON_KEV: "false"  # optional: "true" also fails on any finding in CISA KEV
+#     ORBIT_EXPLOIT_DATA: "true"  # optional: "false" sends nothing to www.cisa.gov or api.first.org
 #
 # Variables you set in your own .gitlab-ci.yml (top level or on the job) override the
 # template, because the template only declares ORBIT_VERSION at its top level (needed for
@@ -29,7 +31,8 @@
 #   orbit.sarif      kept as a job artifact, run with --fail-on none
 # Why two runs and not "JSON once, convert with jq": the CLI image (alpine based) has no
 # jq, and installing it at job time would add another network dependency. A second run is
-# one extra osv.dev round trip.
+# one extra osv.dev round trip. The second run downloads the KEV catalog and EPSS scores
+# again (about 200 KB).
 # Only the first run decides the job result, so the job fails at most once.
 
 variables:
@@ -50,19 +53,33 @@ variables:
     - |
       path="${ORBIT_PATH:-$CI_PROJECT_DIR}"
       fail_on="${ORBIT_FAIL_ON:-high}"
+      case "${ORBIT_FAIL_ON_KEV:-false}" in
+        true) kev_flag="--fail-on-kev" ;;
+        false) kev_flag="" ;;
+        *) echo "error: ORBIT_FAIL_ON_KEV must be true or false, got '$ORBIT_FAIL_ON_KEV'" >&2; exit 2 ;;
+      esac
+      case "${ORBIT_EXPLOIT_DATA:-true}" in
+        true) exploit_flag="" ;;
+        false) exploit_flag="--no-exploit-data" ;;
+        *) echo "error: ORBIT_EXPLOIT_DATA must be true or false, got '$ORBIT_EXPLOIT_DATA'" >&2; exit 2 ;;
+      esac
       rc=0
-      orbit scan --path "$path" --fail-on "$fail_on" \
+      orbit scan --path "$path" --fail-on "$fail_on" $kev_flag $exploit_flag \
         ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_IGNORE_FILE"} \
         --format junit --out orbit-junit.xml || rc=$?
-      # Exit 2 is an error (osv.dev unreachable, timeout, bad flag): no report was written
-      # and a second run would most likely fail the same way.
+      # Exit 2 is an error (osv.dev unreachable, timeout, bad flag, or no KEV catalog with
+      # ORBIT_FAIL_ON_KEV): no report was written and a second run would most likely fail
+      # the same way.
       if [ "$rc" -ne 2 ]; then
-        orbit scan --path "$path" --fail-on none \
+        # No --fail-on-kev here: this run only writes the SARIF artifact.
+        orbit scan --path "$path" --fail-on none $exploit_flag \
           ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_IGNORE_FILE"} \
           --format sarif --out orbit.sarif --quiet \
           || echo "warning: could not write orbit.sarif" >&2
       fi
-      # Keep the first run's exit code: 0 clean, 1 findings at or above the threshold or a malicious package, 2 error.
+      # Keep the first run's exit code: 0 clean, 1 findings at or above the threshold, a
+      # malicious package (unless the threshold is none), or in KEV with ORBIT_FAIL_ON_KEV,
+      # 2 error.
       exit "$rc"
   artifacts:
     when: always

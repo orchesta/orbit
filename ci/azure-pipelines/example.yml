@@ -19,5 +19,6 @@ steps:
     parameters:
       path: $(Build.SourcesDirectory)
       failOn: high
+      failOnKev: false
       version: v1.0.0
       useContainer: true

@@ -6,13 +6,21 @@
 #       parameters:
 #         failOn: high
 #         ignoreFile: ''   # optional, relative to path; empty uses <path>/.orbitignore
+#         failOnKev: false
+#         exploitData: true
 #
 # Publishes a JUnit test run ("Orbit") and a SARIF file as the "CodeAnalysisLogs" build
 # artifact, then fails the job with the CLI's exit code (0 clean, 1 findings at or above
-# failOn or a malicious package, 2 error). Only that last step decides the build result; a missing report just
-# skips its publish step. Needs Azure DevOps Server 2020 or later (typed parameters; for
+# failOn or, with failOnKev, in CISA KEV, or a malicious package unless failOn is none,
+# 2 error). Only that last step decides the build result; a missing report just skips
+# its publish step. Needs Azure DevOps Server 2020 or later (typed parameters; for
 # Server 2019 convert `parameters:` to the untyped map form). Use the template once per
 # job: it shares the ORBIT_* variables.
+#
+# failOnKev: true      also fails on any finding in CISA KEV; no catalog means exit 2.
+#                      Only the first run gets it, the SARIF run never does.
+# exploitData: false   passes --no-exploit-data: nothing goes to www.cisa.gov or
+#                      api.first.org.
 #
 # useContainer: true   runs the CLI image with docker (Linux agents with Docker).
 # useContainer: false  downloads the release binary and verifies it against checksums.txt
@@ -30,6 +38,12 @@ parameters:
   - name: ignoreFile
     type: string
     default: ''   # relative to path; empty uses <path>/.orbitignore when it exists
+  - name: failOnKev
+    type: boolean
+    default: false   # true also fails on any finding in CISA KEV; no catalog then means exit 2
+  - name: exploitData
+    type: boolean
+    default: true    # false passes --no-exploit-data: nothing goes to www.cisa.gov or api.first.org
   - name: version
     type: string
     default: latest   # a release tag such as v1.0.0; required (not "latest") when useContainer is false
@@ -60,6 +74,7 @@ steps:
             -v "$ORBIT_PATH":/src:ro -v "$reports":/out \
             "$ORBIT_IMAGE:$ORBIT_VERSION" \
             scan --path /src --fail-on "$ORBIT_FAIL_ON" \
+            ${ORBIT_FAIL_ON_KEV:+--fail-on-kev} ${ORBIT_NO_EXPLOIT_DATA:+--no-exploit-data} \
             ${ORBIT_IGNORE_FILE:+--ignore-file "/src/$ORBIT_IGNORE_FILE"} \
             --format junit --out /out/orbit-junit.xml || rc=$?
           if [ "$rc" -ne 2 ]; then
@@ -67,6 +82,7 @@ steps:
               -v "$ORBIT_PATH":/src:ro -v "$reports":/out \
               "$ORBIT_IMAGE:$ORBIT_VERSION" \
               scan --path /src --fail-on none \
+              ${ORBIT_NO_EXPLOIT_DATA:+--no-exploit-data} \
               ${ORBIT_IGNORE_FILE:+--ignore-file "/src/$ORBIT_IGNORE_FILE"} \
               --format sarif --out /out/orbit.sarif --quiet \
               || echo "warning: could not write orbit.sarif" >&2
@@ -82,6 +98,10 @@ steps:
           ORBIT_FAIL_ON: ${{ parameters.failOn }}
           ORBIT_IGNORE_FILE: ${{ parameters.ignoreFile }}
           ORBIT_VERSION: ${{ parameters.version }}
+          ${{ if eq(parameters.failOnKev, true) }}:
+            ORBIT_FAIL_ON_KEV: 'true'
+          ${{ if eq(parameters.exploitData, false) }}:
+            ORBIT_NO_EXPLOIT_DATA: 'true'
           ORBIT_IMAGE: ${{ parameters.imageName }}
 
   # ---- binary mode (no Docker) -------------------------------------------------------
@@ -125,11 +145,13 @@ steps:
           reports="$AGENT_TEMPDIRECTORY/orbit-reports"
           mkdir -p "$reports"
           "$orbit" scan --path "$ORBIT_PATH" --fail-on "$ORBIT_FAIL_ON" \
+            ${ORBIT_FAIL_ON_KEV:+--fail-on-kev} ${ORBIT_NO_EXPLOIT_DATA:+--no-exploit-data} \
             ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_PATH/$ORBIT_IGNORE_FILE"} \
             --format junit --out "$reports/orbit-junit.xml"
           rc=$?
           if [ "$rc" -ne 2 ]; then
             "$orbit" scan --path "$ORBIT_PATH" --fail-on none \
+              ${ORBIT_NO_EXPLOIT_DATA:+--no-exploit-data} \
               ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_PATH/$ORBIT_IGNORE_FILE"} \
               --format sarif --out "$reports/orbit.sarif" --quiet \
               || echo "warning: could not write orbit.sarif" >&2
@@ -145,6 +167,10 @@ steps:
           ORBIT_FAIL_ON: ${{ parameters.failOn }}
           ORBIT_IGNORE_FILE: ${{ parameters.ignoreFile }}
           ORBIT_VERSION: ${{ parameters.version }}
+          ${{ if eq(parameters.failOnKev, true) }}:
+            ORBIT_FAIL_ON_KEV: 'true'
+          ${{ if eq(parameters.exploitData, false) }}:
+            ORBIT_NO_EXPLOIT_DATA: 'true'
           ORBIT_BASE_URL: ${{ parameters.binaryBaseUrl }}
       # Windows agents (Windows PowerShell 5.1 or later; no pwsh install needed)
       - powershell: |
@@ -182,10 +208,14 @@ steps:
           New-Item -ItemType Directory -Force -Path $reports | Out-Null
           $ignoreArgs = @()
           if ($env:ORBIT_IGNORE_FILE) { $ignoreArgs = @('--ignore-file', (Join-Path $env:ORBIT_PATH $env:ORBIT_IGNORE_FILE)) }
-          & $exe scan --path $env:ORBIT_PATH --fail-on $env:ORBIT_FAIL_ON @ignoreArgs --format junit --out (Join-Path $reports 'orbit-junit.xml')
+          $exploitArgs = @()
+          if ($env:ORBIT_NO_EXPLOIT_DATA) { $exploitArgs = @('--no-exploit-data') }
+          $kevArgs = @()
+          if ($env:ORBIT_FAIL_ON_KEV) { $kevArgs = @('--fail-on-kev') }
+          & $exe scan --path $env:ORBIT_PATH --fail-on $env:ORBIT_FAIL_ON @ignoreArgs @exploitArgs @kevArgs --format junit --out (Join-Path $reports 'orbit-junit.xml')
           $rc = $LASTEXITCODE
           if ($rc -ne 2) {
-            & $exe scan --path $env:ORBIT_PATH --fail-on none @ignoreArgs --format sarif --out (Join-Path $reports 'orbit.sarif') --quiet
+            & $exe scan --path $env:ORBIT_PATH --fail-on none @ignoreArgs @exploitArgs --format sarif --out (Join-Path $reports 'orbit.sarif') --quiet
             if ($LASTEXITCODE -ne 0) { Write-Host 'warning: could not write orbit.sarif' }
           }
           if (Test-Path (Join-Path $reports 'orbit-junit.xml')) { Write-Host '##vso[task.setvariable variable=ORBIT_HAS_JUNIT]true' }
@@ -200,6 +230,10 @@ steps:
           ORBIT_FAIL_ON: ${{ parameters.failOn }}
           ORBIT_IGNORE_FILE: ${{ parameters.ignoreFile }}
           ORBIT_VERSION: ${{ parameters.version }}
+          ${{ if eq(parameters.failOnKev, true) }}:
+            ORBIT_FAIL_ON_KEV: 'true'
+          ${{ if eq(parameters.exploitData, false) }}:
+            ORBIT_NO_EXPLOIT_DATA: 'true'
           ORBIT_BASE_URL: ${{ parameters.binaryBaseUrl }}
 
   # ---- publish (always, so findings are visible even when the build fails) -----------

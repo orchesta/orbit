@@ -29,6 +29,20 @@ inputs:
     description: Ignore file, relative to the workspace. Empty uses <path>/.orbitignore when it exists.
     required: false
     default: ""
+  fail-on-kev:
+    description: >-
+      Also fail (exit 1) on any finding listed in the CISA Known Exploited Vulnerabilities
+      catalog, whatever its severity - true or false. If the catalog cannot be downloaded,
+      the scan exits 2.
+    required: false
+    default: "false"
+  exploit-data:
+    description: >-
+      Add CISA KEV and FIRST EPSS data to findings - true or false. When true, the CLI
+      downloads the KEV catalog from www.cisa.gov and sends the CVE IDs it found to
+      api.first.org. false passes --no-exploit-data.
+    required: false
+    default: "true"
   version:
     description: >-
       Tag of the orchestalabs/orbit-cli image, for example v1.2.3. Empty uses
@@ -49,6 +63,8 @@ runs:
         INPUT_FORMAT: ${{ inputs.format }}
         INPUT_OUTPUT: ${{ inputs.output }}
         INPUT_IGNORE_FILE: ${{ inputs.ignore-file }}
+        INPUT_FAIL_ON_KEV: ${{ inputs.fail-on-kev }}
+        INPUT_EXPLOIT_DATA: ${{ inputs.exploit-data }}
         INPUT_VERSION: ${{ inputs.version }}
         ACTION_REF: ${{ github.action_ref }}
       run: |
@@ -86,8 +102,18 @@ runs:
         if [ -n "$INPUT_IGNORE_FILE" ]; then
           args+=(--ignore-file "/src/${INPUT_IGNORE_FILE}")
         fi
+        case "$INPUT_FAIL_ON_KEV" in
+          true) args+=(--fail-on-kev) ;;
+          false|"") ;;
+          *) echo "::error::Orbit: 'fail-on-kev' must be true or false, got '$INPUT_FAIL_ON_KEV'"; exit 2 ;;
+        esac
+        case "$INPUT_EXPLOIT_DATA" in
+          false) args+=(--no-exploit-data) ;;
+          true|"") ;;
+          *) echo "::error::Orbit: 'exploit-data' must be true or false, got '$INPUT_EXPLOIT_DATA'"; exit 2 ;;
+        esac
 
-        # Exit 0 = clean, 1 = finding at or above fail-on or a malicious package (unless fail-on is none), 2 = error (no report is left behind).
+        # Exit 0 = clean, 1 = finding at or above fail-on, a malicious package (unless fail-on is none), or in KEV with fail-on-kev, 2 = error (no report is left behind).
         # A non-zero exit fails this step; use `if: always()` on a later upload step.
         exec docker run --rm \
           --user "$(id -u):$(id -g)" \

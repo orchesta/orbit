@@ -238,6 +238,7 @@ steps:
   - uses: orchesta/orbit@v1.0.0
     with:
       fail-on: high
+      fail-on-kev: "true"   # optional: also fail on anything CISA lists as exploited
       version: v1.0.0
   - if: always() && hashFiles('orbit.sarif') != ''
     uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
@@ -253,6 +254,8 @@ The templates pull `orchestalabs/orbit-cli` from Docker Hub, which limits pulls 
 
 - GitLab CI: include [`ci/gitlab/orbit.gitlab-ci.yml`](ci/gitlab/orbit.gitlab-ci.yml). It writes a JUnit report for the merge request and a SARIF artifact.
 - Azure Pipelines: use the step template [`ci/azure-pipelines/orbit-scan.yml`](ci/azure-pipelines/orbit-scan.yml) (example: [`example.yml`](ci/azure-pipelines/example.yml)). It works on Azure DevOps Services and on Azure DevOps Server 2020 and later, in a container or with a downloaded, checksum-verified binary (Windows agents too).
+
+Both take a KEV gate (`ORBIT_FAIL_ON_KEV` / `failOnKev`) and can turn exploit data off (`ORBIT_EXPLOIT_DATA` / `exploitData`); the SARIF run never applies the KEV gate.
 
 Parameters and caveats for both are in the comment at the top of each template.
 
