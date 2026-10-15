@@ -8,6 +8,8 @@
 #         ignoreFile: ''   # optional, relative to path; empty uses <path>/.orbitignore
 #         failOnKev: false
 #         exploitData: true
+#         baseline: false   # true: pull requests fail only on new findings (see below)
+#         baselineBranch: refs/heads/main
 #
 # Publishes a JUnit test run ("Orbit") and a SARIF file as the "CodeAnalysisLogs"
 # build artifact, then fails the job with the CLI's exit code (0 clean, 1 findings
@@ -27,6 +29,19 @@
 #                      (Linux, macOS and Windows agents, no Docker needed).
 # Air-gapped: mirror the image and set imageName, or mirror the release assets and set
 # binaryBaseUrl.
+#
+# baseline: true  Builds of baselineBranch also write orbit-baseline.json (one more scan) and
+#                 publish it as the build artifact "orbit-baseline". Every finding there is an
+#                 existing one, so exit 1 is reported as a warning and does not fail the build
+#                 (not even for a malicious package or a KEV entry): the download below skips
+#                 failed builds. Exit 2 still fails it. Other builds, pull requests included,
+#                 download that artifact from the latest successful or partially succeeded build
+#                 of baselineBranch in this pipeline and pass it to --baseline: they fail only on
+#                 new findings and on malicious packages. With none yet the download step fails
+#                 softly (continueOnError, the build shows as partially succeeded), a warning says
+#                 so and every finding counts. Schedule a daily build of baselineBranch so new
+#                 advisories are part of the baseline (see example.yml). Build artifacts are used
+#                 because pipeline artifacts are not available on Azure DevOps Server.
 
 parameters:
   - name: path
@@ -56,8 +71,32 @@ parameters:
   - name: binaryBaseUrl
     type: string
     default: https://github.com/orchesta/orbit/releases/download
+  - name: baseline
+    type: boolean
+    default: false   # true: pull requests fail only on findings baselineBranch does not have
+  - name: baselineBranch
+    type: string
+    default: refs/heads/main   # full ref, as in Build.SourceBranch
 
 steps:
+  # ---- baseline (baseline: true) -----------------------------------------------------
+  # Builds of baselineBranch record the baseline instead (see the scan steps).
+  - ${{ if eq(parameters.baseline, true) }}:
+      - task: DownloadBuildArtifacts@0
+        displayName: Download Orbit baseline
+        condition: and(succeeded(), ne(variables['Build.SourceBranch'], '${{ parameters.baselineBranch }}'))
+        continueOnError: true   # a first run has no baseline yet
+        inputs:
+          buildType: specific
+          project: $(System.TeamProjectId)
+          pipeline: $(System.DefinitionId)
+          buildVersionToDownload: latestFromBranch
+          branchName: ${{ parameters.baselineBranch }}
+          allowPartiallySucceededBuilds: true
+          downloadType: single
+          artifactName: orbit-baseline
+          downloadPath: $(Agent.TempDirectory)
+
   # ---- container mode (Linux agents with Docker) -------------------------------------
   - ${{ if eq(parameters.useContainer, true) }}:
       - bash: |
@@ -69,26 +108,53 @@ steps:
           set -u
           reports="$AGENT_TEMPDIRECTORY/orbit-reports"
           mkdir -p "$reports"
-          rc=0
-          docker run --rm --user "$(id -u):$(id -g)" \
-            -v "$ORBIT_PATH":/src:ro -v "$reports":/out \
-            "$ORBIT_IMAGE:$ORBIT_VERSION" \
-            scan --path /src --fail-on "$ORBIT_FAIL_ON" \
-            ${ORBIT_FAIL_ON_KEV:+--fail-on-kev} ${ORBIT_NO_EXPLOIT_DATA:+--no-exploit-data} \
-            ${ORBIT_IGNORE_FILE:+--ignore-file "/src/$ORBIT_IGNORE_FILE"} \
-            --format junit --out /out/orbit-junit.xml || rc=$?
-          if [ "$rc" -ne 2 ]; then
+          # Baseline mode: builds of the baseline branch record, all others compare. The
+          # branch match ignores case, like the download step's condition.
+          record=false
+          baseline=""
+          baseline_dir="$AGENT_TEMPDIRECTORY/orbit-baseline"
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+          if [ -n "${ORBIT_BASELINE_BRANCH:-}" ]; then
+            if [ "$(lower "${BUILD_SOURCEBRANCH:-}")" = "$(lower "$ORBIT_BASELINE_BRANCH")" ]; then
+              record=true
+            elif [ -f "$baseline_dir/orbit-baseline.json" ]; then
+              baseline=/baseline/orbit-baseline.json
+            else
+              echo "##vso[task.logissue type=warning]No Orbit baseline from $ORBIT_BASELINE_BRANCH yet;" \
+                "every finding counts."
+            fi
+          fi
+          # Arguments every run gets; the runs add their own after them.
+          orbit_run() {
             docker run --rm --user "$(id -u):$(id -g)" \
               -v "$ORBIT_PATH":/src:ro -v "$reports":/out \
+              ${baseline:+-v "$baseline_dir":/baseline:ro} \
               "$ORBIT_IMAGE:$ORBIT_VERSION" \
-              scan --path /src --fail-on none \
-              ${ORBIT_NO_EXPLOIT_DATA:+--no-exploit-data} \
-              ${ORBIT_IGNORE_FILE:+--ignore-file "/src/$ORBIT_IGNORE_FILE"} \
+              scan --path /src ${ORBIT_NO_EXPLOIT_DATA:+--no-exploit-data} \
+              ${ORBIT_IGNORE_FILE:+--ignore-file "/src/$ORBIT_IGNORE_FILE"} "$@"
+          }
+          rc=0
+          orbit_run --fail-on "$ORBIT_FAIL_ON" ${ORBIT_FAIL_ON_KEV:+--fail-on-kev} \
+            ${baseline:+--baseline "$baseline"} \
+            --format junit --out /out/orbit-junit.xml || rc=$?
+          if [ "$rc" -ne 2 ]; then
+            # No --fail-on-kev in the runs below: they only write reports.
+            orbit_run --fail-on none ${baseline:+--baseline "$baseline"} \
               --format sarif --out /out/orbit.sarif --quiet \
               || echo "warning: could not write orbit.sarif" >&2
+            if [ "$record" = true ]; then
+              orbit_run --fail-on none --format json --out /out/orbit-baseline.json --quiet \
+                || echo "warning: could not write orbit-baseline.json" >&2
+            fi
+          fi
+          if [ "$record" = true ] && [ "$rc" -eq 1 ]; then
+            echo "##vso[task.logissue type=warning]Orbit: $ORBIT_BASELINE_BRANCH records the baseline;" \
+              "its findings are reported and do not fail the build."
+            rc=0
           fi
           [ -f "$reports/orbit-junit.xml" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_JUNIT]true"
           [ -f "$reports/orbit.sarif" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_SARIF]true"
+          [ -f "$reports/orbit-baseline.json" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_BASELINE]true"
           echo "##vso[task.setvariable variable=ORBIT_EXIT]$rc"
           echo "##vso[task.setvariable variable=ORBIT_REPORTS]$reports"
         displayName: Orbit scan
@@ -106,6 +172,10 @@ steps:
             ORBIT_NO_EXPLOIT_DATA: 'true'
           ${{ if eq(parameters.exploitData, true) }}:
             ORBIT_NO_EXPLOIT_DATA: ''
+          ${{ if eq(parameters.baseline, true) }}:
+            ORBIT_BASELINE_BRANCH: ${{ parameters.baselineBranch }}
+          ${{ if eq(parameters.baseline, false) }}:
+            ORBIT_BASELINE_BRANCH: ''
           ORBIT_IMAGE: ${{ parameters.imageName }}
 
   # ---- binary mode (no Docker) -------------------------------------------------------
@@ -148,20 +218,50 @@ steps:
           set +e
           reports="$AGENT_TEMPDIRECTORY/orbit-reports"
           mkdir -p "$reports"
-          "$orbit" scan --path "$ORBIT_PATH" --fail-on "$ORBIT_FAIL_ON" \
-            ${ORBIT_FAIL_ON_KEV:+--fail-on-kev} ${ORBIT_NO_EXPLOIT_DATA:+--no-exploit-data} \
-            ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_PATH/$ORBIT_IGNORE_FILE"} \
+          # Baseline mode: builds of the baseline branch record, all others compare. The
+          # branch match ignores case, like the download step's condition. No arrays:
+          # macOS ships bash 3.2.
+          record=false
+          baseline=""
+          baseline_file="$AGENT_TEMPDIRECTORY/orbit-baseline/orbit-baseline.json"
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+          if [ -n "${ORBIT_BASELINE_BRANCH:-}" ]; then
+            if [ "$(lower "${BUILD_SOURCEBRANCH:-}")" = "$(lower "$ORBIT_BASELINE_BRANCH")" ]; then
+              record=true
+            elif [ -f "$baseline_file" ]; then
+              baseline="$baseline_file"
+            else
+              echo "##vso[task.logissue type=warning]No Orbit baseline from $ORBIT_BASELINE_BRANCH yet;" \
+                "every finding counts."
+            fi
+          fi
+          # Arguments every run gets; the runs add their own after them.
+          orbit_run() {
+            "$orbit" scan --path "$ORBIT_PATH" ${ORBIT_NO_EXPLOIT_DATA:+--no-exploit-data} \
+              ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_PATH/$ORBIT_IGNORE_FILE"} "$@"
+          }
+          orbit_run --fail-on "$ORBIT_FAIL_ON" ${ORBIT_FAIL_ON_KEV:+--fail-on-kev} \
+            ${baseline:+--baseline "$baseline"} \
             --format junit --out "$reports/orbit-junit.xml"
           rc=$?
           if [ "$rc" -ne 2 ]; then
-            "$orbit" scan --path "$ORBIT_PATH" --fail-on none \
-              ${ORBIT_NO_EXPLOIT_DATA:+--no-exploit-data} \
-              ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_PATH/$ORBIT_IGNORE_FILE"} \
+            # No --fail-on-kev in the runs below: they only write reports.
+            orbit_run --fail-on none ${baseline:+--baseline "$baseline"} \
               --format sarif --out "$reports/orbit.sarif" --quiet \
               || echo "warning: could not write orbit.sarif" >&2
+            if [ "$record" = true ]; then
+              orbit_run --fail-on none --format json --out "$reports/orbit-baseline.json" --quiet \
+                || echo "warning: could not write orbit-baseline.json" >&2
+            fi
+          fi
+          if [ "$record" = true ] && [ "$rc" -eq 1 ]; then
+            echo "##vso[task.logissue type=warning]Orbit: $ORBIT_BASELINE_BRANCH records the baseline;" \
+              "its findings are reported and do not fail the build."
+            rc=0
           fi
           [ -f "$reports/orbit-junit.xml" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_JUNIT]true"
           [ -f "$reports/orbit.sarif" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_SARIF]true"
+          [ -f "$reports/orbit-baseline.json" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_BASELINE]true"
           echo "##vso[task.setvariable variable=ORBIT_EXIT]$rc"
           echo "##vso[task.setvariable variable=ORBIT_REPORTS]$reports"
         displayName: Orbit scan
@@ -179,6 +279,10 @@ steps:
             ORBIT_NO_EXPLOIT_DATA: 'true'
           ${{ if eq(parameters.exploitData, true) }}:
             ORBIT_NO_EXPLOIT_DATA: ''
+          ${{ if eq(parameters.baseline, true) }}:
+            ORBIT_BASELINE_BRANCH: ${{ parameters.baselineBranch }}
+          ${{ if eq(parameters.baseline, false) }}:
+            ORBIT_BASELINE_BRANCH: ''
           ORBIT_BASE_URL: ${{ parameters.binaryBaseUrl }}
       # Windows agents (Windows PowerShell 5.1 or later; no pwsh install needed)
       - powershell: |
@@ -220,14 +324,39 @@ steps:
           if ($env:ORBIT_NO_EXPLOIT_DATA) { $exploitArgs = @('--no-exploit-data') }
           $kevArgs = @()
           if ($env:ORBIT_FAIL_ON_KEV) { $kevArgs = @('--fail-on-kev') }
-          & $exe scan --path $env:ORBIT_PATH --fail-on $env:ORBIT_FAIL_ON @ignoreArgs @exploitArgs @kevArgs --format junit --out (Join-Path $reports 'orbit-junit.xml')
+          # Baseline mode: builds of the baseline branch record, all others compare. -eq
+          # ignores case, like the download step's condition.
+          $record = $false
+          $baseArgs = @()
+          $baselineFile = Join-Path (Join-Path $env:AGENT_TEMPDIRECTORY 'orbit-baseline') 'orbit-baseline.json'
+          if ($env:ORBIT_BASELINE_BRANCH) {
+            if ($env:BUILD_SOURCEBRANCH -eq $env:ORBIT_BASELINE_BRANCH) {
+              $record = $true
+            } elseif (Test-Path -LiteralPath $baselineFile -PathType Leaf) {
+              $baseArgs = @('--baseline', $baselineFile)
+            } else {
+              Write-Host "##vso[task.logissue type=warning]No Orbit baseline from $($env:ORBIT_BASELINE_BRANCH) yet; every finding counts."
+            }
+          }
+          & $exe scan --path $env:ORBIT_PATH --fail-on $env:ORBIT_FAIL_ON @ignoreArgs @exploitArgs @kevArgs @baseArgs --format junit --out (Join-Path $reports 'orbit-junit.xml')
           $rc = $LASTEXITCODE
           if ($rc -ne 2) {
-            & $exe scan --path $env:ORBIT_PATH --fail-on none @ignoreArgs @exploitArgs --format sarif --out (Join-Path $reports 'orbit.sarif') --quiet
+            # No @kevArgs in the runs below: they only write reports.
+            & $exe scan --path $env:ORBIT_PATH --fail-on none @ignoreArgs @exploitArgs @baseArgs --format sarif --out (Join-Path $reports 'orbit.sarif') --quiet
             if ($LASTEXITCODE -ne 0) { Write-Host 'warning: could not write orbit.sarif' }
+            if ($record) {
+              & $exe scan --path $env:ORBIT_PATH --fail-on none @ignoreArgs @exploitArgs --format json --out (Join-Path $reports 'orbit-baseline.json') --quiet
+              if ($LASTEXITCODE -ne 0) { Write-Host 'warning: could not write orbit-baseline.json' }
+            }
+          }
+          if ($record -and $rc -eq 1) {
+            Write-Host ("##vso[task.logissue type=warning]Orbit: $($env:ORBIT_BASELINE_BRANCH) records the baseline; " +
+              'its findings are reported and do not fail the build.')
+            $rc = 0
           }
           if (Test-Path (Join-Path $reports 'orbit-junit.xml')) { Write-Host '##vso[task.setvariable variable=ORBIT_HAS_JUNIT]true' }
           if (Test-Path (Join-Path $reports 'orbit.sarif')) { Write-Host '##vso[task.setvariable variable=ORBIT_HAS_SARIF]true' }
+          if (Test-Path (Join-Path $reports 'orbit-baseline.json')) { Write-Host '##vso[task.setvariable variable=ORBIT_HAS_BASELINE]true' }
           Write-Host "##vso[task.setvariable variable=ORBIT_EXIT]$rc"
           Write-Host "##vso[task.setvariable variable=ORBIT_REPORTS]$reports"
           exit 0
@@ -246,6 +375,10 @@ steps:
             ORBIT_NO_EXPLOIT_DATA: 'true'
           ${{ if eq(parameters.exploitData, true) }}:
             ORBIT_NO_EXPLOIT_DATA: ''
+          ${{ if eq(parameters.baseline, true) }}:
+            ORBIT_BASELINE_BRANCH: ${{ parameters.baselineBranch }}
+          ${{ if eq(parameters.baseline, false) }}:
+            ORBIT_BASELINE_BRANCH: ''
           ORBIT_BASE_URL: ${{ parameters.binaryBaseUrl }}
 
   # ---- publish (always, so findings are visible even when the build fails) -----------
@@ -267,6 +400,15 @@ steps:
     inputs:
       PathtoPublish: $(ORBIT_REPORTS)/orbit.sarif
       ArtifactName: CodeAnalysisLogs
+
+  # The baseline other builds download (written only on baselineBranch).
+  - ${{ if eq(parameters.baseline, true) }}:
+      - task: PublishBuildArtifacts@1
+        displayName: Publish Orbit baseline
+        condition: and(always(), eq(variables['ORBIT_HAS_BASELINE'], 'true'))
+        inputs:
+          PathtoPublish: $(ORBIT_REPORTS)/orbit-baseline.json
+          ArtifactName: orbit-baseline
 
   # ---- fail the build with the CLI's exit code ---------------------------------------
   - bash: |

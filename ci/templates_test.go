@@ -567,3 +567,385 @@ func TestGitLabRejectsInvalidBooleans(t *testing.T) {
 		}
 	}
 }
+
+// ---- Azure Pipelines -----------------------------------------------------
+
+// azureSteps returns every step of the Azure template, also those inside
+// ${{ if }} blocks, in file order (each conditional block has one key).
+func azureSteps(t *testing.T) []map[string]any {
+	t.Helper()
+	doc := loadYAML(t, "azure-pipelines/orbit-scan.yml")
+	var out []map[string]any
+	var walk func(v any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			for _, k := range []string{"bash", "powershell", "task"} {
+				if _, ok := x[k]; ok {
+					out = append(out, x)
+					return
+				}
+			}
+			for _, e := range x {
+				walk(e)
+			}
+		}
+	}
+	walk(doc["steps"])
+	return out
+}
+
+func azureScanScript(t *testing.T, marker string) string {
+	t.Helper()
+	for _, s := range azureSteps(t) {
+		if b, ok := s["bash"].(string); ok && s["displayName"] == "Orbit scan" && strings.Contains(b, marker) {
+			return b
+		}
+	}
+	t.Fatalf("no Orbit scan bash step containing %q", marker)
+	return ""
+}
+
+// azureEnv is the env of an "Orbit scan" step with every parameter at its
+// default: the template sets the ORBIT_* switches to empty strings when they
+// are off.
+func azureEnv(tmp string, extra map[string]string) map[string]string {
+	env := map[string]string{
+		"ORBIT_PATH": tmp, "ORBIT_FAIL_ON": "high", "ORBIT_IGNORE_FILE": "", "ORBIT_VERSION": "v1.0.0",
+		"ORBIT_IMAGE": "orchestalabs/orbit-cli", "AGENT_TEMPDIRECTORY": tmp, "BUILD_SOURCEBRANCH": "refs/pull/1/merge",
+		"ORBIT_FAIL_ON_KEV": "", "ORBIT_NO_EXPLOIT_DATA": "", "ORBIT_BASELINE_BRANCH": "",
+	}
+	for k, v := range extra {
+		env[k] = v
+	}
+	return env
+}
+
+// writeAzureBaseline puts a baseline where the download step leaves it.
+func writeAzureBaseline(t *testing.T, tmp string) string {
+	t.Helper()
+	base := filepath.Join(tmp, "orbit-baseline", "orbit-baseline.json")
+	if err := os.MkdirAll(filepath.Dir(base), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(base, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return base
+}
+
+func TestAzureTemplateBaselineSteps(t *testing.T) {
+	params := map[string]map[string]any{}
+	for _, p := range loadYAML(t, "azure-pipelines/orbit-scan.yml")["parameters"].([]any) {
+		m := p.(map[string]any)
+		params[m["name"].(string)] = m
+	}
+	if p := params["baseline"]; p == nil || p["type"] != "boolean" || p["default"] != false {
+		t.Errorf("parameter baseline = %v", p)
+	}
+	if p := params["baselineBranch"]; p == nil || p["type"] != "string" || p["default"] != "refs/heads/main" {
+		t.Errorf("parameter baselineBranch = %v", p)
+	}
+	var download, publish map[string]any
+	scans := 0
+	for _, s := range azureSteps(t) {
+		in, _ := s["inputs"].(map[string]any)
+		switch s["task"] {
+		case "DownloadBuildArtifacts@0":
+			download = s
+		case "PublishBuildArtifacts@1":
+			if in["ArtifactName"] == "orbit-baseline" {
+				publish = s
+			}
+		}
+		if s["displayName"] == "Orbit scan" {
+			scans++
+			env := s["env"].(map[string]any)
+			on, _ := env["${{ if eq(parameters.baseline, true) }}"].(map[string]any)
+			if on["ORBIT_BASELINE_BRANCH"] != "${{ parameters.baselineBranch }}" {
+				t.Errorf("%v step does not pass ORBIT_BASELINE_BRANCH in baseline mode", s["condition"])
+			}
+			// Set to '' when off, so a pipeline variable of that name cannot
+			// turn on recording (which turns exit 1 into 0).
+			off, _ := env["${{ if eq(parameters.baseline, false) }}"].(map[string]any)
+			if v, ok := off["ORBIT_BASELINE_BRANCH"]; !ok || v != "" {
+				t.Errorf("%v step does not clear ORBIT_BASELINE_BRANCH without baseline mode", s["condition"])
+			}
+		}
+	}
+	if scans != 3 {
+		t.Errorf("%d Orbit scan steps, want 3 (container, binary bash, PowerShell)", scans)
+	}
+	if download == nil || publish == nil {
+		t.Fatalf("download %v, publish %v", download, publish)
+	}
+	in := download["inputs"].(map[string]any)
+	want := map[string]any{
+		"buildType": "specific", "project": "$(System.TeamProjectId)", "pipeline": "$(System.DefinitionId)",
+		"buildVersionToDownload": "latestFromBranch", "branchName": "${{ parameters.baselineBranch }}",
+		"allowPartiallySucceededBuilds": true, "downloadType": "single", "artifactName": "orbit-baseline",
+		"downloadPath": "$(Agent.TempDirectory)",
+	}
+	for k, v := range want {
+		if in[k] != v {
+			t.Errorf("download input %s = %v, want %v", k, in[k], v)
+		}
+	}
+	if download["continueOnError"] != true {
+		t.Error("a missing baseline must not fail the build")
+	}
+	if c, _ := download["condition"].(string); !strings.Contains(c, "ne(variables['Build.SourceBranch'], '${{ parameters.baselineBranch }}')") {
+		t.Errorf("download condition = %q, want it skipped on the baseline branch", c)
+	}
+	pin := publish["inputs"].(map[string]any)
+	if pin["PathtoPublish"] != "$(ORBIT_REPORTS)/orbit-baseline.json" ||
+		publish["condition"] != "and(always(), eq(variables['ORBIT_HAS_BASELINE'], 'true'))" {
+		t.Errorf("publish step = %v", publish)
+	}
+}
+
+func TestAzureContainerRecordsOnBaselineBranch(t *testing.T) {
+	tmp := t.TempDir()
+	r := runScript(t, "bash", azureScanScript(t, "docker run"), tmp, azureEnv(tmp, map[string]string{
+		"ORBIT_BASELINE_BRANCH": "refs/heads/main", "BUILD_SOURCEBRANCH": "refs/heads/main", "FAKE_RC": "1",
+	}))
+	d := r.of("docker")
+	if len(d) != 3 || !hasSeq(d[2].args, "--fail-on", "none") || !hasSeq(d[2].args, "--format", "json", "--out", "/out/orbit-baseline.json") {
+		t.Fatalf("docker calls %+v; output:\n%s", d, r.output)
+	}
+	for i, c := range d {
+		if slices.Contains(c.args, "--baseline") {
+			t.Errorf("run %d = %v, want no --baseline while recording", i+1, c.args)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "orbit-reports", "orbit-baseline.json")); err != nil {
+		t.Errorf("orbit-baseline.json not written: %v", err)
+	}
+	for _, want := range []string{"variable=ORBIT_EXIT]0", "variable=ORBIT_HAS_BASELINE]true", "records the baseline"} {
+		if !strings.Contains(r.output, want) {
+			t.Errorf("output lacks %q:\n%s", want, r.output)
+		}
+	}
+}
+
+// Azure compares strings ignoring case, so the download step treats
+// refs/heads/Main as the baseline branch; the script must agree.
+func TestAzureContainerMatchesTheBranchIgnoringCase(t *testing.T) {
+	tmp := t.TempDir()
+	r := runScript(t, "bash", azureScanScript(t, "docker run"), tmp, azureEnv(tmp, map[string]string{
+		"ORBIT_BASELINE_BRANCH": "refs/heads/Main", "BUILD_SOURCEBRANCH": "refs/heads/main",
+	}))
+	if len(r.of("docker")) != 3 || !strings.Contains(r.output, "variable=ORBIT_HAS_BASELINE]true") {
+		t.Fatalf("calls %+v; output:\n%s", r.calls, r.output)
+	}
+}
+
+func TestAzureContainerRecordingStillFailsOnErrors(t *testing.T) {
+	tmp := t.TempDir()
+	r := runScript(t, "bash", azureScanScript(t, "docker run"), tmp, azureEnv(tmp, map[string]string{
+		"ORBIT_BASELINE_BRANCH": "refs/heads/main", "BUILD_SOURCEBRANCH": "refs/heads/main", "FAKE_RC": "2",
+	}))
+	if len(r.of("docker")) != 1 || !strings.Contains(r.output, "variable=ORBIT_EXIT]2") ||
+		strings.Contains(r.output, "ORBIT_HAS_BASELINE") {
+		t.Fatalf("calls %+v; output:\n%s", r.calls, r.output)
+	}
+}
+
+func TestAzureContainerComparesWithTheBaseline(t *testing.T) {
+	tmp := t.TempDir()
+	writeAzureBaseline(t, tmp)
+	r := runScript(t, "bash", azureScanScript(t, "docker run"), tmp, azureEnv(tmp, map[string]string{
+		"ORBIT_BASELINE_BRANCH": "refs/heads/main", "FAKE_RC": "1",
+	}))
+	d := r.of("docker")
+	if len(d) != 2 || !strings.Contains(r.output, "variable=ORBIT_EXIT]1") || strings.Contains(r.output, "ORBIT_HAS_BASELINE") {
+		t.Fatalf("docker calls %+v; output:\n%s", d, r.output)
+	}
+	for _, c := range d {
+		if !hasSeq(c.args, "--baseline", "/baseline/orbit-baseline.json") ||
+			!hasSeq(c.args, "-v", filepath.Join(tmp, "orbit-baseline")+":/baseline:ro") {
+			t.Errorf("call lacks --baseline or its mount: %v", c.args)
+		}
+	}
+}
+
+func TestAzureContainerWarnsWithoutBaseline(t *testing.T) {
+	tmp := t.TempDir()
+	r := runScript(t, "bash", azureScanScript(t, "docker run"), tmp, azureEnv(tmp, map[string]string{
+		"ORBIT_BASELINE_BRANCH": "refs/heads/main", "FAKE_RC": "1",
+	}))
+	if !strings.Contains(r.output, "##vso[task.logissue type=warning]No Orbit baseline from refs/heads/main yet") ||
+		!strings.Contains(r.output, "variable=ORBIT_EXIT]1") {
+		t.Fatalf("output:\n%s", r.output)
+	}
+	for _, c := range r.of("docker") {
+		if slices.Contains(c.args, "--baseline") {
+			t.Errorf("--baseline without a baseline: %v", c.args)
+		}
+	}
+}
+
+func TestAzureContainerWithoutBaselineModeIsUnchanged(t *testing.T) {
+	tmp := t.TempDir()
+	r := runScript(t, "bash", azureScanScript(t, "docker run"), tmp, azureEnv(tmp, map[string]string{
+		"BUILD_SOURCEBRANCH": "refs/heads/main", "FAKE_RC": "1",
+	}))
+	if len(r.of("docker")) != 2 || !strings.Contains(r.output, "variable=ORBIT_EXIT]1") || strings.Contains(r.output, "baseline") {
+		t.Fatalf("calls %+v; output:\n%s", r.calls, r.output)
+	}
+	for _, c := range r.of("docker") {
+		if strings.Contains(strings.Join(c.args, " "), "baseline") {
+			t.Errorf("baseline in a call without baseline mode: %v", c.args)
+		}
+	}
+}
+
+// Plan 02's switches: ORBIT_FAIL_ON_KEV gates only the first run;
+// ORBIT_NO_EXPLOIT_DATA reaches every run, the recording one too. The ignore
+// file applies to every run.
+func TestAzureContainerBaselineKeepsExploitFlags(t *testing.T) {
+	tmp := t.TempDir()
+	r := runScript(t, "bash", azureScanScript(t, "docker run"), tmp, azureEnv(tmp, map[string]string{
+		"ORBIT_BASELINE_BRANCH": "refs/heads/main", "BUILD_SOURCEBRANCH": "refs/heads/main",
+		"ORBIT_FAIL_ON_KEV": "true", "ORBIT_NO_EXPLOIT_DATA": "true", "ORBIT_IGNORE_FILE": ".orbitignore",
+	}))
+	d := r.of("docker")
+	if len(d) != 3 {
+		t.Fatalf("calls %+v; output:\n%s", r.calls, r.output)
+	}
+	if !slices.Contains(d[0].args, "--fail-on-kev") {
+		t.Errorf("first run = %v, want --fail-on-kev", d[0].args)
+	}
+	for i, c := range d {
+		if !slices.Contains(c.args, "--no-exploit-data") || !hasSeq(c.args, "--ignore-file", "/src/.orbitignore") {
+			t.Errorf("run %d = %v, want --no-exploit-data and the ignore file", i+1, c.args)
+		}
+		if i > 0 && slices.Contains(c.args, "--fail-on-kev") {
+			t.Errorf("run %d = %v, want no --fail-on-kev", i+1, c.args)
+		}
+	}
+}
+
+// The binary-mode script with its download section replaced by the fake orbit.
+func azureBinaryScript(t *testing.T) string {
+	t.Helper()
+	s := azureScanScript(t, "# --- download-begin")
+	begin, end := strings.Index(s, "# --- download-begin"), strings.Index(s, "# --- download-end")
+	return s[:begin] + "orbit=\"$(command -v orbit)\"\n" + s[end:]
+}
+
+func TestAzureBinaryRecordsAndCompares(t *testing.T) {
+	tmp := t.TempDir()
+	r := runScript(t, "bash", azureBinaryScript(t), tmp, azureEnv(tmp, map[string]string{
+		"ORBIT_BASELINE_BRANCH": "refs/heads/main", "BUILD_SOURCEBRANCH": "refs/heads/main", "FAKE_RC": "1",
+	}))
+	o := r.of("orbit")
+	if len(o) != 3 || !hasSeq(o[2].args, "--out", filepath.Join(tmp, "orbit-reports", "orbit-baseline.json")) ||
+		!strings.Contains(r.output, "variable=ORBIT_EXIT]0") || !strings.Contains(r.output, "variable=ORBIT_HAS_BASELINE]true") {
+		t.Fatalf("record: calls %+v; output:\n%s", o, r.output)
+	}
+
+	tmp = t.TempDir()
+	base := writeAzureBaseline(t, tmp)
+	r = runScript(t, "bash", azureBinaryScript(t), tmp, azureEnv(tmp, map[string]string{
+		"ORBIT_BASELINE_BRANCH": "refs/heads/main", "FAKE_RC": "1",
+	}))
+	o = r.of("orbit")
+	if len(o) != 2 || !strings.Contains(r.output, "variable=ORBIT_EXIT]1") {
+		t.Fatalf("compare: calls %+v; output:\n%s", o, r.output)
+	}
+	for _, c := range o {
+		if !hasSeq(c.args, "--baseline", base) {
+			t.Errorf("compare: call lacks --baseline: %v", c.args)
+		}
+	}
+}
+
+func TestAzureBinaryWarnsWithoutBaseline(t *testing.T) {
+	tmp := t.TempDir()
+	r := runScript(t, "bash", azureBinaryScript(t), tmp, azureEnv(tmp, map[string]string{
+		"ORBIT_BASELINE_BRANCH": "refs/heads/main", "FAKE_RC": "1",
+	}))
+	o := r.of("orbit")
+	if len(o) != 2 || !strings.Contains(r.output, "type=warning]No Orbit baseline from refs/heads/main yet") ||
+		!strings.Contains(r.output, "variable=ORBIT_EXIT]1") {
+		t.Fatalf("calls %+v; output:\n%s", o, r.output)
+	}
+	for _, c := range o {
+		if slices.Contains(c.args, "--baseline") {
+			t.Errorf("--baseline without a baseline: %v", c.args)
+		}
+	}
+}
+
+func TestAzureBinaryWithoutBaselineModeIsUnchanged(t *testing.T) {
+	tmp := t.TempDir()
+	r := runScript(t, "bash", azureBinaryScript(t), tmp, azureEnv(tmp, map[string]string{
+		"BUILD_SOURCEBRANCH": "refs/heads/main", "FAKE_RC": "1",
+	}))
+	o := r.of("orbit")
+	if len(o) != 2 || !strings.Contains(r.output, "variable=ORBIT_EXIT]1") || strings.Contains(r.output, "baseline") {
+		t.Fatalf("calls %+v; output:\n%s", o, r.output)
+	}
+}
+
+func TestAzureBinaryRecordingStillFailsOnErrors(t *testing.T) {
+	tmp := t.TempDir()
+	r := runScript(t, "bash", azureBinaryScript(t), tmp, azureEnv(tmp, map[string]string{
+		"ORBIT_BASELINE_BRANCH": "refs/heads/main", "BUILD_SOURCEBRANCH": "refs/heads/main", "FAKE_RC": "2",
+	}))
+	if len(r.of("orbit")) != 1 || !strings.Contains(r.output, "variable=ORBIT_EXIT]2") {
+		t.Fatalf("calls %+v; output:\n%s", r.calls, r.output)
+	}
+}
+
+func TestAzureBinaryBaselineKeepsExploitFlags(t *testing.T) {
+	tmp := t.TempDir()
+	r := runScript(t, "bash", azureBinaryScript(t), tmp, azureEnv(tmp, map[string]string{
+		"ORBIT_BASELINE_BRANCH": "refs/heads/main", "BUILD_SOURCEBRANCH": "refs/heads/main",
+		"ORBIT_FAIL_ON_KEV": "true", "ORBIT_NO_EXPLOIT_DATA": "true", "ORBIT_IGNORE_FILE": ".orbitignore",
+	}))
+	o := r.of("orbit")
+	if len(o) != 3 {
+		t.Fatalf("calls %+v; output:\n%s", r.calls, r.output)
+	}
+	if !slices.Contains(o[0].args, "--fail-on-kev") {
+		t.Errorf("first run = %v, want --fail-on-kev", o[0].args)
+	}
+	for i, c := range o {
+		if !slices.Contains(c.args, "--no-exploit-data") || !hasSeq(c.args, "--ignore-file", filepath.Join(tmp, ".orbitignore")) {
+			t.Errorf("run %d = %v, want --no-exploit-data and the ignore file", i+1, c.args)
+		}
+		if i > 0 && slices.Contains(c.args, "--fail-on-kev") {
+			t.Errorf("run %d = %v, want no --fail-on-kev", i+1, c.args)
+		}
+	}
+}
+
+func TestAzureExampleSchedulesTheBaselineBranch(t *testing.T) {
+	doc := loadYAML(t, "azure-pipelines/example.yml")
+	sched, _ := doc["schedules"].([]any)
+	if len(sched) != 1 {
+		t.Fatalf("schedules = %v", doc["schedules"])
+	}
+	s := sched[0].(map[string]any)
+	inc, _ := s["branches"].(map[string]any)["include"].([]any)
+	if s["always"] != true || !slices.Equal(inc, []any{"main"}) {
+		t.Errorf("schedule = %v, want main, always", s)
+	}
+	for _, st := range doc["steps"].([]any) {
+		m := st.(map[string]any)
+		if m["template"] == "orbit-scan.yml" {
+			p := m["parameters"].(map[string]any)
+			if p["baseline"] != true || p["baselineBranch"] != "refs/heads/main" {
+				t.Errorf("template parameters = %v", p)
+			}
+			return
+		}
+	}
+	t.Error("example does not use orbit-scan.yml")
+}

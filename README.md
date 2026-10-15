@@ -276,7 +276,7 @@ The templates pull `orchestalabs/orbit-cli` from Docker Hub, which limits pulls 
 
 ### New findings only, in CI
 
-The GitHub Action and the GitLab template have a baseline mode. Runs of the default branch scan as usual, also write `orbit-baseline.json` and store it. Their findings are reported but do not fail the run: on the default branch every finding is an existing one, so exit 1 becomes a warning there (the action does this whenever it writes `baseline-output`). Errors (exit 2) still fail it. Pull and merge requests fetch the newest stored baseline and fail only on new findings and on malicious packages. When there is none yet (the first run, or it expired) they warn and every finding counts. Schedule a daily run of the default branch so advisories published since the last merge are part of the baseline.
+The GitHub Action, the GitLab template and the Azure Pipelines template have a baseline mode. Runs of the default branch scan as usual, also write `orbit-baseline.json` and store it. Their findings are reported but do not fail the run: on the default branch every finding is an existing one, so exit 1 becomes a warning there (the action does this whenever it writes `baseline-output`). Errors (exit 2) still fail it. Pull and merge requests fetch the newest stored baseline and fail only on new findings and on malicious packages. When there is none yet (the first run, or it expired) they warn and every finding counts. Schedule a daily run of the default branch so advisories published since the last merge are part of the baseline.
 
 **GitHub Actions** uses the cache: a pull request can restore caches of its base branch, also from forks, and caches written by pull requests stay scoped to them, so a pull request cannot replace the baseline. GitHub removes caches nobody used for 7 days. The full workflow is [`.github/examples/orbit-scan-baseline.yml`](.github/examples/orbit-scan-baseline.yml); the parts that matter:
 
@@ -310,10 +310,20 @@ variables:
   ORBIT_BASELINE: auto
 ```
 
+**Azure Pipelines**: set `baseline: true` and, if your default branch is not `main`, `baselineBranch` (a full ref such as `refs/heads/develop`). Builds of that branch publish `orbit-baseline.json` as the build artifact `orbit-baseline`; other builds download it from the latest successful or partially succeeded build of the same pipeline on that branch. Build artifacts are used because pipeline artifacts are not available on Azure DevOps Server. A first run has nothing to download, so that step fails softly and the build shows as partially succeeded. [`example.yml`](ci/azure-pipelines/example.yml) also schedules the daily build.
+
+```yaml
+- template: ci/azure-pipelines/orbit-scan.yml
+  parameters:
+    version: v1.0.0
+    baseline: true
+    baselineBranch: refs/heads/main
+```
+
 ### GitLab CI and Azure Pipelines
 
 - GitLab CI: include [`ci/gitlab/orbit.gitlab-ci.yml`](ci/gitlab/orbit.gitlab-ci.yml). It writes a JUnit report for the merge request and a SARIF artifact, and has a [baseline mode](#new-findings-only-in-ci) (`ORBIT_BASELINE`).
-- Azure Pipelines: use the step template [`ci/azure-pipelines/orbit-scan.yml`](ci/azure-pipelines/orbit-scan.yml) (example: [`example.yml`](ci/azure-pipelines/example.yml)). It works on Azure DevOps Services and on Azure DevOps Server 2020 and later, in a container or with a downloaded, checksum-verified binary (Windows agents too).
+- Azure Pipelines: use the step template [`ci/azure-pipelines/orbit-scan.yml`](ci/azure-pipelines/orbit-scan.yml) (example: [`example.yml`](ci/azure-pipelines/example.yml)). It works on Azure DevOps Services and on Azure DevOps Server 2020 and later, in a container or with a downloaded, checksum-verified binary (Windows agents too). It has a [baseline mode](#new-findings-only-in-ci) (`baseline`).
 
 Both take a KEV gate (`ORBIT_FAIL_ON_KEV` / `failOnKev`) and can turn exploit data off (`ORBIT_EXPLOIT_DATA` / `exploitData`); the SARIF run never applies the KEV gate.
 
