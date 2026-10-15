@@ -8,21 +8,31 @@
 #         ignoreFile: ''   # optional, relative to path; empty uses <path>/.orbitignore
 #         failOnKev: false
 #         exploitData: true
+#         licenses: false    # true looks up missing licenses on api.deps.dev
+#         denyLicense: ''    # comma-separated SPDX IDs that fail the build
 #         baseline: false   # true: pull requests fail only on new findings (see below)
 #         baselineBranch: refs/heads/main
 #
 # Publishes a JUnit test run ("Orbit") and a SARIF file as the "CodeAnalysisLogs"
 # build artifact, then fails the job with the CLI's exit code (0 clean, 1 findings
-# at or above failOn or, with failOnKev, in CISA KEV, or a malicious package unless
-# failOn is none, 2 error). Only that last step decides the build result; a missing
-# report just skips its publish step. Needs Azure DevOps Server 2020 or later (typed
-# parameters; for Server 2019 convert `parameters:` to the untyped map form). Use the
-# template once per job: it shares the ORBIT_* variables.
+# at or above failOn or, with failOnKev, in CISA KEV, a malicious package unless
+# failOn is none, or a license denyLicense denies, 2 error). Only that last step
+# decides the build result; a missing report just skips its publish step. Needs Azure
+# DevOps Server 2020 or later (typed parameters; for Server 2019 convert `parameters:`
+# to the untyped map form). Use the template once per job: it shares the ORBIT_*
+# variables.
 #
 # failOnKev: true      also fails on any finding in CISA KEV; no catalog means
 #                      exit 2. Only the first run gets it, the SARIF run never does.
 # exploitData: false   passes --no-exploit-data: nothing goes to www.cisa.gov or
 #                      api.first.org.
+# licenses: true       passes --licenses: looks up on api.deps.dev the licenses the
+#                      lockfiles do not record (package names and versions are sent).
+# denyLicense: 'GPL-3.0-only,AGPL-3.0-only'
+#                      fails the build (exit 1) on a dependency that can only be used
+#                      under one of these SPDX licenses, whatever failOn says. With
+#                      licenses: true a failed lookup is an error (exit 2). The first
+#                      run and the SARIF run get both; the recording run gets neither.
 #
 # useContainer: true   runs the CLI image with docker (Linux agents with Docker).
 # useContainer: false  downloads the release binary and verifies it against checksums.txt
@@ -30,21 +40,23 @@
 # Air-gapped: mirror the image and set imageName, or mirror the release assets and set
 # binaryBaseUrl.
 #
-# baseline: true  Builds of baselineBranch also write orbit-baseline.json (one more scan) and
-#                 publish it as the build artifact "orbit-baseline". Every finding there is an
-#                 existing one, so exit 1 is reported as a warning and does not fail the build
-#                 (not even for a malicious package or a KEV entry): the download below skips
-#                 failed builds. Exit 2 still fails it, and so does a failed orbit-baseline.json
-#                 scan: nothing is published and the previous good build keeps serving its
-#                 baseline, while a passing build without it would leave pull requests with
-#                 none. Other builds, pull requests included,
-#                 download that artifact from the latest successful or partially succeeded build
-#                 of baselineBranch in this pipeline and pass it to --baseline: they fail only on
-#                 new findings and on malicious packages. With none yet the download step fails
-#                 softly (continueOnError, the build shows as partially succeeded), a warning says
-#                 so and every finding counts. Schedule a daily build of baselineBranch so new
-#                 advisories are part of the baseline (see example.yml). Build artifacts are used
-#                 because pipeline artifacts are not available on Azure DevOps Server.
+# baseline: true  Builds of baselineBranch also write orbit-baseline.json (one more scan)
+#                 and publish it as the build artifact "orbit-baseline". Every finding there
+#                 is an existing one, so exit 1 is reported as a warning and does not fail
+#                 the build (not even for a malicious package, a KEV entry or a denied
+#                 license): the download below skips failed builds. Exit 2 still fails it,
+#                 and so does a failed orbit-baseline.json scan: nothing is published and
+#                 the previous good build keeps serving its baseline, while a passing build
+#                 without it would leave pull requests with none. Other builds, pull
+#                 requests included, download that artifact from the latest successful or
+#                 partially succeeded build of baselineBranch in this pipeline and pass it
+#                 to --baseline: they fail only on new findings, on malicious packages and
+#                 on denied licenses. With none yet the download step fails softly
+#                 (continueOnError, the build shows as partially succeeded), a warning says
+#                 so and every finding counts. Schedule a daily build of baselineBranch so
+#                 new advisories are part of the baseline (see example.yml). Build artifacts
+#                 are used because pipeline artifacts are not available on Azure DevOps
+#                 Server.
 
 parameters:
   - name: path
@@ -62,6 +74,12 @@ parameters:
   - name: exploitData
     type: boolean
     default: true    # false passes --no-exploit-data: no www.cisa.gov, no api.first.org
+  - name: licenses
+    type: boolean
+    default: false   # true passes --licenses: package names and versions go to api.deps.dev
+  - name: denyLicense
+    type: string
+    default: ''   # comma-separated SPDX license IDs, e.g. GPL-3.0-only,AGPL-3.0-only
   - name: version
     type: string
     default: latest   # a release tag such as v1.0.0; required (not "latest") when useContainer is false
@@ -139,14 +157,19 @@ steps:
               ${ORBIT_IGNORE_FILE:+--ignore-file "/src/$ORBIT_IGNORE_FILE"} "$@"
           }
           rc=0
+          # The license switches go to the first and the SARIF run, not the recording one.
           orbit_run --fail-on "$ORBIT_FAIL_ON" ${ORBIT_FAIL_ON_KEV:+--fail-on-kev} \
+            ${ORBIT_LICENSES:+--licenses} ${ORBIT_DENY_LICENSE:+--deny-license "$ORBIT_DENY_LICENSE"} \
             ${baseline:+--baseline "$baseline"} \
             --format junit --out /out/orbit-junit.xml || rc=$?
           if [ "$rc" -ne 2 ]; then
-            # No --fail-on-kev in the runs below: they only write reports.
+            # No --fail-on-kev in the runs below: they only write reports. A denied
+            # license still exits 1 with --fail-on none, after writing the report.
+            sarif_rc=0
             orbit_run --fail-on none ${baseline:+--baseline "$baseline"} \
-              --format sarif --out /out/orbit.sarif --quiet \
-              || echo "warning: could not write orbit.sarif" >&2
+              ${ORBIT_LICENSES:+--licenses} ${ORBIT_DENY_LICENSE:+--deny-license "$ORBIT_DENY_LICENSE"} \
+              --format sarif --out /out/orbit.sarif --quiet || sarif_rc=$?
+            [ "$sarif_rc" -le 1 ] || echo "warning: could not write orbit.sarif" >&2
             # A failed recording scan fails the build and publishes nothing, so the
             # download keeps taking the previous good build's baseline.
             if [ "$record" = true ] \
@@ -157,10 +180,11 @@ steps:
               rc=2
             fi
           fi
-          # Only exit 1 (findings) is turned into a warning; exit 2 from either scan stays.
+          # Only exit 1 (findings or a denied license) is turned into a warning; exit 2
+          # from either scan stays.
           if [ "$record" = true ] && [ "$rc" -eq 1 ]; then
             echo "##vso[task.logissue type=warning]Orbit: $ORBIT_BASELINE_BRANCH records the baseline;" \
-              "its findings are reported and do not fail the build."
+              "its findings and denied licenses are reported and do not fail the build."
             rc=0
           fi
           [ -f "$reports/orbit-junit.xml" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_JUNIT]true"
@@ -183,6 +207,11 @@ steps:
             ORBIT_NO_EXPLOIT_DATA: 'true'
           ${{ if eq(parameters.exploitData, true) }}:
             ORBIT_NO_EXPLOIT_DATA: ''
+          ${{ if eq(parameters.licenses, true) }}:
+            ORBIT_LICENSES: 'true'
+          ${{ if eq(parameters.licenses, false) }}:
+            ORBIT_LICENSES: ''
+          ORBIT_DENY_LICENSE: ${{ parameters.denyLicense }}
           ${{ if eq(parameters.baseline, true) }}:
             ORBIT_BASELINE_BRANCH: ${{ parameters.baselineBranch }}
           ${{ if eq(parameters.baseline, false) }}:
@@ -251,15 +280,19 @@ steps:
             "$orbit" scan --path "$ORBIT_PATH" ${ORBIT_NO_EXPLOIT_DATA:+--no-exploit-data} \
               ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_PATH/$ORBIT_IGNORE_FILE"} "$@"
           }
+          # The license switches go to the first and the SARIF run, not the recording one.
           orbit_run --fail-on "$ORBIT_FAIL_ON" ${ORBIT_FAIL_ON_KEV:+--fail-on-kev} \
+            ${ORBIT_LICENSES:+--licenses} ${ORBIT_DENY_LICENSE:+--deny-license "$ORBIT_DENY_LICENSE"} \
             ${baseline:+--baseline "$baseline"} \
             --format junit --out "$reports/orbit-junit.xml"
           rc=$?
           if [ "$rc" -ne 2 ]; then
-            # No --fail-on-kev in the runs below: they only write reports.
+            # No --fail-on-kev in the runs below: they only write reports. A denied
+            # license still exits 1 with --fail-on none, after writing the report.
             orbit_run --fail-on none ${baseline:+--baseline "$baseline"} \
-              --format sarif --out "$reports/orbit.sarif" --quiet \
-              || echo "warning: could not write orbit.sarif" >&2
+              ${ORBIT_LICENSES:+--licenses} ${ORBIT_DENY_LICENSE:+--deny-license "$ORBIT_DENY_LICENSE"} \
+              --format sarif --out "$reports/orbit.sarif" --quiet
+            [ "$?" -le 1 ] || echo "warning: could not write orbit.sarif" >&2
             # A failed recording scan fails the build and publishes nothing, so the
             # download keeps taking the previous good build's baseline.
             if [ "$record" = true ] \
@@ -270,10 +303,11 @@ steps:
               rc=2
             fi
           fi
-          # Only exit 1 (findings) is turned into a warning; exit 2 from either scan stays.
+          # Only exit 1 (findings or a denied license) is turned into a warning; exit 2
+          # from either scan stays.
           if [ "$record" = true ] && [ "$rc" -eq 1 ]; then
             echo "##vso[task.logissue type=warning]Orbit: $ORBIT_BASELINE_BRANCH records the baseline;" \
-              "its findings are reported and do not fail the build."
+              "its findings and denied licenses are reported and do not fail the build."
             rc=0
           fi
           [ -f "$reports/orbit-junit.xml" ] && echo "##vso[task.setvariable variable=ORBIT_HAS_JUNIT]true"
@@ -296,6 +330,11 @@ steps:
             ORBIT_NO_EXPLOIT_DATA: 'true'
           ${{ if eq(parameters.exploitData, true) }}:
             ORBIT_NO_EXPLOIT_DATA: ''
+          ${{ if eq(parameters.licenses, true) }}:
+            ORBIT_LICENSES: 'true'
+          ${{ if eq(parameters.licenses, false) }}:
+            ORBIT_LICENSES: ''
+          ORBIT_DENY_LICENSE: ${{ parameters.denyLicense }}
           ${{ if eq(parameters.baseline, true) }}:
             ORBIT_BASELINE_BRANCH: ${{ parameters.baselineBranch }}
           ${{ if eq(parameters.baseline, false) }}:
@@ -341,6 +380,10 @@ steps:
           if ($env:ORBIT_NO_EXPLOIT_DATA) { $exploitArgs = @('--no-exploit-data') }
           $kevArgs = @()
           if ($env:ORBIT_FAIL_ON_KEV) { $kevArgs = @('--fail-on-kev') }
+          # The first and the SARIF run get these, the recording run does not.
+          $licenseArgs = @()
+          if ($env:ORBIT_LICENSES) { $licenseArgs += '--licenses' }
+          if ($env:ORBIT_DENY_LICENSE) { $licenseArgs += @('--deny-license', $env:ORBIT_DENY_LICENSE) }
           # Baseline mode: builds of the baseline branch record, all others compare. -eq
           # ignores case, like the download step's condition.
           $record = $false
@@ -355,12 +398,13 @@ steps:
               Write-Host "##vso[task.logissue type=warning]Orbit: no baseline was downloaded from $($env:ORBIT_BASELINE_BRANCH); every finding counts."
             }
           }
-          & $exe scan --path $env:ORBIT_PATH --fail-on $env:ORBIT_FAIL_ON @ignoreArgs @exploitArgs @kevArgs @baseArgs --format junit --out (Join-Path $reports 'orbit-junit.xml')
+          & $exe scan --path $env:ORBIT_PATH --fail-on $env:ORBIT_FAIL_ON @ignoreArgs @exploitArgs @kevArgs @licenseArgs @baseArgs --format junit --out (Join-Path $reports 'orbit-junit.xml')
           $rc = $LASTEXITCODE
           if ($rc -ne 2) {
-            # No @kevArgs in the runs below: they only write reports.
-            & $exe scan --path $env:ORBIT_PATH --fail-on none @ignoreArgs @exploitArgs @baseArgs --format sarif --out (Join-Path $reports 'orbit.sarif') --quiet
-            if ($LASTEXITCODE -ne 0) { Write-Host 'warning: could not write orbit.sarif' }
+            # No @kevArgs in the runs below: they only write reports. A denied license
+            # still exits 1 with --fail-on none, after writing the report.
+            & $exe scan --path $env:ORBIT_PATH --fail-on none @ignoreArgs @exploitArgs @licenseArgs @baseArgs --format sarif --out (Join-Path $reports 'orbit.sarif') --quiet
+            if ($LASTEXITCODE -gt 1) { Write-Host 'warning: could not write orbit.sarif' }
             # A failed recording scan fails the build and publishes nothing, so the
             # download keeps taking the previous good build's baseline.
             if ($record) {
@@ -373,10 +417,11 @@ steps:
               }
             }
           }
-          # Only exit 1 (findings) is turned into a warning; exit 2 from either scan stays.
+          # Only exit 1 (findings or a denied license) is turned into a warning; exit 2
+          # from either scan stays.
           if ($record -and $rc -eq 1) {
             Write-Host ("##vso[task.logissue type=warning]Orbit: $($env:ORBIT_BASELINE_BRANCH) records the baseline; " +
-              'its findings are reported and do not fail the build.')
+              'its findings and denied licenses are reported and do not fail the build.')
             $rc = 0
           }
           if (Test-Path (Join-Path $reports 'orbit-junit.xml')) { Write-Host '##vso[task.setvariable variable=ORBIT_HAS_JUNIT]true' }
@@ -400,6 +445,11 @@ steps:
             ORBIT_NO_EXPLOIT_DATA: 'true'
           ${{ if eq(parameters.exploitData, true) }}:
             ORBIT_NO_EXPLOIT_DATA: ''
+          ${{ if eq(parameters.licenses, true) }}:
+            ORBIT_LICENSES: 'true'
+          ${{ if eq(parameters.licenses, false) }}:
+            ORBIT_LICENSES: ''
+          ORBIT_DENY_LICENSE: ${{ parameters.denyLicense }}
           ${{ if eq(parameters.baseline, true) }}:
             ORBIT_BASELINE_BRANCH: ${{ parameters.baselineBranch }}
           ${{ if eq(parameters.baseline, false) }}:

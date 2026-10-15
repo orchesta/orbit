@@ -16,24 +16,30 @@ import (
 
 // fakeTool stands in for docker and orbit. It logs its name and arguments,
 // one per line, ending the call with "---". It exits with $FAKE_RC, except
-// that "--fail-on none" always exits 0 and that, when $FAKE_RECORD_RC is set,
-// a "--format json" run (the one that records the baseline) exits with it;
-// unless it exits 2 it writes "{}" to the --out file. As docker, an --out
-// path inside a -v mount is written on the host side of that mount.
+// that "--fail-on none" always exits 0. Like the CLI, a run with
+// --deny-license exits at least 1 when $FAKE_DENIED is set (a denied license
+// fails whatever --fail-on says). When $FAKE_SARIF_RC is set, the
+// "--fail-on none --format sarif" run exits with it, and when $FAKE_RECORD_RC
+// is set, a "--format json" run (the one that records the baseline) exits
+// with it. Unless it exits 2 it writes "{}" to the --out file. As docker, an
+// --out path inside a -v mount is written on the host side of that mount.
 const fakeTool = `#!/bin/sh
 { basename "$0"; for a in "$@"; do printf '%s\n' "$a"; done; echo ---; } >> "$FAKE_LOG"
-mounts=""; out=""; failon=""; format=""; prev=""
+mounts=""; out=""; failon=""; format=""; deny=""; prev=""
 for a in "$@"; do
   case "$prev" in
     -v) mounts="$mounts $a" ;;
     --out) out="$a" ;;
     --fail-on) failon="$a" ;;
     --format) format="$a" ;;
+    --deny-license) deny="$a" ;;
   esac
   prev="$a"
 done
 rc="${FAKE_RC:-0}"
 [ "$failon" = none ] && rc=0
+[ -n "$deny" ] && [ -n "${FAKE_DENIED:-}" ] && [ "$rc" -eq 0 ] && rc=1
+[ "$failon" = none ] && [ "$format" = sarif ] && [ -n "${FAKE_SARIF_RC:-}" ] && rc="$FAKE_SARIF_RC"
 [ "$format" = json ] && [ -n "${FAKE_RECORD_RC:-}" ] && rc="$FAKE_RECORD_RC"
 if [ -n "$out" ] && [ "$rc" -ne 2 ]; then
   target="$out"
@@ -166,6 +172,7 @@ func actionEnv(ws string, extra map[string]string) map[string]string {
 		"INPUT_OUTPUT": "", "INPUT_IGNORE_FILE": "", "INPUT_VERSION": "v1.2.3", "ACTION_REF": "",
 		"INPUT_FAIL_ON_KEV": "false", "INPUT_EXPLOIT_DATA": "true",
 		"INPUT_BASELINE": "", "INPUT_BASELINE_OUTPUT": "",
+		"INPUT_LICENSES": "false", "INPUT_DENY_LICENSE": "",
 	}
 	for k, v := range extra {
 		env[k] = v
@@ -351,7 +358,7 @@ func TestActionDefaultsLeaveExploitFlagsOut(t *testing.T) {
 
 func TestActionRejectsInvalidBooleans(t *testing.T) {
 	_, script := actionScript(t)
-	for key, val := range map[string]string{"INPUT_FAIL_ON_KEV": "yes", "INPUT_EXPLOIT_DATA": "no"} {
+	for key, val := range map[string]string{"INPUT_FAIL_ON_KEV": "yes", "INPUT_EXPLOIT_DATA": "no", "INPUT_LICENSES": "on"} {
 		ws := t.TempDir()
 		r := runScript(t, "bash", script, ws, actionEnv(ws, map[string]string{key: val, "INPUT_BASELINE_OUTPUT": "orbit-baseline.json"}))
 		if r.code != 2 || len(r.calls) != 0 || !strings.Contains(r.output, "::error::Orbit:") {
@@ -368,6 +375,97 @@ func TestActionRejectsAbsolutePaths(t *testing.T) {
 		if r.code != 2 || len(r.calls) != 0 || !strings.Contains(r.output, "::error::Orbit:") {
 			t.Errorf("%s: exit %d, calls %+v; output:\n%s", key, r.code, r.calls, r.output)
 		}
+	}
+}
+
+// denyList is the deny-license value the license tests pass.
+const denyList = "GPL-3.0-only,AGPL-3.0-only"
+
+// hasLicenseFlag reports whether args carry --licenses or --deny-license.
+func hasLicenseFlag(args []string) bool {
+	return slices.Contains(args, "--licenses") || slices.Contains(args, "--deny-license")
+}
+
+func TestActionDeclaresLicenseInputs(t *testing.T) {
+	inputs, _ := actionScript(t)
+	for name, def := range map[string]string{"licenses": "false", "deny-license": ""} {
+		in, ok := inputs[name].(map[string]any)
+		if !ok || in["default"] != def || in["required"] != false {
+			t.Errorf("input %s = %v, want optional with default %q", name, inputs[name], def)
+		}
+	}
+}
+
+// The license inputs gate the first run only. The baseline-output run writes
+// findings for later comparisons; it neither looks up licenses nor applies
+// the policy, so a denied license cannot make it fail.
+func TestActionPassesLicenseFlagsToTheGatingRunOnly(t *testing.T) {
+	_, script := actionScript(t)
+	ws := t.TempDir()
+	r := runScript(t, "bash", script, ws, actionEnv(ws, map[string]string{
+		"INPUT_BASELINE_OUTPUT": "orbit-baseline.json", "INPUT_LICENSES": "true", "INPUT_DENY_LICENSE": denyList,
+	}))
+	d := r.of("docker")
+	if r.code != 0 || len(d) != 2 {
+		t.Fatalf("exit %d, calls %+v; output:\n%s", r.code, r.calls, r.output)
+	}
+	if !slices.Contains(d[0].args, "--licenses") || !hasSeq(d[0].args, "--deny-license", denyList) {
+		t.Errorf("first run = %v, want --licenses and --deny-license %s", d[0].args, denyList)
+	}
+	if hasLicenseFlag(d[1].args) {
+		t.Errorf("baseline run = %v, want no license flags", d[1].args)
+	}
+}
+
+func TestActionDefaultsLeaveLicenseFlagsOut(t *testing.T) {
+	_, script := actionScript(t)
+	ws := t.TempDir()
+	for name, extra := range map[string]map[string]string{
+		"defaults":       {},
+		"licenses false": {"INPUT_LICENSES": "false"},
+		"licenses empty": {"INPUT_LICENSES": ""},
+	} {
+		extra["INPUT_BASELINE_OUTPUT"] = "orbit-baseline.json"
+		r := runScript(t, "bash", script, ws, actionEnv(ws, extra))
+		d := r.of("docker")
+		if r.code != 0 || len(d) != 2 {
+			t.Fatalf("%s: exit %d, calls %+v; output:\n%s", name, r.code, r.calls, r.output)
+		}
+		for i, c := range d {
+			if hasLicenseFlag(c.args) {
+				t.Errorf("%s: run %d = %v, want no license flags", name, i+1, c.args)
+			}
+		}
+	}
+}
+
+// deny-license alone applies the policy to the licenses the lockfiles record:
+// it does not add --licenses (no deps.dev lookups).
+func TestActionDenyLicenseWithoutLookups(t *testing.T) {
+	_, script := actionScript(t)
+	ws := t.TempDir()
+	r := runScript(t, "bash", script, ws, actionEnv(ws, map[string]string{"INPUT_DENY_LICENSE": denyList}))
+	d := r.of("docker")
+	if r.code != 0 || len(d) != 1 || slices.Contains(d[0].args, "--licenses") || !hasSeq(d[0].args, "--deny-license", denyList) {
+		t.Fatalf("exit %d, calls %+v; output:\n%s", r.code, r.calls, r.output)
+	}
+}
+
+// A denied license fails a pull request run (exit 1). A run that records the
+// baseline turns any exit 1 into a warning, a denied license included.
+func TestActionDeniedLicense(t *testing.T) {
+	_, script := actionScript(t)
+	ws := t.TempDir()
+	r := runScript(t, "bash", script, ws, actionEnv(ws, map[string]string{"INPUT_DENY_LICENSE": denyList, "FAKE_DENIED": "1"}))
+	if r.code != 1 {
+		t.Errorf("without baseline-output: exit %d, want 1; output:\n%s", r.code, r.output)
+	}
+	r = runScript(t, "bash", script, ws, actionEnv(ws, map[string]string{
+		"INPUT_DENY_LICENSE": denyList, "FAKE_DENIED": "1", "INPUT_BASELINE_OUTPUT": "orbit-baseline.json",
+	}))
+	if r.code != 0 || len(r.of("docker")) != 2 || !strings.Contains(r.output, "records the baseline") ||
+		strings.Contains(r.output, "could not write the baseline report") {
+		t.Errorf("recording: exit %d (want 0 and a warning), calls %+v; output:\n%s", r.code, r.calls, r.output)
 	}
 }
 
@@ -640,13 +738,91 @@ func TestGitLabDefaultsLeaveExploitFlagsOut(t *testing.T) {
 }
 
 func TestGitLabRejectsInvalidBooleans(t *testing.T) {
-	for key, val := range map[string]string{"ORBIT_FAIL_ON_KEV": "yes", "ORBIT_EXPLOIT_DATA": "no"} {
+	for key, val := range map[string]string{"ORBIT_FAIL_ON_KEV": "yes", "ORBIT_EXPLOIT_DATA": "no", "ORBIT_LICENSES": "on"} {
 		r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{
 			key: val, "ORBIT_BASELINE": "auto", "CI_COMMIT_BRANCH": "feature",
 		}))
 		if r.code != 2 || len(r.calls) != 0 || !strings.Contains(r.output, "error: "+key) {
 			t.Errorf("%s=%s: exit %d, calls %+v; output:\n%s", key, val, r.code, r.calls, r.output)
 		}
+	}
+}
+
+// The license variables reach the first (gating) run and the SARIF run, so
+// orbit.sarif shows the violations, but never the recording run.
+func TestGitLabPassesLicenseFlagsToTheGatingAndSARIFRuns(t *testing.T) {
+	r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{
+		"ORBIT_BASELINE": "auto", "CI_COMMIT_BRANCH": "main", "ORBIT_LICENSES": "true", "ORBIT_DENY_LICENSE": denyList,
+	}))
+	o := r.of("orbit")
+	if r.code != 0 || len(o) != 3 {
+		t.Fatalf("exit %d, calls %+v; output:\n%s", r.code, r.calls, r.output)
+	}
+	for i, c := range o[:2] {
+		if !slices.Contains(c.args, "--licenses") || !hasSeq(c.args, "--deny-license", denyList) {
+			t.Errorf("run %d = %v, want --licenses and --deny-license %s", i+1, c.args, denyList)
+		}
+	}
+	if !hasSeq(o[1].args, "--format", "sarif") || hasLicenseFlag(o[2].args) {
+		t.Errorf("SARIF run = %v, recording run = %v, want no license flags in the recording run", o[1].args, o[2].args)
+	}
+}
+
+func TestGitLabDefaultsLeaveLicenseFlagsOut(t *testing.T) {
+	for name, extra := range map[string]map[string]string{
+		"unset":          {},
+		"licenses false": {"ORBIT_LICENSES": "false"},
+		"licenses empty": {"ORBIT_LICENSES": "", "ORBIT_DENY_LICENSE": ""},
+	} {
+		extra["ORBIT_BASELINE"], extra["CI_COMMIT_BRANCH"] = "auto", "main"
+		r := runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(extra))
+		o := r.of("orbit")
+		if r.code != 0 || len(o) != 3 {
+			t.Fatalf("%s: exit %d, calls %+v; output:\n%s", name, r.code, r.calls, r.output)
+		}
+		for i, c := range o {
+			if hasLicenseFlag(c.args) {
+				t.Errorf("%s: run %d = %v, want no license flags", name, i+1, c.args)
+			}
+		}
+	}
+}
+
+// A denied license makes the SARIF run exit 1 although it runs with
+// --fail-on none; it has written orbit.sarif, so that is not a failure to
+// write it. Exit 2 still is. The first run decides the job either way.
+func TestGitLabSARIFRunToleratesADeniedLicense(t *testing.T) {
+	dir := t.TempDir()
+	r := runScript(t, "sh", gitlabScript(t), dir, gitlabEnv(map[string]string{
+		"CI_COMMIT_BRANCH": "feature", "ORBIT_DENY_LICENSE": denyList, "FAKE_DENIED": "1",
+	}))
+	if r.code != 1 || len(r.of("orbit")) != 2 || strings.Contains(r.output, "could not write orbit.sarif") {
+		t.Fatalf("exit %d (want 1), calls %+v; output:\n%s", r.code, r.calls, r.output)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "orbit.sarif")); err != nil {
+		t.Errorf("orbit.sarif not written: %v", err)
+	}
+	r = runScript(t, "sh", gitlabScript(t), t.TempDir(), gitlabEnv(map[string]string{
+		"CI_COMMIT_BRANCH": "feature", "FAKE_SARIF_RC": "2",
+	}))
+	if r.code != 0 || !strings.Contains(r.output, "warning: could not write orbit.sarif") {
+		t.Errorf("SARIF exit 2: exit %d (want 0 and a warning); output:\n%s", r.code, r.output)
+	}
+}
+
+// On the default branch in baseline mode any exit 1 becomes a warning, a
+// denied license included; the recording run has no policy and succeeds.
+func TestGitLabRecordingWarnsOnADeniedLicense(t *testing.T) {
+	dir := t.TempDir()
+	r := runScript(t, "sh", gitlabScript(t), dir, gitlabEnv(map[string]string{
+		"ORBIT_BASELINE": "auto", "CI_COMMIT_BRANCH": "main", "ORBIT_DENY_LICENSE": denyList, "FAKE_DENIED": "1",
+	}))
+	if r.code != 0 || len(r.of("orbit")) != 3 || !strings.Contains(r.output, "records the baseline") ||
+		strings.Contains(r.output, "could not write") {
+		t.Fatalf("exit %d (want 0 and a warning), calls %+v; output:\n%s", r.code, r.calls, r.output)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "orbit-baseline.json")); err != nil {
+		t.Errorf("orbit-baseline.json not written: %v", err)
 	}
 }
 
@@ -700,6 +876,7 @@ func azureEnv(tmp string, extra map[string]string) map[string]string {
 		"ORBIT_PATH": tmp, "ORBIT_FAIL_ON": "high", "ORBIT_IGNORE_FILE": "", "ORBIT_VERSION": "v1.0.0",
 		"ORBIT_IMAGE": "orchestalabs/orbit-cli", "AGENT_TEMPDIRECTORY": tmp, "BUILD_SOURCEBRANCH": "refs/pull/1/merge",
 		"ORBIT_FAIL_ON_KEV": "", "ORBIT_NO_EXPLOIT_DATA": "", "ORBIT_BASELINE_BRANCH": "",
+		"ORBIT_LICENSES": "", "ORBIT_DENY_LICENSE": "",
 	}
 	for k, v := range extra {
 		env[k] = v
@@ -1069,4 +1246,185 @@ func TestAzureExampleSchedulesTheBaselineBranch(t *testing.T) {
 		}
 	}
 	t.Error("example does not use orbit-scan.yml")
+}
+
+func TestAzureTemplateLicenseParameters(t *testing.T) {
+	params := map[string]map[string]any{}
+	for _, p := range loadYAML(t, "azure-pipelines/orbit-scan.yml")["parameters"].([]any) {
+		m := p.(map[string]any)
+		params[m["name"].(string)] = m
+	}
+	if p := params["licenses"]; p == nil || p["type"] != "boolean" || p["default"] != false {
+		t.Errorf("parameter licenses = %v", p)
+	}
+	if p := params["denyLicense"]; p == nil || p["type"] != "string" || p["default"] != "" {
+		t.Errorf("parameter denyLicense = %v", p)
+	}
+	scans := 0
+	for _, s := range azureSteps(t) {
+		if s["displayName"] != "Orbit scan" {
+			continue
+		}
+		scans++
+		env := s["env"].(map[string]any)
+		on, _ := env["${{ if eq(parameters.licenses, true) }}"].(map[string]any)
+		if on["ORBIT_LICENSES"] != "true" {
+			t.Errorf("%v step does not set ORBIT_LICENSES with licenses: true", s["condition"])
+		}
+		// Set to '' when off, so a pipeline variable of that name cannot turn
+		// on deps.dev lookups.
+		off, _ := env["${{ if eq(parameters.licenses, false) }}"].(map[string]any)
+		if v, ok := off["ORBIT_LICENSES"]; !ok || v != "" {
+			t.Errorf("%v step does not clear ORBIT_LICENSES with licenses: false", s["condition"])
+		}
+		if env["ORBIT_DENY_LICENSE"] != "${{ parameters.denyLicense }}" {
+			t.Errorf("%v step: ORBIT_DENY_LICENSE = %v", s["condition"], env["ORBIT_DENY_LICENSE"])
+		}
+	}
+	if scans != 3 {
+		t.Errorf("%d Orbit scan steps, want 3 (container, binary bash, PowerShell)", scans)
+	}
+}
+
+// azureBashScripts are the container and binary-mode bash scripts, keyed by
+// the fake they call.
+func azureBashScripts(t *testing.T) map[string]string {
+	t.Helper()
+	return map[string]string{"docker": azureScanScript(t, "docker run"), "orbit": azureBinaryScript(t)}
+}
+
+// recordingEnv makes the build one of the baseline branch, which records.
+var recordingEnv = map[string]string{"ORBIT_BASELINE_BRANCH": "refs/heads/main", "BUILD_SOURCEBRANCH": "refs/heads/main"}
+
+func withEnv(base map[string]string, extra map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
+}
+
+// The license switches reach the first (gating) run and the SARIF run, never
+// the recording run.
+func TestAzurePassesLicenseFlagsToTheGatingAndSARIFRuns(t *testing.T) {
+	for tool, script := range azureBashScripts(t) {
+		tmp := t.TempDir()
+		r := runScript(t, "bash", script, tmp, azureEnv(tmp, withEnv(recordingEnv, map[string]string{
+			"ORBIT_LICENSES": "true", "ORBIT_DENY_LICENSE": denyList,
+		})))
+		c := r.of(tool)
+		if len(c) != 3 || !strings.Contains(r.output, "variable=ORBIT_EXIT]0") {
+			t.Fatalf("%s: calls %+v; output:\n%s", tool, r.calls, r.output)
+		}
+		for i, call := range c[:2] {
+			if !slices.Contains(call.args, "--licenses") || !hasSeq(call.args, "--deny-license", denyList) {
+				t.Errorf("%s: run %d = %v, want --licenses and --deny-license %s", tool, i+1, call.args, denyList)
+			}
+		}
+		if !hasSeq(c[1].args, "--format", "sarif") || hasLicenseFlag(c[2].args) {
+			t.Errorf("%s: SARIF run = %v, recording run = %v, want no license flags in the recording run", tool, c[1].args, c[2].args)
+		}
+	}
+}
+
+func TestAzureDefaultsLeaveLicenseFlagsOut(t *testing.T) {
+	for tool, script := range azureBashScripts(t) {
+		tmp := t.TempDir()
+		r := runScript(t, "bash", script, tmp, azureEnv(tmp, recordingEnv))
+		c := r.of(tool)
+		if len(c) != 3 {
+			t.Fatalf("%s: calls %+v; output:\n%s", tool, r.calls, r.output)
+		}
+		for i, call := range c {
+			if hasLicenseFlag(call.args) {
+				t.Errorf("%s: run %d = %v, want no license flags", tool, i+1, call.args)
+			}
+		}
+	}
+}
+
+// A denied license makes the SARIF run exit 1 although it runs with
+// --fail-on none; the report is written, so that is not a failure to write
+// it. Exit 2 still is. The first run decides the build either way.
+func TestAzureSARIFRunToleratesADeniedLicense(t *testing.T) {
+	for tool, script := range azureBashScripts(t) {
+		tmp := t.TempDir()
+		r := runScript(t, "bash", script, tmp, azureEnv(tmp, map[string]string{"ORBIT_DENY_LICENSE": denyList, "FAKE_DENIED": "1"}))
+		if len(r.of(tool)) != 2 || !strings.Contains(r.output, "variable=ORBIT_EXIT]1") ||
+			!strings.Contains(r.output, "variable=ORBIT_HAS_SARIF]true") || strings.Contains(r.output, "could not write orbit.sarif") {
+			t.Errorf("%s: calls %+v; output:\n%s", tool, r.calls, r.output)
+		}
+		tmp = t.TempDir()
+		r = runScript(t, "bash", script, tmp, azureEnv(tmp, map[string]string{"FAKE_SARIF_RC": "2"}))
+		if !strings.Contains(r.output, "variable=ORBIT_EXIT]0") || !strings.Contains(r.output, "warning: could not write orbit.sarif") {
+			t.Errorf("%s: SARIF exit 2: output:\n%s", tool, r.output)
+		}
+	}
+}
+
+// On the baseline branch any exit 1 becomes a warning, a denied license
+// included; the recording run has no policy and succeeds.
+func TestAzureRecordingWarnsOnADeniedLicense(t *testing.T) {
+	for tool, script := range azureBashScripts(t) {
+		tmp := t.TempDir()
+		r := runScript(t, "bash", script, tmp, azureEnv(tmp, withEnv(recordingEnv, map[string]string{
+			"ORBIT_DENY_LICENSE": denyList, "FAKE_DENIED": "1",
+		})))
+		if len(r.of(tool)) != 3 || !strings.Contains(r.output, "variable=ORBIT_EXIT]0") ||
+			!strings.Contains(r.output, "records the baseline") || !strings.Contains(r.output, "variable=ORBIT_HAS_BASELINE]true") ||
+			strings.Contains(r.output, "could not write") {
+			t.Errorf("%s: calls %+v; output:\n%s", tool, r.calls, r.output)
+		}
+	}
+}
+
+// The PowerShell step cannot run here, so its scan lines are checked as
+// text: the license arguments have their own variable, which the first run
+// and the SARIF run get and the recording run does not, and the SARIF run
+// counts only an exit above 1 as a failure to write the report.
+func TestAzurePowerShellLicenseArgs(t *testing.T) {
+	var script string
+	for _, s := range azureSteps(t) {
+		if p, ok := s["powershell"].(string); ok && s["displayName"] == "Orbit scan" {
+			script = p
+		}
+	}
+	lines := strings.Split(script, "\n")
+	var junit, sarif, sarifCheck, record string
+	for i, l := range lines {
+		switch {
+		case strings.Contains(l, "--licenses") || strings.Contains(l, "--deny-license"):
+			if !strings.Contains(l, "$licenseArgs") {
+				t.Errorf("license flag outside $licenseArgs: %s", strings.TrimSpace(l))
+			}
+		case !strings.Contains(l, "& $exe scan"):
+		case strings.Contains(l, "'orbit-junit.xml'"):
+			junit = l
+		case strings.Contains(l, "'orbit.sarif'"):
+			sarif = l
+			if i+1 < len(lines) {
+				sarifCheck = lines[i+1]
+			}
+		case strings.Contains(l, "'orbit-baseline.json'"):
+			record = l
+		}
+	}
+	if junit == "" || sarif == "" || record == "" {
+		t.Fatalf("scan lines not found:\n%s", script)
+	}
+	if !strings.Contains(junit, "@licenseArgs") || !strings.Contains(sarif, "@licenseArgs") || strings.Contains(record, "@licenseArgs") {
+		t.Errorf("@licenseArgs: junit %q, sarif %q, record %q; want it in the first two only", junit, sarif, record)
+	}
+	if !strings.Contains(sarifCheck, "$LASTEXITCODE -gt 1") {
+		t.Errorf("SARIF run check = %q, want $LASTEXITCODE -gt 1", strings.TrimSpace(sarifCheck))
+	}
+	for _, want := range []string{"if ($env:ORBIT_LICENSES) { $licenseArgs += '--licenses' }",
+		"if ($env:ORBIT_DENY_LICENSE) { $licenseArgs += @('--deny-license', $env:ORBIT_DENY_LICENSE) }"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script lacks %q", want)
+		}
+	}
 }

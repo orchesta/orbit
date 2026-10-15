@@ -42,9 +42,9 @@ inputs:
       Also write a JSON report to this path, relative to the workspace, for later runs to use as
       their baseline. This is a second scan with fail-on none, skipped when the first one errored
       (exit 2) or when the report itself is that JSON file. A run that writes it records the
-      baseline, so its findings do not fail the step (exit 1 becomes a warning); errors (exit 2)
-      still do. A file already at that path is removed first, so a run whose scans fail leaves
-      none behind for a cache save step to store. Empty skips it.
+      baseline, so its findings and denied licenses do not fail the step (exit 1 becomes a
+      warning); errors (exit 2) still do. A file already at that path is removed first, so a
+      run whose scans fail leaves none behind for a cache save step to store. Empty skips it.
     required: false
     default: ""
   fail-on-kev:
@@ -61,6 +61,19 @@ inputs:
       api.first.org. false passes --no-exploit-data.
     required: false
     default: "true"
+  licenses:
+    description: >-
+      Look up on deps.dev the licenses that the lockfiles do not record - true or false.
+      This sends package names and versions to api.deps.dev.
+    required: false
+    default: "false"
+  deny-license:
+    description: >-
+      Comma-separated SPDX license IDs, for example GPL-3.0-only,AGPL-3.0-only. A dependency
+      that can only be used under one of them fails the step (exit 1), whatever fail-on says.
+      With licenses true, a failed deps.dev lookup is an error (exit 2). Empty disables the policy.
+    required: false
+    default: ""
   version:
     description: >-
       Tag of the orchestalabs/orbit-cli image, for example v1.2.3. Empty uses
@@ -85,6 +98,8 @@ runs:
         INPUT_EXPLOIT_DATA: ${{ inputs.exploit-data }}
         INPUT_BASELINE: ${{ inputs.baseline }}
         INPUT_BASELINE_OUTPUT: ${{ inputs.baseline-output }}
+        INPUT_LICENSES: ${{ inputs.licenses }}
+        INPUT_DENY_LICENSE: ${{ inputs.deny-license }}
         INPUT_VERSION: ${{ inputs.version }}
         ACTION_REF: ${{ github.action_ref }}
       run: |
@@ -141,6 +156,16 @@ runs:
           true|"") ;;
           *) echo "::error::Orbit: 'exploit-data' must be true or false, got '$INPUT_EXPLOIT_DATA'"; exit 2 ;;
         esac
+        # Licenses, like the KEV gate, apply to the first scan only: the baseline-output
+        # scan records findings, and a denied license must not make it fail.
+        case "$INPUT_LICENSES" in
+          true) args+=(--licenses) ;;
+          false|"") ;;
+          *) echo "::error::Orbit: 'licenses' must be true or false, got '$INPUT_LICENSES'"; exit 2 ;;
+        esac
+        if [ -n "$INPUT_DENY_LICENSE" ]; then
+          args+=(--deny-license "$INPUT_DENY_LICENSE")
+        fi
         # A file already at baseline-output (committed, or left by an earlier step) must not
         # be stored as this run's baseline when the scans below do not write one. When it is
         # also the baseline input, the first scan reads it and it is removed after that.
@@ -164,8 +189,8 @@ runs:
             "$@"
         }
 
-        # Exit 0 = clean, 1 = finding at or above fail-on, a malicious package (unless fail-on is none), or in KEV with fail-on-kev, 2 = error (no report is left behind).
-        # With baseline, only findings that are not in it count, except malicious packages.
+        # Exit 0 = clean, 1 = finding at or above fail-on, a malicious package (unless fail-on is none), in KEV with fail-on-kev, or a license that deny-license denies, 2 = error (no report is left behind).
+        # With baseline, only findings that are not in it count, except malicious packages; it does not filter denied licenses.
         # A non-zero exit fails this step; use `if: always()` on a later upload step.
         rc=0
         orbit "${args[@]}" || rc=$?
@@ -183,9 +208,10 @@ runs:
               || echo "::warning::Orbit: could not write the baseline report '$INPUT_BASELINE_OUTPUT'"
           fi
           # This run records the baseline: every finding it has is an existing one. Its
-          # findings are reported but do not fail the step; errors (exit 2) still do.
+          # findings, and denied licenses, are reported but do not fail the step; errors
+          # (exit 2) still do.
           if [ "$rc" -eq 1 ]; then
-            echo "::warning::Orbit: findings would fail this scan (exit 1), but this run records the baseline (baseline-output), so they are reported without failing the step."
+            echo "::warning::Orbit: findings or denied licenses would fail this scan (exit 1), but this run records the baseline (baseline-output), so they are reported without failing the step."
             rc=0
           fi
         fi

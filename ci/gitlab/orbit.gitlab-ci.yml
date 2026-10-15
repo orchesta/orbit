@@ -12,6 +12,8 @@
 #     ORBIT_PATH: ""          # optional: directory to scan, default $CI_PROJECT_DIR
 #     ORBIT_FAIL_ON_KEV: "false"  # optional: "true" also fails on any finding in CISA KEV
 #     ORBIT_EXPLOIT_DATA: "true"  # optional: "false" sends nothing to www.cisa.gov or api.first.org
+#     ORBIT_LICENSES: "false"     # optional: "true" looks up missing licenses on api.deps.dev
+#     ORBIT_DENY_LICENSE: ""      # optional: comma-separated SPDX IDs that fail the job
 #     ORBIT_BASELINE: ""      # optional: "" off, "auto", or a path to an earlier orbit JSON report
 #     ORBIT_BASELINE_JOB: ""  # optional, auto: job whose orbit-baseline.json is used (default: this job's name)
 #
@@ -34,19 +36,25 @@
 # Why two runs and not "JSON once, convert with jq": the CLI image (alpine based) has no
 # jq, and installing it at job time would add another network dependency. A second run is
 # one extra osv.dev round trip. The second run downloads the KEV catalog and EPSS scores
-# again (about 200 KB).
+# again (about 200 KB) and, with ORBIT_LICENSES, repeats the deps.dev lookups.
 # Only the first run decides the job result, so the job fails at most once.
 #
+# Licenses: ORBIT_DENY_LICENSE fails the job (exit 1) on a dependency that can only be
+# used under one of the listed licenses, whatever ORBIT_FAIL_ON says. The SARIF run applies
+# it too, so orbit.sarif lists the violations. With ORBIT_LICENSES a failed deps.dev
+# lookup is an error (exit 2) when ORBIT_DENY_LICENSE is set.
+#
 # Baseline (ORBIT_BASELINE: auto): merge requests fail only on findings that are new compared
-# with the default branch, and on malicious packages; all findings are still reported.
+# with the default branch, on malicious packages and on denied licenses (the baseline does
+# not filter those); all findings are still reported.
 #   - On the default branch (not a merge request pipeline) the job also writes
 #     orbit-baseline.json, one more scan, and keeps it as an artifact. Every finding there is
 #     an existing one, so exit 1 is reported as a warning but does not fail the job (not even
-#     for a malicious package or a KEV entry): GitLab hands out artifacts only from the
-#     latest successful pipeline of a branch. Exit 2 still fails it, and so does a failed
-#     orbit-baseline.json scan: a passing job without the file would become the latest
-#     successful pipeline and leave merge requests without a baseline, while a failed job
-#     leaves the previous pipeline's baseline in place.
+#     for a malicious package, a KEV entry or a denied license): GitLab hands out artifacts
+#     only from the latest successful pipeline of a branch. Exit 2 still fails it, and so
+#     does a failed orbit-baseline.json scan: a passing job without the file would become
+#     the latest successful pipeline and leave merge requests without a baseline, while a
+#     failed job leaves the previous pipeline's baseline in place.
 #   - Everywhere else the job downloads orbit-baseline.json of the latest successful pipeline
 #     of the merge request's target branch (the default branch otherwise) through the job
 #     artifacts API with CI_JOB_TOKEN, and passes it to --baseline. This works on every tier;
@@ -98,6 +106,13 @@ variables:
         false) exploit_flag="--no-exploit-data" ;;
         *) echo "error: ORBIT_EXPLOIT_DATA must be true or false, got '$ORBIT_EXPLOIT_DATA'" >&2; exit 2 ;;
       esac
+      # The first and the SARIF run get it, with ORBIT_DENY_LICENSE; the recording run
+      # does not.
+      case "${ORBIT_LICENSES:-false}" in
+        true) license_flag="--licenses" ;;
+        false) license_flag="" ;;
+        *) echo "error: ORBIT_LICENSES must be true or false, got '$ORBIT_LICENSES'" >&2; exit 2 ;;
+      esac
       baseline=""
       record=false
       case "${ORBIT_BASELINE:-}" in
@@ -128,20 +143,25 @@ variables:
         *) baseline="$ORBIT_BASELINE" ;;
       esac
       rc=0
-      orbit scan --path "$path" --fail-on "$fail_on" $kev_flag $exploit_flag \
+      orbit scan --path "$path" --fail-on "$fail_on" $kev_flag $exploit_flag $license_flag \
         ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_IGNORE_FILE"} \
+        ${ORBIT_DENY_LICENSE:+--deny-license "$ORBIT_DENY_LICENSE"} \
         ${baseline:+--baseline "$baseline"} \
         --format junit --out orbit-junit.xml || rc=$?
       # Exit 2 is an error (osv.dev unreachable, timeout, bad flag, bad baseline, or no KEV
-      # catalog with ORBIT_FAIL_ON_KEV): no report was written and another run would most
-      # likely fail the same way.
+      # catalog with ORBIT_FAIL_ON_KEV, or a failed license lookup with ORBIT_DENY_LICENSE):
+      # no report was written and another run would most likely fail the same way.
       if [ "$rc" -ne 2 ]; then
         # No --fail-on-kev in the runs below: they only write artifacts.
-        orbit scan --path "$path" --fail-on none $exploit_flag \
+        # --fail-on none keeps findings from failing it, but a denied license still exits 1
+        # after writing the report; only 2 means it is missing.
+        sarif_rc=0
+        orbit scan --path "$path" --fail-on none $exploit_flag $license_flag \
           ${ORBIT_IGNORE_FILE:+--ignore-file "$ORBIT_IGNORE_FILE"} \
+          ${ORBIT_DENY_LICENSE:+--deny-license "$ORBIT_DENY_LICENSE"} \
           ${baseline:+--baseline "$baseline"} \
-          --format sarif --out orbit.sarif --quiet \
-          || echo "warning: could not write orbit.sarif" >&2
+          --format sarif --out orbit.sarif --quiet || sarif_rc=$?
+        [ "$sarif_rc" -le 1 ] || echo "warning: could not write orbit.sarif" >&2
         # A failed recording scan fails the job: a passing job without the file would
         # become the latest successful pipeline, and merge requests would find no
         # baseline. A failed one leaves the previous pipeline's baseline in place.
@@ -154,16 +174,18 @@ variables:
           rc=2
         fi
       fi
-      # Only exit 1 (findings) is turned into a warning; exit 2 from either scan stays.
+      # Only exit 1 (findings or a denied license) is turned into a warning; exit 2 from
+      # either scan stays.
       if [ "$record" = true ] && [ "$rc" -eq 1 ]; then
-        echo "warning: Orbit findings are reported in orbit-junit.xml but do not fail the job:" \
-          "$CI_DEFAULT_BRANCH records the baseline" >&2
+        echo "warning: Orbit findings and denied licenses are reported in orbit-junit.xml" \
+          "but do not fail the job: $CI_DEFAULT_BRANCH records the baseline" >&2
         rc=0
       fi
       # Keep the first run's exit code: 0 clean, 1 findings at or above the threshold, a
-      # malicious package (unless the threshold is none), or in KEV with ORBIT_FAIL_ON_KEV
+      # malicious package (unless the threshold is none), in KEV with ORBIT_FAIL_ON_KEV
       # (with a baseline only new findings count, and malicious packages even when it lists
-      # them), 2 error.
+      # them), or a license ORBIT_DENY_LICENSE denies (the baseline does not filter these),
+      # 2 error.
       # The default branch in baseline mode turns 1 into 0 and a failed recording scan
       # into 2, see above.
       exit "$rc"
