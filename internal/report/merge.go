@@ -74,7 +74,10 @@ func idSet(v *entity.Vulnerability) []string {
 //   - has the highest severity and the first non-empty summary and details;
 //   - has the references of all members, first-ranked member first;
 //   - is fixed in the highest fixed version, or not at all if any member has
-//     no fix (upgrading must clear every advisory in the group).
+//     no fix (upgrading must clear every advisory in the group). Malicious
+//     package advisories (see maliciousAdvisory) take no part when the group
+//     has other members: a MAL- record names no fix, and the other
+//     advisories say which release is clean.
 func mergeGroup(group []*entity.Vulnerability) *entity.Vulnerability {
 	if len(group) == 1 {
 		return group[0]
@@ -129,24 +132,39 @@ func groupID(members []*entity.Vulnerability) string {
 	best := ""
 	for _, v := range members {
 		id := v.OSVID
-		isCVE, bestCVE := strings.HasPrefix(strings.ToUpper(id), "CVE-"), strings.HasPrefix(strings.ToUpper(best), "CVE-")
+		idCVE, bestCVE := isCVE(id), isCVE(best)
 		switch {
 		case best == "":
 			best = id
-		case isCVE && !bestCVE:
+		case idCVE && !bestCVE:
 			best = id
-		case isCVE == bestCVE && id < best:
+		case idCVE == bestCVE && id < best:
 			best = id
 		}
 	}
 	return best
 }
 
+// isCVE reports whether id is a CVE ID (case-insensitive).
+func isCVE(id string) bool {
+	return strings.HasPrefix(strings.ToUpper(id), "CVE-")
+}
+
 // highestFix returns the highest fixed version of members, or nil if any
-// member has no fix.
+// member has no fix. Members that are malicious package advisories are
+// left out unless every member is one.
 func highestFix(members []*entity.Vulnerability) *string {
-	best := ""
+	candidates := make([]*entity.Vulnerability, 0, len(members))
 	for _, v := range members {
+		if !maliciousAdvisory(v) {
+			candidates = append(candidates, v)
+		}
+	}
+	if len(candidates) == 0 {
+		candidates = members
+	}
+	best := ""
+	for _, v := range candidates {
 		f := fixedIn(v)
 		if f == "" {
 			return nil
@@ -168,4 +186,16 @@ func newer(a, b string) bool {
 		return false
 	}
 	return a > b
+}
+
+// maliciousAdvisory reports whether v is itself an OpenSSF malicious package
+// advisory, not an advisory that only lists one among its aliases. Lookup
+// reports an advisory that has a CVE alias under the CVE and puts the
+// advisory's own ID first among the aliases (see aliasesFor in
+// internal/usecase/vulnerability), so that ID is checked as well.
+func maliciousAdvisory(v *entity.Vulnerability) bool {
+	if entity.IsMaliciousID(v.OSVID) {
+		return true
+	}
+	return isCVE(v.OSVID) && len(v.Aliases) > 0 && entity.IsMaliciousID(v.Aliases[0])
 }

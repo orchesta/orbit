@@ -21,15 +21,21 @@ type Finding struct {
 	Vulnerability *entity.Vulnerability
 	Ignored       bool // matched an active .orbitignore entry
 	IgnoreReason  string
+	// Malicious marks a known malicious package: a MAL- advisory is among the
+	// finding's IDs. It fails every threshold and is never ignored.
+	Malicious bool
 }
 
 // Summary aggregates a scan.
 type Summary struct {
 	Dependencies, Vulnerable int
 	BySeverity               map[entity.Severity]int // not counting ignored findings
+	Malicious                int                     // malicious findings (never ignored)
 	Threshold                entity.Severity         // "" for none
-	Failed                   bool                    // a non-ignored finding at or above Threshold
-	Warnings                 []string
+	// Failed is true when a finding trips the gate (see failsGate): it is
+	// not ignored and, with a Threshold set, at or above it or malicious.
+	Failed   bool
+	Warnings []string
 
 	// Deps lists every dependency (sorted), including those without findings.
 	// The JSON report needs it because WriteJSON only receives findings.
@@ -113,12 +119,36 @@ func atOrAbove(sev, threshold entity.Severity) bool {
 	return threshold != "" && severityRank(sev) >= severityRank(threshold)
 }
 
+// failsGate reports whether f trips the exit-1 gate of s. It is the only
+// place that decides this, so the summary and JUnit agree. An ignored
+// finding never does, and nothing does without a threshold (--fail-on
+// none). Otherwise a malicious package always does, whatever its severity,
+// and any other finding does at or above s.Threshold.
+func failsGate(f Finding, s Summary) bool {
+	if f.Ignored {
+		return false
+	}
+	return s.Threshold != "" && (f.Malicious || atOrAbove(f.Vulnerability.Severity, s.Threshold))
+}
+
+// maliciousID is the first MAL- ID among v's IDs, or v.OSVID if none is.
+func maliciousID(v *entity.Vulnerability) string {
+	for _, id := range idSet(v) {
+		if entity.IsMaliciousID(id) {
+			return id
+		}
+	}
+	return v.OSVID
+}
+
 // Build pairs vulnerabilities with their dependencies, merges the advisories
 // of one dependency that are aliases of each other into one finding (see
-// mergeAliases), applies ignores, sorts deterministically (severity, id,
-// package, version, manifest, ecosystem) and summarizes. A merged finding is
-// ignored when any of its IDs matches an entry; every matching entry counts
-// as used.
+// mergeAliases), marks known malicious packages, applies ignores, sorts
+// deterministically (malicious first, then severity, id, package, version,
+// manifest, ecosystem) and summarizes. A merged finding is ignored when any
+// of its IDs matches an entry; every matching entry counts as used. A
+// malicious finding is never ignored: each entry that matches it is reported
+// in a warning instead.
 func Build(res *engine.Result, ignores *IgnoreList, threshold entity.Severity, now time.Time) ([]Finding, Summary) {
 	byID := make(map[uuid.UUID]*entity.Dependency, len(res.Dependencies))
 	for _, d := range res.Dependencies {
@@ -138,19 +168,30 @@ func Build(res *engine.Result, ignores *IgnoreList, threshold entity.Severity, n
 		}
 		matched = append(matched, v)
 	}
+	var notApplied []string
 	for _, v := range mergeAliases(matched) {
 		d := byID[v.DependencyID]
-		f := Finding{Dependency: d, Vulnerability: v}
+		f := Finding{Dependency: d, Vulnerability: v, Malicious: v.IsMalicious()}
 		if m := ignores.matchAll(v.OSVID, v.Aliases, d.Name, d.Ecosystem, now); len(m) > 0 {
-			f.IgnoreReason, f.Ignored = ignores.Entries[m[0]].Reason, true
 			for _, i := range m {
 				used[i] = true
+				if f.Malicious {
+					notApplied = append(notApplied, fmt.Sprintf(
+						"ignore entry %s not applied: %s@%s is a known malicious package (%s)",
+						ignores.Entries[i].ID, d.Name, d.CurrentVersion, maliciousID(v)))
+				}
+			}
+			if !f.Malicious {
+				f.IgnoreReason, f.Ignored = ignores.Entries[m[0]].Reason, true
 			}
 		}
 		findings = append(findings, f)
 	}
 	sort.SliceStable(findings, func(i, j int) bool {
 		a, b := findings[i], findings[j]
+		if a.Malicious != b.Malicious {
+			return a.Malicious
+		}
 		if ra, rb := severityRank(a.Vulnerability.Severity), severityRank(b.Vulnerability.Severity); ra != rb {
 			return ra > rb
 		}
@@ -189,6 +230,7 @@ func Build(res *engine.Result, ignores *IgnoreList, threshold entity.Severity, n
 		warnings = append(warnings, fmt.Sprintf("%d findings could not be matched to a dependency", unmatched))
 	}
 	warnings = append(warnings, ignores.ignoreWarnings(used, now)...)
+	warnings = append(warnings, notApplied...)
 	sort.Strings(warnings)
 
 	s := Summary{
@@ -205,7 +247,10 @@ func Build(res *engine.Result, ignores *IgnoreList, threshold entity.Severity, n
 		}
 		vulnerable[f.Dependency.ID] = true
 		s.BySeverity[f.Vulnerability.Severity]++
-		if atOrAbove(f.Vulnerability.Severity, threshold) {
+		if f.Malicious {
+			s.Malicious++
+		}
+		if failsGate(f, s) {
 			s.Failed = true
 		}
 	}

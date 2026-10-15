@@ -1,0 +1,166 @@
+package report
+
+import (
+	"slices"
+	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/orchesta/orbit/internal/domain/entity"
+	"github.com/orchesta/orbit/internal/engine"
+)
+
+func npmDep(name, version string) *entity.Dependency {
+	return &entity.Dependency{ID: uuid.New(), Name: name, CurrentVersion: version, Ecosystem: entity.EcosystemNpm,
+		ManifestFile: "package-lock.json", IsResolved: true}
+}
+
+// debugGitHubAdvisory is the GitHub advisory for debug@4.4.2 as Lookup
+// reports it (osv.dev, October 2026): rated high, fixed in 4.4.3, under
+// CVE-2025-59144 with the MAL- advisory among its aliases.
+func debugGitHubAdvisory(dep uuid.UUID) *entity.Vulnerability {
+	return &entity.Vulnerability{ID: uuid.New(), DependencyID: dep, OSVID: "CVE-2025-59144", Severity: entity.SeverityHigh,
+		Summary:      "debug@4.4.2 contains malware after npm account takeover",
+		Aliases:      []string{"GHSA-4x49-vf9v-38px", "GHSA-8mgj-vmr8-frr6", "MAL-2025-46974"},
+		FixedVersion: strp("4.4.3"),
+		References:   []string{"https://github.com/debug-js/debug/security/advisories/GHSA-4x49-vf9v-38px"}}
+}
+
+// debugMalAdvisory is the unscored MAL- advisory for debug@4.4.2 as Lookup
+// reports it: rated critical, under CVE-2025-59144 with its own ID first
+// among the aliases, and no fix.
+func debugMalAdvisory(dep uuid.UUID) *entity.Vulnerability {
+	return &entity.Vulnerability{ID: uuid.New(), DependencyID: dep, OSVID: "CVE-2025-59144", Severity: entity.SeverityCritical,
+		Summary: "Malicious code in debug (npm)",
+		Aliases: []string{"MAL-2025-46974", "GHSA-4x49-vf9v-38px", "GHSA-8mgj-vmr8-frr6"}}
+}
+
+// maliciousResult is what Lookup reports for three npm packages (osv.dev,
+// October 2026): debug@4.4.2 has the GitHub advisory (high, fixed in 4.4.3)
+// and the unscored MAL- advisory, both under CVE-2025-59144; chalk@5.6.1 has
+// only a MAL- advisory; lodash has an ordinary critical advisory.
+func maliciousResult() *engine.Result {
+	debug, chalk, lodash := npmDep("debug", "4.4.2"), npmDep("chalk", "5.6.1"), npmDep("lodash", "4.17.15")
+	return &engine.Result{
+		Dependencies: []*entity.Dependency{debug, chalk, lodash},
+		Vulnerabilities: []*entity.Vulnerability{
+			debugGitHubAdvisory(debug.ID),
+			debugMalAdvisory(debug.ID),
+			{ID: uuid.New(), DependencyID: chalk.ID, OSVID: "MAL-2025-46969", Severity: entity.SeverityCritical,
+				Summary: "Malicious code in chalk (npm)", Aliases: []string{"GHSA-2v46-p5h4-248w"},
+				References: []string{"https://github.com/advisories/GHSA-2v46-p5h4-248w"}},
+			{ID: uuid.New(), DependencyID: lodash.ID, OSVID: "GHSA-crit-0003", Severity: entity.SeverityCritical,
+				Summary: "Remote code execution"},
+		},
+		VulnerableDeps: 3,
+	}
+}
+
+// debugGitHubOnly is debug@4.4.2 when osv.dev returns only the GitHub
+// advisory: rated high, with the MAL- advisory among its aliases.
+func debugGitHubOnly() *engine.Result {
+	debug := npmDep("debug", "4.4.2")
+	return &engine.Result{
+		Dependencies:    []*entity.Dependency{debug},
+		Vulnerabilities: []*entity.Vulnerability{debugGitHubAdvisory(debug.ID)},
+		VulnerableDeps:  1,
+	}
+}
+
+func TestBuildMergesMaliciousWithGitHubAdvisory(t *testing.T) {
+	f, s := Build(maliciousResult(), nil, entity.SeverityHigh, fixedNow)
+	var ids []string
+	for _, x := range f {
+		ids = append(ids, x.Vulnerability.OSVID)
+	}
+	// Malicious findings first, then by severity and ID.
+	if want := []string{"CVE-2025-59144", "MAL-2025-46969", "GHSA-crit-0003"}; !slices.Equal(ids, want) {
+		t.Fatalf("order = %q, want %q", ids, want)
+	}
+	debug := f[0]
+	if !debug.Malicious || debug.Vulnerability.Severity != entity.SeverityCritical || debug.Dependency.Name != "debug" {
+		t.Fatalf("debug = %+v malicious=%v, want the merged critical malicious finding", debug.Vulnerability, debug.Malicious)
+	}
+	if want := []string{"GHSA-4x49-vf9v-38px", "GHSA-8mgj-vmr8-frr6", "MAL-2025-46974"}; !slices.Equal(debug.Vulnerability.Aliases, want) {
+		t.Fatalf("debug aliases = %q, want %q", debug.Vulnerability.Aliases, want)
+	}
+	// The MAL- advisory names no fix; the GitHub advisory's fix is kept.
+	if got := fixedIn(debug.Vulnerability); got != "4.4.3" {
+		t.Fatalf("debug fixed in %q, want 4.4.3 from the GitHub advisory", got)
+	}
+	if !f[1].Malicious || f[2].Malicious {
+		t.Fatalf("malicious = %v %v, want chalk true and lodash false", f[1].Malicious, f[2].Malicious)
+	}
+	if s.Malicious != 2 || s.BySeverity[entity.SeverityCritical] != 3 || s.Vulnerable != 3 || !s.Failed {
+		t.Fatalf("summary = %+v, want 2 malicious, 3 critical, failed", s)
+	}
+}
+
+func TestBuildMaliciousFailsAtEveryThreshold(t *testing.T) {
+	for _, th := range []entity.Severity{entity.SeverityCritical, entity.SeverityHigh, entity.SeverityMedium,
+		entity.SeverityLow, entity.SeverityUnknown} {
+		_, s := Build(debugGitHubOnly(), nil, th, fixedNow)
+		if !s.Failed || s.Malicious != 1 {
+			t.Errorf("threshold %s: failed=%v malicious=%d, want a failure for a high malicious finding", th, s.Failed, s.Malicious)
+		}
+	}
+	if _, s := Build(debugGitHubOnly(), nil, "", fixedNow); s.Failed {
+		t.Error("--fail-on none must not fail, even on a malicious package")
+	}
+}
+
+// A MAL- advisory names no fix. Merged with an ordinary advisory, the group
+// keeps that advisory's fix; a group of MAL- advisories alone has none; an
+// ordinary member without a fix still leaves the group without one.
+func TestMergeTakesTheFixFromNonMaliciousMembers(t *testing.T) {
+	dep := uuid.New()
+	gh, mal := debugGitHubAdvisory(dep), debugMalAdvisory(dep)
+	other := &entity.Vulnerability{DependencyID: dep, OSVID: "MAL-2025-99999", Severity: entity.SeverityCritical,
+		Aliases: []string{"MAL-2025-46974"}}
+	nofix := &entity.Vulnerability{DependencyID: dep, OSVID: "GHSA-zzzz-zzzz-zzzz", Severity: entity.SeverityHigh,
+		Aliases: []string{"CVE-2025-59144"}}
+	if !maliciousAdvisory(mal) || !maliciousAdvisory(other) || maliciousAdvisory(gh) || maliciousAdvisory(nofix) {
+		t.Fatal("maliciousAdvisory must recognise the MAL- records only, not advisories that list one as an alias")
+	}
+	cases := []struct {
+		name    string
+		members []*entity.Vulnerability
+		want    string
+	}{
+		{"GitHub and MAL-", []*entity.Vulnerability{mal, gh}, "4.4.3"},
+		{"MAL- only", []*entity.Vulnerability{mal, other}, ""},
+		{"ordinary member without a fix", []*entity.Vulnerability{gh, mal, nofix}, ""},
+	}
+	for _, c := range cases {
+		got := mergeAliases(c.members)
+		if len(got) != 1 {
+			t.Fatalf("%s: %d findings, want one merged finding", c.name, len(got))
+		}
+		if fix := fixedIn(got[0]); fix != c.want {
+			t.Errorf("%s: fixed in %q, want %q", c.name, fix, c.want)
+		}
+	}
+}
+
+func TestBuildDoesNotIgnoreMaliciousFindings(t *testing.T) {
+	l := &IgnoreList{Entries: []IgnoreEntry{
+		{ID: "CVE-2025-59144", Reason: "not reachable"},
+		{ID: "mal-2025-46969", Package: "chalk", Reason: "reviewed"},
+		{ID: "GHSA-crit-0003", Reason: "accepted"},
+	}}
+	f, s := Build(maliciousResult(), l, entity.SeverityCritical, fixedNow)
+	if f[0].Ignored || f[1].Ignored || !f[2].Ignored {
+		t.Fatalf("ignored = %v %v %v, want only lodash ignored", f[0].Ignored, f[1].Ignored, f[2].Ignored)
+	}
+	if !s.Failed || s.Malicious != 2 || s.BySeverity[entity.SeverityCritical] != 2 {
+		t.Fatalf("summary = %+v, want failed with 2 malicious critical findings", s)
+	}
+	// The exact match also shows that no matching entry is reported unused.
+	want := []string{
+		"ignore entry CVE-2025-59144 not applied: debug@4.4.2 is a known malicious package (MAL-2025-46974)",
+		"ignore entry mal-2025-46969 not applied: chalk@5.6.1 is a known malicious package (MAL-2025-46969)",
+	}
+	if !slices.Equal(s.Warnings, want) {
+		t.Fatalf("warnings = %q, want %q", s.Warnings, want)
+	}
+}

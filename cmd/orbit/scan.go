@@ -28,8 +28,10 @@ import (
 
 // Exit codes of orbit scan.
 const (
-	exitOK     = 0 // no finding at or above the threshold
-	exitFailed = 1 // a non-ignored finding at or above the threshold
+	exitOK = 0 // no finding fails the --fail-on threshold
+	// exitFailed: a non-ignored finding at or above the threshold, or a known
+	// malicious package, which fails at every threshold except none.
+	exitFailed = 1
 	exitError  = 2 // the scan could not be completed or the flags are wrong
 )
 
@@ -100,7 +102,7 @@ func parseScanFlags(args []string, stderr io.Writer) (scanConfig, error) {
 	flags := flag.NewFlagSet("orbit scan", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.StringVar(&c.path, "path", ".", "directory to scan")
-	flags.StringVar(&c.failOn, "fail-on", "high", "exit 1 on a finding at or above: critical|high|medium|low|unknown|none")
+	flags.StringVar(&c.failOn, "fail-on", "high", "exit 1 on a finding at or above: critical|high|medium|low|unknown|none (a known malicious package fails at every threshold except none)")
 	flags.StringVar(&c.format, "format", "table", "report format: "+strings.Join(scanFormats, "|"))
 	flags.StringVar(&c.out, "out", "-", `report file, or "-" for stdout`)
 	flags.StringVar(&c.ignoreFile, "ignore-file", "", "ignore file (default <path>/"+ignoreFileName+" if it exists)")
