@@ -1520,6 +1520,28 @@ func TestActionSBOMFormats(t *testing.T) {
 	}
 }
 
+// The CLI reads --format in any case, so the action does too: a mixed-case
+// SBOM format still picks the SBOM file name and gets --sbom-name.
+func TestActionSBOMFormatIgnoresCase(t *testing.T) {
+	_, script := actionScript(t)
+	for _, tt := range []struct{ format, want, file string }{
+		{"CycloneDX", "cyclonedx", "orbit.cdx.json"},
+		{"SPDX", "spdx", "orbit.spdx.json"},
+	} {
+		ws := t.TempDir()
+		r := runScript(t, "bash", script, ws, actionEnv(ws, map[string]string{
+			"INPUT_FORMAT": tt.format, "INPUT_FAIL_ON": "none",
+		}))
+		d := r.of("docker")
+		if r.code != 0 || len(d) != 1 {
+			t.Fatalf("%s: exit %d, calls %+v; output:\n%s", tt.format, r.code, r.calls, r.output)
+		}
+		if !hasSeq(d[0].args, "--format", tt.want, "--out", "/src/"+tt.file) || !hasSeq(d[0].args, "--sbom-name", "acme/shop") {
+			t.Errorf("%s: docker args = %v, want --format %s --out /src/%s and --sbom-name acme/shop", tt.format, d[0].args, tt.want, tt.file)
+		}
+	}
+}
+
 // A guard rather than a new behaviour: an older pinned image does not know
 // --sbom-name, so the other formats never get it.
 func TestActionSARIFKeepsArgs(t *testing.T) {

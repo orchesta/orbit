@@ -133,9 +133,12 @@ runs:
         relative baseline "$INPUT_BASELINE"
         relative baseline-output "$INPUT_BASELINE_OUTPUT"
 
+        # The CLI reads --format in any case; match it here with one lowercase copy.
+        fmt=$(printf '%s' "$INPUT_FORMAT" | tr '[:upper:]' '[:lower:]')
+
         output="${INPUT_OUTPUT:-}"
         if [ -z "$output" ]; then
-          case "$INPUT_FORMAT" in
+          case "$fmt" in
             json) output=orbit.json ;;
             junit) output=orbit.xml ;;
             table) output=orbit.txt ;;
@@ -146,7 +149,7 @@ runs:
         fi
 
         # The container sees the workspace as /src. Paths stay workspace-relative.
-        args=(scan --path "/src/${INPUT_PATH}" --fail-on "$INPUT_FAIL_ON" --format "$INPUT_FORMAT")
+        args=(scan --path "/src/${INPUT_PATH}" --fail-on "$INPUT_FAIL_ON" --format "$fmt")
         # The baseline-output scan: every finding as JSON, failing on nothing.
         record=(scan --path "/src/${INPUT_PATH}" --fail-on none --format json --out "/src/${INPUT_BASELINE_OUTPUT}" --quiet)
         if [ "$output" != "-" ]; then
@@ -159,7 +162,7 @@ runs:
         # Only the SBOM formats take --sbom-name, so an older pinned image still runs the
         # others. Without it the project would be named after the mount point, "src". The
         # baseline-output scan writes JSON and does not get it.
-        case "$INPUT_FORMAT" in
+        case "$fmt" in
           cyclonedx|spdx)
             sbom_name="${INPUT_SBOM_NAME:-${GITHUB_REPOSITORY:-}}"
             if [ -n "$sbom_name" ]; then
@@ -225,7 +228,7 @@ runs:
           # report already is that file. A failed baseline scan only warns: it leaves no
           # file, so a cache save step guarded by hashFiles is skipped and the previous
           # cache keeps serving the baseline.
-          if [ "$rc" -ne 2 ] && ! { [ "$INPUT_FORMAT" = json ] && [ "$output" = "$INPUT_BASELINE_OUTPUT" ]; }; then
+          if [ "$rc" -ne 2 ] && ! { [ "$fmt" = json ] && [ "$output" = "$INPUT_BASELINE_OUTPUT" ]; }; then
             orbit "${record[@]}" \
               || echo "::warning::Orbit: could not write the baseline report '$INPUT_BASELINE_OUTPUT'"
           fi

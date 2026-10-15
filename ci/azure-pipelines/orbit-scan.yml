@@ -13,6 +13,7 @@
 #         baseline: false   # true: pull requests fail only on new findings (see below)
 #         baselineBranch: refs/heads/main
 #         sbomFormat: none  # cyclonedx or spdx also publishes an "orbit-sbom" artifact
+#         sbomName: $(Build.Repository.Name)   # project name written into the SBOM
 #
 # Publishes a JUnit test run ("Orbit") and a SARIF file as the "CodeAnalysisLogs"
 # build artifact, then fails the job with the CLI's exit code (0 clean, 1 findings
