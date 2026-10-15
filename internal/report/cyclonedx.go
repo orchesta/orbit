@@ -175,9 +175,10 @@ func cdxComponentOf(p *sbomPackage) cdxComponent {
 // cdxRecommendation is the advice for finding x on package p, as in the
 // SARIF message. A known malicious package is to be removed or replaced,
 // naming the clean release a non-MAL advisory gives, if any. Otherwise the
-// advice is the upgrade to the fixed version, or none without one; when
-// the package has a malicious finding (malicious), the advice for its other
-// advisories, with or without a fix, ends in removalHint.
+// advice is the upgrade to the fixed version, or none without one. When the
+// package has a malicious finding (malicious), its other advisories do not
+// advise an upgrade: they state the fixed version, if any, as SARIF does, and
+// end in removalHint.
 func cdxRecommendation(x Finding, p *sbomPackage, malicious bool) string {
 	fix := fixedIn(x.Vulnerability)
 	if fix != "" {
@@ -189,7 +190,7 @@ func cdxRecommendation(x Finding, p *sbomPackage, malicious bool) string {
 	case x.Malicious:
 		return "Remove or replace " + p.Name + ": it is a known malicious package (" + maliciousID(x.Vulnerability) + ")."
 	case fix != "" && malicious:
-		return "Upgrade " + p.Name + " to " + fix + removalHint
+		return "Fixed in " + fix + removalHint
 	case fix != "":
 		return "Upgrade " + p.Name + " to " + fix + "."
 	case malicious:

@@ -20,9 +20,11 @@ import (
 //     18f57f7482593bad9f21b4feed09084640cbeff419d62ad5090c5ceccca5b37d,
 //     c41917196639055e9f9670811bac23ef777732144f3ff5a2f39686f61580dbe6,
 //     8bae002c25e723db7ee1f26afde680ae1a2b1a8f6b4b4b0fd65dc3becb090aae
+//     License: Apache-2.0 (CycloneDX/specification).
 //   - spdx-2.3.schema.json:
 //     https://raw.githubusercontent.com/spdx/spdx-spec/v2.3/schemas/spdx-schema.json
 //     239208b7ac287b3cf5d9a9af23f9d69863971102a5e1587a27a398b43490b89b
+//     License: CC-BY-3.0, © The Linux Foundation and its contributors (spdx/spdx-spec).
 var sbomSchemas = map[string]string{
 	"bom-1.6.schema.json":  "http://cyclonedx.org/schema/bom-1.6.schema.json",
 	"spdx.schema.json":     "http://cyclonedx.org/schema/spdx.schema.json",

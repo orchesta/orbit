@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -138,7 +139,7 @@ func TestCycloneDXGolden(t *testing.T) {
 	// The other advisories of a malicious package say so, as in SARIF.
 	for _, v := range doc.Vulnerabilities {
 		want := map[string]string{
-			"GHSA-ms-0005": "Upgrade ms to 2.1.5. This package is reported as malicious; remove or replace it.",
+			"GHSA-ms-0005": "Fixed in 2.1.5. This package is reported as malicious; remove or replace it.",
 			"GHSA-ms-0006": "No fix available. This package is reported as malicious; remove or replace it.",
 		}[v.ID]
 		if want != "" && v.Recommendation != want {
@@ -162,7 +163,7 @@ func TestCycloneDXRecommendation(t *testing.T) {
 			Aliases: []string{"GHSA-x", "MAL-2026-0006"}, FixedVersion: strp("2.1.4")}}, ms, true,
 			"Remove or replace ms: it is a known malicious package (MAL-2026-0006) (fixed in 2.1.4)."},
 		{Finding{Vulnerability: &entity.Vulnerability{OSVID: "GHSA-ms-0009", FixedVersion: strp("2.1.5")}}, ms, true,
-			"Upgrade ms to 2.1.5" + removalHint},
+			"Fixed in 2.1.5" + removalHint},
 		{Finding{Vulnerability: &entity.Vulnerability{OSVID: "GHSA-ms-0010"}}, ms, true,
 			"No fix available" + removalHint},
 		{Finding{Vulnerability: &entity.Vulnerability{OSVID: "GO-2026-0007", FixedVersion: strp("1.6.1")}}, toml, false,
@@ -363,6 +364,8 @@ func TestSPDXGolden(t *testing.T) {
 			SPDXID          string `json:"SPDXID"`
 			Name            string `json:"name"`
 			LicenseDeclared string `json:"licenseDeclared"`
+			Supplier        string `json:"supplier"`
+			CopyrightText   string `json:"copyrightText"`
 		} `json:"packages"`
 		Relationships []struct {
 			From string `json:"spdxElementId"`
@@ -383,6 +386,11 @@ func TestSPDXGolden(t *testing.T) {
 		if p.Name == "ms" && p.LicenseDeclared != "NOASSERTION" {
 			t.Errorf("an invalid license expression must become NOASSERTION, got %q", p.LicenseDeclared)
 		}
+		// orbit does not know who supplied a package or its copyright, the
+		// project's own included.
+		if p.Supplier != "NOASSERTION" || p.CopyrightText != "NOASSERTION" {
+			t.Errorf("%s: supplier %q, copyrightText %q, want NOASSERTION", p.SPDXID, p.Supplier, p.CopyrightText)
+		}
 	}
 	count := map[string]int{}
 	for _, r := range doc.Relationships {
@@ -393,6 +401,66 @@ func TestSPDXGolden(t *testing.T) {
 	}
 	if strings.Contains(b.String(), "GHSA-") || strings.Contains(b.String(), "MAL-") {
 		t.Error("SPDX 2.3 output must not contain vulnerabilities")
+	}
+}
+
+// Names that sanitise to one identifier, or to one already suffixed, and
+// names with characters an SPDXID cannot hold must still give valid, unique
+// identifiers that every relationship can resolve.
+func TestSPDXIDsStayValidAndUnique(t *testing.T) {
+	dep := func(eco entity.Ecosystem, name, version string, direct, dev bool) *entity.Dependency {
+		return &entity.Dependency{ID: uuid.New(), Name: name, CurrentVersion: version, Ecosystem: eco,
+			ManifestFile: "lock", IsDirect: direct, IsDev: dev}
+	}
+	deps := []*entity.Dependency{
+		dep(entity.EcosystemNpm, "a_b", "1.0.0", true, false),
+		dep(entity.EcosystemNpm, "a b", "1.0.0", true, true),
+		dep(entity.EcosystemNpm, "a-b", "1.0.0", true, false),
+		dep(entity.EcosystemNpm, "a-b", "1.0.0-2", true, false),
+		dep(entity.EcosystemNpm, "çağrı-日本", "1.0.0", true, false),
+		dep(entity.EcosystemNpm, "##[error]x", "1.0.0", true, true),
+		dep(entity.EcosystemGo, "github.com/Sirupsen/logrus", "v1.9.0", true, false),
+		dep(entity.EcosystemGo, "github.com/sirupsen/logrus", "v1.9.0", true, false),
+		dep(entity.EcosystemNpm, "transitive", "1.0.0", false, false),
+	}
+	var b bytes.Buffer
+	if err := WriteSPDX(&b, nil, Summary{Deps: deps}, testTool, sbomOpts); err != nil {
+		t.Fatal(err)
+	}
+	validateSchema(t, "spdx-2.3.schema.json", b.Bytes())
+	var doc struct {
+		Packages []struct {
+			SPDXID string `json:"SPDXID"`
+		} `json:"packages"`
+		Relationships []struct {
+			From string `json:"spdxElementId"`
+			To   string `json:"relatedSpdxElement"`
+		} `json:"relationships"`
+	}
+	if err := json.Unmarshal(b.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Packages) != len(deps)+1 {
+		t.Fatalf("packages = %d, want %d (root + one per dependency)", len(doc.Packages), len(deps)+1)
+	}
+	valid := regexp.MustCompile(`^SPDXRef-[A-Za-z0-9.-]+$`)
+	ids := map[string]bool{"SPDXRef-DOCUMENT": true}
+	for _, p := range doc.Packages {
+		if !valid.MatchString(p.SPDXID) {
+			t.Errorf("SPDXID %q is not valid", p.SPDXID)
+		}
+		if ids[p.SPDXID] {
+			t.Errorf("duplicate SPDXID %q", p.SPDXID)
+		}
+		ids[p.SPDXID] = true
+	}
+	if len(doc.Relationships) != len(deps) { // DESCRIBES + one per direct dependency
+		t.Errorf("relationships = %d, want %d", len(doc.Relationships), len(deps))
+	}
+	for _, r := range doc.Relationships {
+		if !ids[r.From] || !ids[r.To] {
+			t.Errorf("relationship %s -> %s refers to an unknown SPDXID", r.From, r.To)
+		}
 	}
 }
 

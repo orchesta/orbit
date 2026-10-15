@@ -25,10 +25,12 @@ type spdxPackage struct {
 	SPDXID                string            `json:"SPDXID"`
 	Name                  string            `json:"name"`
 	VersionInfo           string            `json:"versionInfo,omitempty"`
+	Supplier              string            `json:"supplier"`
 	DownloadLocation      string            `json:"downloadLocation"`
 	FilesAnalyzed         bool              `json:"filesAnalyzed"`
 	LicenseConcluded      string            `json:"licenseConcluded"`
 	LicenseDeclared       string            `json:"licenseDeclared"`
+	CopyrightText         string            `json:"copyrightText"`
 	SourceInfo            string            `json:"sourceInfo,omitempty"`
 	PrimaryPackagePurpose string            `json:"primaryPackagePurpose,omitempty"`
 	ExternalRefs          []spdxExternalRef `json:"externalRefs,omitempty"`
@@ -105,7 +107,8 @@ func spdxLicense(l string) string {
 // the analyzers do not record which package pulled them in. SPDX 2.3 has no
 // vulnerability section, so findings are not written; f is unused. Every
 // licenseConcluded is NOASSERTION: orbit passes on the declared license and
-// does not examine the package.
+// does not examine the package. supplier and copyrightText are NOASSERTION
+// on every package, the root included, since orbit does not know them.
 func WriteSPDX(w io.Writer, _ []Finding, s Summary, tool ToolInfo, opts SBOMOptions) error {
 	pkgs, _ := sbomPackages(s.Deps)
 	creator := "Tool: " + tool.Name
@@ -117,8 +120,8 @@ func WriteSPDX(w io.Writer, _ []Finding, s Summary, tool ToolInfo, opts SBOMOpti
 		Name: rootName(opts), DocumentNamespace: spdxNamespace(tool, opts),
 		CreationInfo: spdxCreationInfo{Created: sbomTime(opts.Now), Creators: []string{creator}},
 		Packages: []spdxPackage{{
-			SPDXID: spdxRootID, Name: rootName(opts), DownloadLocation: spdxNoAssert,
-			LicenseConcluded: spdxNoAssert, LicenseDeclared: spdxNoAssert,
+			SPDXID: spdxRootID, Name: rootName(opts), Supplier: spdxNoAssert, DownloadLocation: spdxNoAssert,
+			LicenseConcluded: spdxNoAssert, LicenseDeclared: spdxNoAssert, CopyrightText: spdxNoAssert,
 		}},
 		Relationships: []spdxRelationship{{spdxDocumentID, "DESCRIBES", spdxRootID}},
 	}
@@ -126,7 +129,8 @@ func WriteSPDX(w io.Writer, _ []Finding, s Summary, tool ToolInfo, opts SBOMOpti
 	for _, p := range pkgs {
 		sp := spdxPackage{
 			SPDXID: ids.next(p), Name: p.Name, VersionInfo: nativeVersion(p.Ecosystem, p.Version),
-			DownloadLocation: spdxNoAssert, LicenseConcluded: spdxNoAssert, LicenseDeclared: spdxLicense(p.License),
+			Supplier: spdxNoAssert, DownloadLocation: spdxNoAssert, LicenseConcluded: spdxNoAssert,
+			LicenseDeclared: spdxLicense(p.License), CopyrightText: spdxNoAssert,
 			PrimaryPackagePurpose: "LIBRARY",
 		}
 		if len(p.Manifests) > 0 {

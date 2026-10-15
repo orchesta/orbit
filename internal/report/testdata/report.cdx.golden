@@ -357,7 +357,7 @@
         }
       ],
       "description": "GHSA-ms-0005 summary",
-      "recommendation": "Upgrade ms to 2.1.5. This package is reported as malicious; remove or replace it.",
+      "recommendation": "Fixed in 2.1.5. This package is reported as malicious; remove or replace it.",
       "affects": [
         {
           "ref": "pkg:npm/ms@2.1.3",
