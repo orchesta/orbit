@@ -319,8 +319,8 @@ func TestLockViaMatchesPerRootWalk(t *testing.T) {
 	shared := 0 // entries more than one direct dependency pulls in
 	for i := range 300 {
 		pkgs := randomPackageLock(r)
-		got, want := lockVia(pkgs), perRootLockVia(pkgs)
-		if !reflect.DeepEqual(got, want) {
+		got, ok := lockVia(pkgs)
+		if want := perRootLockVia(pkgs); !ok || !reflect.DeepEqual(got, want) {
 			t.Fatalf("lockfile %d:\n got %v\nwant %v", i, got, want)
 		}
 		for _, names := range got {
@@ -337,7 +337,7 @@ func TestLockViaMatchesPerRootWalk(t *testing.T) {
 		if err := json.Unmarshal(readFixture(t, fixture+"/package-lock.json"), &lock); err != nil {
 			t.Fatal(err)
 		}
-		if got, want := lockVia(lock.Packages), perRootLockVia(lock.Packages); !reflect.DeepEqual(got, want) {
+		if got, want := mustLockVia(t, lock.Packages), perRootLockVia(lock.Packages); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s:\n got %v\nwant %v", fixture, got, want)
 		}
 	}

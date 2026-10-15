@@ -54,6 +54,12 @@ func (s *stubRegistry) MatchesFile(p string) bool {
 	return ok && fm.MatchesFile(p)
 }
 
+// ParseWithOptions keeps the wrapped analyzer's options and warnings, which
+// embedding the interface would hide.
+func (s *stubRegistry) ParseWithOptions(content []byte, manifestPath string, opts analyzer.ParseOptions) ([]analyzer.ParsedDependency, []string, error) {
+	return analyzer.Parse(s.Analyzer, content, manifestPath, opts)
+}
+
 func (s *stubRegistry) GetLatestVersion(_ context.Context, name string) (string, error) {
 	s.mu.Lock()
 	s.calls = append(s.calls, name)
@@ -655,5 +661,57 @@ func TestAnalyzeCarriesViaFromThePackageLock(t *testing.T) {
 	}
 	if got := via["express@4.17.1"]; got != nil {
 		t.Errorf("express@4.17.1 via %v, want nil", got)
+	}
+}
+
+// SkipVia, the server's setting, leaves Via out of every dependency.
+func TestAnalyzeSkipsViaWhenAsked(t *testing.T) {
+	reg, _ := newRegistry(nil)
+	res := analyze(t, engine.New(reg, nil, engine.Options{SkipVia: true}), "../infrastructure/analyzer/npm/testdata/lock-v3-graph")
+	if len(res.Dependencies) == 0 {
+		t.Fatal("no dependencies")
+	}
+	for _, d := range res.Dependencies {
+		if d.Via != nil {
+			t.Errorf("%s@%s via %v, want nil", d.Name, d.CurrentVersion, d.Via)
+		}
+	}
+	if len(res.Warnings) != 0 {
+		t.Errorf("warnings %q, want none", res.Warnings)
+	}
+}
+
+// warningAnalyzer is npm's analyzer with a parse warning for every file. It
+// records the options each parse got.
+type warningAnalyzer struct {
+	analyzer.Analyzer
+	opts []analyzer.ParseOptions
+}
+
+func (w *warningAnalyzer) ParseWithOptions(content []byte, manifestPath string, opts analyzer.ParseOptions) ([]analyzer.ParsedDependency, []string, error) {
+	w.opts = append(w.opts, opts)
+	deps, err := w.Analyzer.ParseDependencies(content, manifestPath)
+	return deps, []string{"graph too large"}, err
+}
+
+// A parser's warnings reach Result.Warnings, after the file's path, and
+// the parser gets the engine's SkipVia.
+func TestAnalyzePassesParseOptionsAndReportsParseWarnings(t *testing.T) {
+	for _, skip := range []bool{false, true} {
+		a := &warningAnalyzer{Analyzer: npm.NewAnalyzer()}
+		reg := analyzer.NewRegistry()
+		reg.Register(a)
+		res := analyze(t, engine.New(reg, nil, engine.Options{SkipVia: skip}), "testdata/npm-lock")
+		if len(a.opts) == 0 {
+			t.Fatal("ParseWithOptions was not used")
+		}
+		for _, o := range a.opts {
+			if o.SkipVia != skip {
+				t.Errorf("parse options %+v, want SkipVia %v", o, skip)
+			}
+		}
+		if !slices.Contains(res.Warnings, "package-lock.json: graph too large") {
+			t.Errorf("warnings %q lack the parse warning", res.Warnings)
+		}
 	}
 }

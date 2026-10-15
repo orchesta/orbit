@@ -154,7 +154,7 @@ Each upgrade is the lowest version at or above every known fix for that package.
 threshold high: FAILED
 ```
 
-After the findings, the table recommends one upgrade per installed package: the lowest version at or above the fixed versions of all its advisories. Advisories without a known fix are listed by ID, and a package reported as malicious is marked for removal. For npm `package-lock.json` (lockfile versions 2 and 3), `VIA` names the direct dependency that pulls a transitive package in; other lockfiles leave it empty. The JSON report has the same data under `recommendations`; ignored findings are not included. These are hints, not tested upgrades: Orbit does not check that the version exists, that no other advisory affects it, or that your other dependencies accept it.
+After the findings, the table recommends one upgrade per installed package: the lowest version at or above the fixed versions of all its advisories. Advisories without a known fix are listed by ID, and a package reported as malicious is marked for removal. For npm `package-lock.json` (lockfile versions 2 and 3), `VIA` names the direct dependency that pulls a transitive package in; other lockfiles leave it empty, and so does a lockfile whose dependency graph is too large to walk, with a warning. The JSON report has the same data under `recommendations`; ignored findings are not included. These are hints, not tested upgrades: Orbit does not check that the version exists, that no other advisory affects it, or that your other dependencies accept it.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |

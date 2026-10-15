@@ -23,7 +23,8 @@ import (
 // Workspace packages and other linked folders are reported as Internal
 // entries, with their directories. package-lock.json v2 and v3 entries also
 // carry Via, the direct dependencies that pull them in (see lockVia); the
-// other formats leave it nil.
+// other formats leave it nil. Via is also nil when the caller asks to skip
+// it (analyzer.ParseOptions) or the graph is too large (a warning).
 
 func isLockfile(p string) bool {
 	switch path.Base(p) {
@@ -253,7 +254,27 @@ func resolveLockDep(pkgs map[string]lockPackage, from, name string) (string, boo
 // O(names x reachable edges): a shared transitive dependency is visited
 // once per name that reaches it, which is also the size of its Via. The
 // walks share one visit stamp per entry instead of a set per walk.
-func lockVia(pkgs map[string]lockPackage) map[string][]string {
+//
+// That work is quadratic in the size of the lockfile, so it is bounded:
+// past maxViaNames names in all, or maxViaSteps edges followed, lockVia
+// stops and returns ok false and no names at all, since a partial Via
+// would leave out paths.
+func lockVia(pkgs map[string]lockPackage) (via map[string][]string, ok bool) {
+	return lockViaWithin(pkgs, maxViaNames, maxViaSteps)
+}
+
+// The bounds of lockVia. A lockfile at the names bound already holds about
+// 16 MB of Via. The steps bound stops walks that record few names but cross
+// a large graph many times, such as one whose entries are mostly direct;
+// npm entries have a handful of dependencies each, so a lockfile within
+// the names bound rarely comes near it.
+const (
+	maxViaNames = 1_000_000
+	maxViaSteps = 20_000_000
+)
+
+// lockViaWithin is lockVia with its bounds.
+func lockViaWithin(pkgs map[string]lockPackage, maxNames, maxSteps int) (map[string][]string, bool) {
 	keys := make([]string, 0, len(pkgs))
 	for key := range pkgs {
 		keys = append(keys, key)
@@ -292,6 +313,7 @@ func lockVia(pkgs map[string]lockPackage) map[string][]string {
 	via := make([][]string, len(keys))
 	stamp := make([]int, len(keys)) // the last walk (1-based) that reached each entry
 	var stack []int
+	names, steps := 0, 0
 	for i, name := range slices.Sorted(maps.Keys(starts)) {
 		walk := i + 1
 		stack = stack[:0]
@@ -304,6 +326,10 @@ func lockVia(pkgs map[string]lockPackage) map[string][]string {
 		for len(stack) > 0 {
 			k := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
+			steps += len(edges[k])
+			if steps > maxSteps {
+				return nil, false
+			}
 			for _, t := range edges[k] {
 				if stamp[t] == walk {
 					continue
@@ -311,19 +337,26 @@ func lockVia(pkgs map[string]lockPackage) map[string][]string {
 				stamp[t] = walk
 				stack = append(stack, t)
 				if !direct[t] {
+					if names++; names > maxNames {
+						return nil, false
+					}
 					via[t] = append(via[t], name)
 				}
 			}
 		}
 	}
 	out := make(map[string][]string)
-	for i, names := range via {
-		if names != nil {
-			out[keys[i]] = names
+	for i, v := range via {
+		if v != nil {
+			out[keys[i]] = v
 		}
 	}
-	return out
+	return out, true
 }
+
+// viaSkipped is the warning for a lockfile whose graph is too large for
+// lockVia.
+const viaSkipped = "dependency paths (VIA) skipped: the lockfile graph is too large"
 
 type lockV1Dep struct {
 	Version      string               `json:"version"`
@@ -331,16 +364,25 @@ type lockV1Dep struct {
 	Dependencies map[string]lockV1Dep `json:"dependencies"`
 }
 
-func parsePackageLock(content []byte) ([]analyzer.ParsedDependency, error) {
+// parsePackageLock reads package-lock.json and npm-shrinkwrap.json. Via is
+// left out with opts.SkipVia, or with a warning when the graph is too large.
+func parsePackageLock(content []byte, opts analyzer.ParseOptions) ([]analyzer.ParsedDependency, []string, error) {
 	var lock packageLock
 	if err := json.Unmarshal(content, &lock); err != nil {
-		return nil, fmt.Errorf("failed to parse package-lock.json: %w", err)
+		return nil, nil, fmt.Errorf("failed to parse package-lock.json: %w", err)
 	}
 
 	var set depSet
 	if len(lock.Packages) > 0 {
 		// lockfileVersion 2 and 3.
-		via := lockVia(lock.Packages)
+		var via map[string][]string
+		var warnings []string
+		if !opts.SkipVia {
+			var ok bool
+			if via, ok = lockVia(lock.Packages); !ok {
+				warnings = append(warnings, viaSkipped)
+			}
+		}
 		const marker = "node_modules/"
 		for key, pkg := range lock.Packages {
 			i := strings.LastIndex(key, marker)
@@ -362,7 +404,7 @@ func parsePackageLock(content []byte) ([]analyzer.ParsedDependency, error) {
 			}
 			set.addVia(name, pkg.Version, pkg.Dev || pkg.DevOptional, via[key])
 		}
-		return set.sorted(), nil
+		return set.sorted(), warnings, nil
 	}
 
 	// lockfileVersion 1.
@@ -378,7 +420,7 @@ func parsePackageLock(content []byte) ([]analyzer.ParsedDependency, error) {
 		}
 	}
 	walk(lock.Dependencies)
-	return set.sorted(), nil
+	return set.sorted(), nil, nil
 }
 
 // ---- yarn.lock ----

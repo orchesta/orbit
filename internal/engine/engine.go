@@ -46,6 +46,9 @@ type Options struct {
 	Exploit ExploitEnricher
 	// ExploitTimeout bounds Exploit; default 60s. Running out is a warning.
 	ExploitTimeout time.Duration
+	// SkipVia leaves Dependency.Via unset, so lockfiles' dependency graphs
+	// are not walked. The server sets it, since it does not store Via.
+	SkipVia bool
 }
 
 // defaultConcurrency is the number of registry lookups in flight when
@@ -103,7 +106,7 @@ type Result struct {
 	VulnerableDeps  int
 	OutdatedDeps    int
 	Manifests       []string // files that were parsed, relative to root
-	Warnings        []string // unreadable/unparseable files, unresolved-version notice, exploit data failures
+	Warnings        []string // unreadable/unparseable files, parse warnings, unresolved-version notice, exploit data failures
 	// Exploit says which exploit data sources answered; nil when
 	// Options.Exploit is nil or the vulnerability check failed.
 	Exploit *exploit.Result
@@ -238,7 +241,9 @@ func unresolvedWarning(n int) string {
 }
 
 // parseFiles reads and parses every matched file for analyzer.Resolve,
-// recording the parsed paths in res.Manifests and failures in res.Warnings.
+// recording the parsed paths in res.Manifests, and failures and parse
+// warnings (see analyzer.OptionsParser), after the file's path, in
+// res.Warnings.
 // A manifest that cannot be read or parsed is dropped. A lockfile is still
 // passed on, without dependencies and marked Failed, so its directory keeps
 // its manifests' results; one that parses to nothing is not marked.
@@ -256,7 +261,11 @@ func (e *Engine) parseFiles(root string, manifests []analyzer.ManifestMatch, res
 		content, err := e.files.ReadFileLimit(root, m.ManifestPath, maxBytes)
 		if err == nil {
 			msg = "failed to parse manifest"
-			file.Deps, err = m.Analyzer.ParseDependencies(content, slashPath)
+			var warnings []string
+			file.Deps, warnings, err = analyzer.Parse(m.Analyzer, content, slashPath, analyzer.ParseOptions{SkipVia: e.opts.SkipVia})
+			for _, w := range warnings {
+				res.Warnings = append(res.Warnings, slashPath+": "+w)
+			}
 		}
 		if err != nil {
 			e.logger.Warn(msg,
