@@ -43,7 +43,7 @@ The backend is Go, the UI is React, and the database is PostgreSQL. Orbit is an 
 | --- | --- | --- |
 | Use it for | Continuous monitoring of many repositories | Checking a build in CI, or a local checkout |
 | What it scans | Clones each repository's configured branch | A directory that is already on disk |
-| Needs | PostgreSQL, a JWT secret, an encryption key | Outbound HTTPS to `api.osv.dev`; also `www.cisa.gov` and `api.first.org` for exploit data unless `--no-exploit-data` |
+| Needs | PostgreSQL, a JWT secret, an encryption key | Outbound HTTPS to `api.osv.dev`; also `www.cisa.gov` and `api.first.org` for exploit data unless `--no-exploit-data`, and `api.deps.dev` with `--licenses` |
 | Interface | Web UI on port 8080, REST API under `/api/v1` | Report on stdout or in a file, exit code 0/1/2 |
 | Triggers | Cron schedule per repository, or **Scan Now** in the UI | Every pipeline run |
 | Outdated versions | Always checked | Only with `--outdated` |
@@ -137,6 +137,8 @@ orbit scan --format sarif --out orbit.sarif  # also: json, junit
 orbit scan --outdated                        # also check for newer versions
 orbit scan --fail-on-kev                     # also fail on anything CISA lists as exploited
 orbit scan --no-exploit-data                 # no requests to cisa.gov or api.first.org
+orbit scan --licenses                        # look up missing licenses on deps.dev and show them
+orbit scan --deny-license GPL-3.0-only,AGPL-3.0-only   # fail on a dependency that can only be used under these
 ```
 
 ```
@@ -165,6 +167,8 @@ After the findings, the table recommends one upgrade per installed package: the 
 | `--ignore-file` | `<path>/.orbitignore` if it exists | Accepted findings; `""` disables it |
 | `--baseline` | none | Earlier `orbit scan --format json` report; only findings that are not in it fail the scan (see [below](#only-new-findings---baseline)) |
 | `--outdated` | off | Also ask the registries for the latest versions |
+| `--licenses` | off | Look up on deps.dev the licenses that the lockfiles do not record, and add a LICENSE column to the table |
+| `--deny-license` | none | Comma-separated SPDX license IDs. A dependency whose license expression cannot be satisfied without one of them fails the scan (exit 1); see [Licenses](#licenses) |
 | `--fail-on-kev` | off | Also exit 1 on any finding in the CISA KEV catalog, whatever its severity |
 | `--no-exploit-data` | off | Do not download the KEV catalog or ask api.first.org for EPSS scores |
 | `--timeout` | `10m` | Give up after this long |
@@ -174,11 +178,24 @@ After the findings, the table recommends one upgrade per installed package: the 
 
 | Code | Meaning |
 | --- | --- |
-| 0 | No finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV. With `--baseline`, only findings that are not in the baseline count, except malicious packages, which count even when the baseline lists them |
-| 1 | At least one finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV. With `--baseline`, only findings that are not in the baseline count, except malicious packages, which count even when the baseline lists them |
-| 2 | The scan could not complete: osv.dev unreachable, timeout, bad flag, missing or invalid ignore file or baseline, or `--fail-on-kev` without the KEV catalog |
+| 0 | No finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV (with `--baseline`, only findings that are not in the baseline count, except malicious packages, which count even when the baseline lists them); and no dependency has a license that `--deny-license` denies and `.orbitignore` does not accept |
+| 1 | At least one finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`), or, with `--fail-on-kev`, is in CISA KEV (with `--baseline`, only findings that are not in the baseline count, except malicious packages, which count even when the baseline lists them); or a dependency has a license that `--deny-license` denies and `.orbitignore` does not accept |
+| 2 | The scan could not complete: osv.dev unreachable, timeout, bad flag, missing or invalid ignore file or baseline, `--fail-on-kev` without the KEV catalog, or, with `--deny-license`, a failed license lookup |
 
-On exit 2 nothing is written to stdout. A command-line error (an unknown flag or argument, an invalid `--fail-on`, `--format` or `--timeout`, flags that conflict, or `--out` naming the `--baseline` file) leaves `--out` alone, because a mistyped command line may name any file. Every other exit 2 is a scan that started and could not complete (a missing `--path`, ignore file or baseline included); it deletes an existing `--out` file, so a stale report is never uploaded. An osv.dev failure never counts as "no vulnerabilities".
+On exit 2 nothing is written to stdout. A command-line error (an unknown flag or argument, an invalid `--fail-on`, `--format`, `--timeout` or `--deny-license`, flags that conflict, or `--out` naming the `--baseline` file) leaves `--out` alone, because a mistyped command line may name any file. Every other exit 2 is a scan that started and could not complete (a missing `--path`, ignore file or baseline included); it deletes an existing `--out` file, so a stale report is never uploaded. An osv.dev failure never counts as "no vulnerabilities".
+
+### Licenses
+
+Orbit reports each dependency's license as an SPDX expression in the JSON report (`dependencies[].license`, `""` when unknown).
+
+- npm `package-lock.json` (v2 and v3) records licenses, so npm projects get them without any network request. Other lockfiles (yarn, pnpm, Poetry, uv, Pipfile.lock, NuGet `packages.lock.json`) and `go.mod` do not.
+- `--licenses` looks up the rest on [deps.dev](https://deps.dev) (Open Source Insights), for exact versions only: lockfile entries, `go.mod`, `==` pins and NuGet references with a plain version. Manifest ranges stay unknown. deps.dev reports `non-standard` for licenses without an SPDX identifier; Orbit shows those as unknown too.
+- Values that are not SPDX, such as `SEE LICENSE IN LICENSE.md`, `UNLICENSED` or `BSD`, are unknown. Deprecated GNU identifiers are normalised (`GPL-3.0` is `GPL-3.0-only`, `GPL-3.0+` is `GPL-3.0-or-later`).
+- `--deny-license` takes SPDX identifiers from the [SPDX License List](https://spdx.org/licenses/) (3.29.0). `A OR B` is denied only when both A and B are denied, because you may use the package under either; `A AND B` is denied when either is. `GPL-3.0-only` and `GPL-3.0-or-later` are different identifiers: list both if you mean both.
+- A dependency with an unknown license cannot be checked. It is counted in a warning, and does not fail the scan.
+- License data is what the package authors declared. It is not legal advice.
+
+`--deny-license` alone sends nothing to deps.dev: it checks the licenses the lockfiles record. With `--licenses` as well, a failed deps.dev lookup stops the scan with exit 2, because a license that could not be looked up would otherwise pass as allowed. The policy is separate from `--fail-on`, so it applies with `--fail-on none` too, and `--baseline` does not filter it. The table lists the violations and ends with a `license policy (deny ...)` line that says `passed` or `FAILED`; JSON has `license_violations` and `summary.license_failed`, SARIF a `license/<ID>` rule per denied license, and JUnit a test case per violation.
 
 ### Exploit signals: CISA KEV and FIRST EPSS
 
@@ -201,6 +218,8 @@ Accept a finding on purpose, with a reason, instead of lowering the threshold:
 # <advisory-id> [expires=YYYY-MM-DD] [package=<name>] reason...
 GHSA-xxxx-yyyy-zzzz  expires=2026-12-31  Not reachable: only used in tests
 CVE-2024-1234        package=lodash      Accepted until the upgrade, see JIRA-12
+# license:<SPDX-ID> package=<name> [expires=YYYY-MM-DD] reason...
+license:GPL-3.0-only  package=readline  expires=2027-06-30  Legal approved, LEGAL-42
 ```
 
 - Put the file at the root of the scanned directory, or pass it with `--ignore-file`. Blank lines and lines starting with `#` are ignored.
@@ -210,6 +229,7 @@ CVE-2024-1234        package=lodash      Accepted until the upgrade, see JIRA-12
 - Entries do not apply to malicious packages (see below). A matching entry produces a `not applied` warning instead.
 - A malformed line is an error (exit 2) that names the line. Entries that never matched produce an `unused ignore entry` warning.
 - Ignored findings still appear in the reports, marked as ignored.
+- `license:<SPDX-ID> package=<name>` accepts one license for one package under `--deny-license`. `package=` is required. The violation still appears in the reports, marked as ignored. License entries never suppress advisories.
 
 ### Only new findings: `--baseline`
 

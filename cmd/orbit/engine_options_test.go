@@ -7,6 +7,8 @@ import (
 
 	"github.com/orchesta/orbit/internal/engine"
 	"github.com/orchesta/orbit/internal/infrastructure/config"
+	"github.com/orchesta/orbit/internal/infrastructure/depsdev"
+	"github.com/orchesta/orbit/internal/infrastructure/exploit"
 )
 
 const viaFixture = "../../internal/infrastructure/analyzer/npm/testdata/lock-v3-graph"
@@ -49,5 +51,28 @@ func TestServerScansSkipViaAndTheCLIKeepsIt(t *testing.T) {
 	}
 	if n := viaCount(t, cli); n == 0 {
 		t.Error("CLI scan: no dependency has Via")
+	}
+}
+
+// engineConfig is the only way the command line reaches the engine: each
+// field turns on its own data source, and nothing is on by default.
+func TestCLIEngineOptionsFollowTheEngineConfig(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	off := cliEngineOptions(engineConfig{}, logger)
+	if off.CheckLatest || off.Exploit != nil || off.Licenses != nil {
+		t.Fatalf("zero engineConfig: options %+v, want no registry, exploit or license lookups", off)
+	}
+	on := cliEngineOptions(engineConfig{checkLatest: true, exploitData: true, licenses: true}, logger)
+	if !on.CheckLatest {
+		t.Error("checkLatest did not reach Options.CheckLatest")
+	}
+	if _, ok := on.Exploit.(*exploit.Enricher); !ok {
+		t.Errorf("exploitData: Options.Exploit = %T, want *exploit.Enricher", on.Exploit)
+	}
+	if _, ok := on.Licenses.(*depsdev.Client); !ok {
+		t.Errorf("licenses: Options.Licenses = %T, want *depsdev.Client", on.Licenses)
+	}
+	if on.Logger != logger {
+		t.Error("the logger was not passed on")
 	}
 }

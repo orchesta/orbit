@@ -20,23 +20,26 @@ import (
 	"github.com/orchesta/orbit/internal/buildinfo"
 	"github.com/orchesta/orbit/internal/domain/entity"
 	"github.com/orchesta/orbit/internal/engine"
+	"github.com/orchesta/orbit/internal/infrastructure/depsdev"
 	"github.com/orchesta/orbit/internal/infrastructure/exploit"
 	"github.com/orchesta/orbit/internal/infrastructure/git"
 	"github.com/orchesta/orbit/internal/infrastructure/vulnerability/osv"
 	"github.com/orchesta/orbit/internal/report"
+	"github.com/orchesta/orbit/internal/spdx"
 	vulnuc "github.com/orchesta/orbit/internal/usecase/vulnerability"
 )
 
 // Exit codes of orbit scan.
 const (
-	exitOK = 0 // no finding gates (see exitFailed)
+	exitOK = 0 // no finding gates and no license is denied (see exitFailed)
 	// exitFailed: a non-ignored finding gates (report.gates: it trips
 	// report.failsGate, that is the threshold, a malicious package, or KEV
-	// with --fail-on-kev, and with --baseline it is new or malicious).
+	// with --fail-on-kev, and with --baseline it is new or malicious), or a
+	// license is denied (--deny-license) and not ignored.
 	exitFailed = 1
 	// exitError: the scan could not be completed or the flags are wrong, or
 	// --fail-on-kev without the KEV catalog, or a missing or invalid
-	// --baseline.
+	// --baseline, or --deny-license with a failed license lookup.
 	exitError = 2
 )
 
@@ -51,6 +54,7 @@ type analyzerEngine interface {
 type engineConfig struct {
 	checkLatest bool // --outdated
 	exploitData bool // not --no-exploit-data
+	licenses    bool // --licenses: look up missing licenses on deps.dev
 }
 
 // scanDeps holds what runScan needs from the outside world, so tests can
@@ -61,8 +65,9 @@ type scanDeps struct {
 }
 
 // defaultScanDeps builds the production engine: all analyzers, a real
-// osv.dev lookup and, unless turned off, CISA KEV and FIRST EPSS data. It
-// needs no configuration, database or secrets.
+// osv.dev lookup, unless turned off CISA KEV and FIRST EPSS data, and with
+// --licenses deps.dev license lookups. It needs no configuration, database
+// or secrets.
 func defaultScanDeps() scanDeps {
 	return scanDeps{
 		newEngine: func(ec engineConfig, logger *slog.Logger) analyzerEngine {
@@ -80,6 +85,9 @@ func cliEngineOptions(ec engineConfig, logger *slog.Logger) engine.Options {
 	opts := engine.Options{CheckLatest: ec.checkLatest, Logger: logger}
 	if ec.exploitData {
 		opts.Exploit = exploit.NewEnricher(exploit.Config{Logger: logger})
+	}
+	if ec.licenses {
+		opts.Licenses = depsdev.NewClient()
 	}
 	return opts
 }
@@ -113,6 +121,9 @@ type scanConfig struct {
 
 	failOnKEV     bool // --fail-on-kev
 	noExploitData bool // --no-exploit-data
+
+	licenses bool     // --licenses
+	deny     []string // --deny-license, canonical SPDX IDs; nil for no policy
 }
 
 // usageError is a problem with the command line.
@@ -131,6 +142,8 @@ func parseScanFlags(args []string, stderr io.Writer) (scanConfig, error) {
 	flags.StringVar(&c.ignoreFile, "ignore-file", "", "ignore file (default <path>/"+ignoreFileName+" if it exists)")
 	flags.StringVar(&c.baseline, "baseline", "", "earlier orbit JSON report; only findings not in it fail the scan (malicious packages always do, unless --fail-on none)")
 	flags.BoolVar(&c.outdated, "outdated", false, "also ask the package registries for the latest versions")
+	flags.BoolVar(&c.licenses, "licenses", false, "look up licenses the lockfiles do not record on deps.dev, and show them")
+	denyLicense := flags.String("deny-license", "", "exit 1 on a dependency that can only be used under one of these comma-separated SPDX license IDs")
 	flags.BoolVar(&c.failOnKEV, "fail-on-kev", false, "also exit 1 on any finding in the CISA KEV catalog, whatever its severity")
 	flags.BoolVar(&c.noExploitData, "no-exploit-data", false, "do not download the CISA KEV catalog or send CVE IDs to api.first.org for EPSS scores")
 	flags.DurationVar(&c.timeout, "timeout", 10*time.Minute, "give up after this long")
@@ -171,6 +184,13 @@ func parseScanFlags(args []string, stderr io.Writer) (scanConfig, error) {
 	if c.failOnKEV && c.noExploitData {
 		return c, usageError{"--fail-on-kev needs exploit data; it cannot be combined with --no-exploit-data"}
 	}
+	deny, err := spdx.ParseIDs(*denyLicense)
+	if err != nil {
+		return c, usageError{fmt.Sprintf("invalid --deny-license: %v", err)}
+	}
+	if len(deny) > 0 {
+		c.deny = deny
+	}
 	return c, nil
 }
 
@@ -188,10 +208,11 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer, deps 
 
 // runScanSafe is runScan with stderr already neutralised. It exits 1 when
 // a finding gates (threshold, malicious package, or KEV with --fail-on-kev;
-// with --baseline only new findings, and malicious ones, count) and 2 when
-// the scan fails after the flags were accepted, including --fail-on-kev
-// without the KEV catalog and a bad --baseline; then any --out file is
-// removed so no stale report survives.
+// with --baseline only new findings, and malicious ones, count) or a license
+// is denied (--deny-license), and 2 when the scan fails after the flags were
+// accepted, including --fail-on-kev without the KEV catalog, a bad
+// --baseline and --deny-license with a failed license lookup; then any --out
+// file is removed so no stale report survives.
 func runScanSafe(ctx context.Context, args []string, stdout, stderr io.Writer, deps scanDeps) int {
 	cfg, err := parseScanFlags(args, stderr)
 	if errors.Is(err, flag.ErrHelp) {
@@ -219,8 +240,9 @@ func runScanSafe(ctx context.Context, args []string, stdout, stderr io.Writer, d
 }
 
 // executeScan runs the analysis, writes the report and the stderr summary, and
-// reports whether a finding tripped the gate. Every error except a
-// failing stdout itself happens before anything is written to stdout.
+// reports whether a finding tripped the gate or a license was denied. Every
+// error except a failing stdout itself happens before anything is written
+// to stdout.
 func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, deps scanDeps) (failed bool, err error) {
 	// The engine does not follow symlinks, so a symlinked --path (a common
 	// CI checkout layout) is resolved first.
@@ -265,7 +287,8 @@ func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, 
 
 	ctx, cancel := context.WithTimeout(ctx, cfg.timeout)
 	defer cancel()
-	res, err := deps.newEngine(engineConfig{checkLatest: cfg.outdated, exploitData: !cfg.noExploitData}, logger).Analyze(ctx, root)
+	ec := engineConfig{checkLatest: cfg.outdated, exploitData: !cfg.noExploitData, licenses: cfg.licenses}
+	res, err := deps.newEngine(ec, logger).Analyze(ctx, root)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return false, fmt.Errorf("scan did not finish within --timeout %s: %w", cfg.timeout, err)
@@ -280,10 +303,19 @@ func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, 
 			return false, err
 		}
 	}
+	if len(cfg.deny) > 0 {
+		if err := licensesChecked(res); err != nil {
+			return false, err
+		}
+	}
 
 	findings, summary := report.BuildWithOptions(res, ignores,
 		report.BuildOptions{Threshold: cfg.threshold, FailOnKEV: cfg.failOnKEV}, deps.now())
 	report.ApplyBaseline(findings, &summary, baseline)
+	summary.ShowLicenses = cfg.licenses
+	// Also without --deny-license, so license: entries it does not need are
+	// warned about as unused.
+	report.ApplyLicensePolicy(&summary, cfg.deny, ignores, deps.now())
 
 	if cfg.out == "-" {
 		if err := writeStdout(stdout, cfg.format, findings, summary, sarifOptions(root)); err != nil {
@@ -307,7 +339,7 @@ func executeScan(ctx context.Context, cfg scanConfig, stdout, stderr io.Writer, 
 	if cfg.out != "-" || cfg.format != "table" {
 		writeSummary(stderr, summary)
 	}
-	return summary.Failed, nil
+	return summary.Failed || summary.LicenseFailed, nil
 }
 
 // kevAvailable stops --fail-on-kev when the KEV catalog could not be read:
@@ -320,6 +352,21 @@ func kevAvailable(res *engine.Result) error {
 		return errors.New("--fail-on-kev: no exploit data was collected")
 	case res.Exploit.KEV.Status == exploit.StatusFailed:
 		return fmt.Errorf("--fail-on-kev: %w", res.Exploit.KEV.Err)
+	}
+	return nil
+}
+
+// licensesChecked stops --deny-license when a license lookup failed (only
+// --licenses makes any): like a failed advisory lookup, it must not pass as
+// "no denied license". Without --licenses the policy judges the lockfile
+// licenses alone, and unknown ones are a warning.
+func licensesChecked(res *engine.Result) error {
+	if n := res.LicenseLookupFailed; n > 0 {
+		noun := "packages"
+		if n == 1 {
+			noun = "package"
+		}
+		return fmt.Errorf("license check incomplete: the license lookup failed for %d %s", n, noun)
 	}
 	return nil
 }
@@ -555,13 +602,13 @@ func writeReport(w io.Writer, format string, f []report.Finding, s report.Summar
 	}
 }
 
-// writeSummary prints the counts, the threshold verdict and the warnings,
-// each line prefixed "orbit: ", so the CI log shows the result whatever the
-// report format.
+// writeSummary prints the counts, the threshold and license policy verdicts
+// and the warnings, each line prefixed "orbit: ", so the CI log shows the
+// result whatever the report format.
 func writeSummary(w io.Writer, s report.Summary) {
 	var buf bytes.Buffer
 	_ = report.WriteTable(&buf, nil, s) // no findings: summary and warnings only
-	if s.Threshold == "" && !s.FailOnKEV {
+	if s.Threshold == "" && !s.FailOnKEV && len(s.DeniedLicenses) == 0 {
 		buf.WriteString("no failure threshold (--fail-on none)\n")
 	}
 	sc := bufio.NewScanner(&buf)

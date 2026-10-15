@@ -47,9 +47,10 @@ func (lodashAdvisories) Lookup(_ context.Context, deps []*entity.Dependency) ([]
 
 func ptr(s string) *string { return &s }
 
-// realDepsWith runs the production engine (all analyzers, no registry
-// lookups) with lookup in place of osv.dev and enricher, when exploit data
-// is on, in place of cisa.gov and api.first.org.
+// realDepsWith runs the production engine (all analyzers, no registry or
+// deps.dev lookups, so licenses come from the lockfiles only) with lookup
+// in place of osv.dev and enricher, when exploit data is on, in place of
+// cisa.gov and api.first.org.
 func realDepsWith(lookup engine.VulnLookup, enricher engine.ExploitEnricher) scanDeps {
 	return scanDeps{
 		newEngine: func(ec engineConfig, logger *slog.Logger) analyzerEngine {

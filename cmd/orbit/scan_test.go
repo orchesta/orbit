@@ -39,6 +39,7 @@ type fakeEngine struct {
 	root        string
 	checkLatest bool
 	exploitData bool
+	licenses    bool
 	deadline    time.Time
 }
 
@@ -63,6 +64,7 @@ func (f *fakeEngine) deps() scanDeps {
 		newEngine: func(ec engineConfig, logger *slog.Logger) analyzerEngine {
 			f.checkLatest = ec.checkLatest
 			f.exploitData = ec.exploitData
+			f.licenses = ec.licenses
 			f.logger = logger
 			return f
 		},
