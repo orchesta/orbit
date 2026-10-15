@@ -129,9 +129,9 @@ chmod +x "$ASSET" && sudo mv "$ASSET" /usr/local/bin/orbit
 ### Usage
 
 ```bash
-orbit scan                                   # current directory, table on stdout, fail on high or critical
+orbit scan                                   # current directory, table on stdout, fail on high or critical (and malicious packages)
 orbit scan --path services/api               # one part of a monorepo
-orbit scan --fail-on critical                # fail only on critical findings
+orbit scan --fail-on critical                # fail only on critical findings (and malicious packages)
 orbit scan --format sarif --out orbit.sarif  # also: json, junit
 orbit scan --outdated                        # also check for newer versions
 ```
@@ -162,7 +162,7 @@ threshold high: FAILED
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Clean, or every finding is below `--fail-on` or ignored, and none is a malicious package (or `--fail-on none`) |
+| 0 | Clean; or every finding is below `--fail-on` or ignored and none is a malicious package; or `--fail-on none` |
 | 1 | At least one finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`) |
 | 2 | The scan could not complete: osv.dev unreachable, timeout, bad flag, missing or invalid ignore file |
 

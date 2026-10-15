@@ -291,6 +291,48 @@ func TestSARIFMarksMaliciousRules(t *testing.T) {
 	}
 }
 
+// A GHSA rated medium whose alias is a MAL- advisory is malicious: SARIF must
+// override its level and score.
+func TestSARIFMediumGHSAWithMalAliasIsError(t *testing.T) {
+	dep := npmDep("debug", "4.4.2")
+	v := debugGitHubAdvisory(dep.ID)
+	v.Severity = entity.SeverityMedium
+	res := &engine.Result{Dependencies: []*entity.Dependency{dep}, Vulnerabilities: []*entity.Vulnerability{v}, VulnerableDeps: 1}
+	f, s := Build(res, nil, entity.SeverityHigh, fixedNow)
+	var b bytes.Buffer
+	if err := WriteSARIF(&b, f, s, testTool, SARIFOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Runs []struct {
+			Tool struct {
+				Driver struct {
+					Rules []struct {
+						Properties struct {
+							SecuritySeverity string   `json:"security-severity"`
+							Tags             []string `json:"tags"`
+						} `json:"properties"`
+					} `json:"rules"`
+				} `json:"driver"`
+			} `json:"tool"`
+			Results []struct {
+				Level string `json:"level"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(b.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	run := doc.Runs[0]
+	if len(run.Results) != 1 || run.Results[0].Level != "error" {
+		t.Fatalf("results = %+v, want one result at level error", run.Results)
+	}
+	p := run.Tool.Driver.Rules[0].Properties
+	if p.SecuritySeverity != "10.0" || !slices.Contains(p.Tags, "malicious") {
+		t.Fatalf("rule properties = %+v, want security-severity 10.0 and the malicious tag", p)
+	}
+}
+
 // The GitHub advisory alone is rated high; with --fail-on critical it must
 // still be a JUnit failure, typed malicious.
 func TestJUnitMaliciousFailureType(t *testing.T) {

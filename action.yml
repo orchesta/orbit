@@ -11,7 +11,7 @@ inputs:
     required: false
     default: "."
   fail-on:
-    description: Fail (exit 1) on a finding at or above this severity - critical, high, medium, low, unknown or none.
+    description: Fail (exit 1) on a finding at or above this severity - critical, high, medium, low, unknown or none. A known malicious package always fails, except with none.
     required: false
     default: high
   format:
@@ -87,7 +87,7 @@ runs:
           args+=(--ignore-file "/src/${INPUT_IGNORE_FILE}")
         fi
 
-        # Exit 0 = clean, 1 = finding at or above fail-on, 2 = error (no report is left behind).
+        # Exit 0 = clean, 1 = finding at or above fail-on or a malicious package (unless fail-on is none), 2 = error (no report is left behind).
         # A non-zero exit fails this step; use `if: always()` on a later upload step.
         exec docker run --rm \
           --user "$(id -u):$(id -g)" \

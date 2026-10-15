@@ -47,7 +47,7 @@ func writeDebugProject(t *testing.T, dir string) {
 func TestScanMaliciousPackageFailsAtEveryThreshold(t *testing.T) {
 	dir := t.TempDir()
 	writeDebugProject(t, dir)
-	for failOn, want := range map[string]int{"critical": 1, "high": 1, "low": 1, "unknown": 1, "none": 0} {
+	for failOn, want := range map[string]int{"critical": 1, "high": 1, "medium": 1, "low": 1, "unknown": 1, "none": 0} {
 		t.Run(failOn, func(t *testing.T) {
 			code, _, stderr := runReal(t, debugAdvisories{}, "--path", dir, "--fail-on", failOn, "--quiet")
 			if code != want {

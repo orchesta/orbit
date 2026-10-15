@@ -9,7 +9,7 @@
 #
 # Publishes a JUnit test run ("Orbit") and a SARIF file as the "CodeAnalysisLogs" build
 # artifact, then fails the job with the CLI's exit code (0 clean, 1 findings at or above
-# failOn, 2 error). Only that last step decides the build result; a missing report just
+# failOn or a malicious package, 2 error). Only that last step decides the build result; a missing report just
 # skips its publish step. Needs Azure DevOps Server 2020 or later (typed parameters; for
 # Server 2019 convert `parameters:` to the untyped map form). Use the template once per
 # job: it shares the ORBIT_* variables.

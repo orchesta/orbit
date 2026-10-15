@@ -62,7 +62,7 @@ variables:
           --format sarif --out orbit.sarif --quiet \
           || echo "warning: could not write orbit.sarif" >&2
       fi
-      # Keep the first run's exit code: 0 clean, 1 findings at or above the threshold, 2 error.
+      # Keep the first run's exit code: 0 clean, 1 findings at or above the threshold or a malicious package, 2 error.
       exit "$rc"
   artifacts:
     when: always
