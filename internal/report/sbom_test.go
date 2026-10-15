@@ -53,3 +53,24 @@ func TestSBOMPackagesMergeByEcosystemRules(t *testing.T) {
 		t.Errorf("ranges: purl %s, refs %s / %s", p.PURL, p.Ref, byDep[deps[9].ID].Ref)
 	}
 }
+
+// Names that used to collapse into one purl (slashes were trimmed) must keep
+// distinct bom-refs, whatever their sbomKey.
+func TestSBOMPackagesRefsStayUnique(t *testing.T) {
+	var deps []*entity.Dependency
+	for _, eco := range []entity.Ecosystem{entity.EcosystemNpm, entity.EcosystemPyPI, entity.EcosystemNuGet, entity.EcosystemGo} {
+		for _, name := range []string{"a/b", "/a/b", "a/b/", "a//b", "/", "//", "@a/b", "/@a/b", "a", "A", "..", "a?b", "a%3Fb", "Keras", "Keras"} {
+			for _, v := range []string{"1.0.0", "latest", "1.x", "^1.0"} {
+				deps = append(deps, &entity.Dependency{ID: uuid.New(), Name: name, CurrentVersion: v, Ecosystem: eco})
+			}
+		}
+	}
+	pkgs, _ := sbomPackages(deps)
+	refs := map[string]bool{}
+	for _, p := range pkgs {
+		if refs[p.Ref] {
+			t.Errorf("duplicate bom-ref %s", p.Ref)
+		}
+		refs[p.Ref] = true
+	}
+}

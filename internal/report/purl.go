@@ -45,37 +45,78 @@ func nativeVersion(eco entity.Ecosystem, v string) string {
 	return v
 }
 
-// exactVersion reports whether v looks like one version rather than a range,
-// a wildcard, a URL or a path. Only such versions go into a purl.
+// exactVersion reports whether v looks like one concrete version: it starts
+// with a digit and uses only [0-9A-Za-z.+_-]. Ranges, wildcards, dist-tags
+// (latest, 1.x), URLs, paths and anything with whitespace or control
+// characters are not versions and stay out of a purl.
 func exactVersion(v string) bool {
-	return v != "" && !strings.ContainsAny(v, " \t*^~<>=!,|[]()/:@")
+	if v == "" || v[0] < '0' || v[0] > '9' {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9',
+			c == '.', c == '+', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	// "1.x" and "1.X.0" are x-ranges, not versions.
+	for _, seg := range strings.Split(v, ".") {
+		if seg == "x" || seg == "X" {
+			return false
+		}
+	}
+	return true
 }
 
-// purlName splits name into the purl namespace and name for eco and applies
-// the type's normalisation:
+// asciiLower lower-cases ASCII letters only, so non-ASCII bytes (which are
+// percent-encoded) keep distinct names apart.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
+// badSegment reports whether s cannot be a purl namespace or name segment.
+func badSegment(s string) bool { return s == "" || s == "." || s == ".." }
+
+// purlName splits name into the purl namespace segments and name for eco and
+// applies the type's normalisation. ok is false when the name has an empty,
+// "." or ".." segment, so no purl can name it. A "/" left inside a name is
+// percent-encoded by the caller.
 //   - npm: "@scope/name" has the namespace "@scope" (encoded %40scope);
-//   - pypi: lower case, "_" becomes "-";
+//   - pypi: ASCII lower case, "_" becomes "-";
 //   - golang: the module path up to the last "/" is the namespace. Case is
 //     kept: Go module paths are case-sensitive, although the purl type
 //     definition says to lowercase them;
 //   - nuget: no namespace, case kept.
-func purlName(eco entity.Ecosystem, name string) (namespace, base string) {
+func purlName(eco entity.Ecosystem, name string) (namespace []string, base string, ok bool) {
 	switch eco {
 	case entity.EcosystemNpm:
-		if strings.HasPrefix(name, "@") {
-			if i := strings.IndexByte(name, '/'); i > 0 {
-				return name[:i], name[i+1:]
+		if i := strings.IndexByte(name, '/'); i > 1 && name[0] == '@' {
+			if badSegment(name[i+1:]) {
+				return nil, "", false
+			}
+			return []string{name[:i]}, name[i+1:], true
+		}
+	case entity.EcosystemPyPI:
+		name = strings.ReplaceAll(asciiLower(name), "_", "-")
+	case entity.EcosystemGo:
+		segs := strings.Split(name, "/")
+		for _, s := range segs {
+			if badSegment(s) {
+				return nil, "", false
 			}
 		}
-		return "", name
-	case entity.EcosystemPyPI:
-		return "", strings.ReplaceAll(strings.ToLower(name), "_", "-")
-	case entity.EcosystemGo:
-		if i := strings.LastIndexByte(name, '/'); i > 0 {
-			return name[:i], name[i+1:]
-		}
+		return segs[:len(segs)-1], segs[len(segs)-1], true
 	}
-	return "", name
+	return nil, name, !badSegment(name)
 }
 
 // PackageURL returns the purl of a dependency, for example
@@ -93,23 +134,25 @@ func buildPURL(eco entity.Ecosystem, name, version string, anyVersion bool) stri
 	if !ok || name == "" {
 		return ""
 	}
-	ns, base := purlName(eco, strings.Trim(name, "/"))
+	ns, base, ok := purlName(eco, name)
+	if !ok {
+		return ""
+	}
 	var b strings.Builder
 	b.WriteString("pkg:")
 	b.WriteString(typ)
 	b.WriteByte('/')
-	if ns != "" {
-		for _, seg := range strings.Split(strings.Trim(ns, "/"), "/") {
-			if seg == "" {
-				continue
-			}
-			b.WriteString(purlEscape(seg))
-			b.WriteByte('/')
-		}
+	for _, seg := range ns {
+		b.WriteString(purlEscape(seg))
+		b.WriteByte('/')
 	}
 	b.WriteString(purlEscape(base))
 	v := nativeVersion(eco, version)
-	if v != "" && (anyVersion || exactVersion(v)) {
+	exact := exactVersion(v)
+	if eco == entity.EcosystemGo && strings.HasPrefix(v, "v") {
+		exact = exactVersion(v[1:])
+	}
+	if v != "" && (anyVersion || exact) {
 		b.WriteByte('@')
 		b.WriteString(purlEscape(v))
 	}
