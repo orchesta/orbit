@@ -342,6 +342,39 @@
       ]
     },
     {
+      "id": "GHSA-ms-0005",
+      "source": {
+        "name": "OSV",
+        "url": "https://osv.dev/vulnerability/GHSA-ms-0005"
+      },
+      "ratings": [
+        {
+          "source": {
+            "name": "OSV",
+            "url": "https://osv.dev/vulnerability/GHSA-ms-0005"
+          },
+          "severity": "medium"
+        }
+      ],
+      "description": "GHSA-ms-0005 summary",
+      "recommendation": "Upgrade ms to 2.1.5. This package is reported as malicious; remove or replace it.",
+      "affects": [
+        {
+          "ref": "pkg:npm/ms@2.1.3",
+          "versions": [
+            {
+              "version": "2.1.3",
+              "status": "affected"
+            },
+            {
+              "version": "2.1.5",
+              "status": "unaffected"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "GHSA-django-0002",
       "source": {
         "name": "OSV",
@@ -376,6 +409,35 @@
             {
               "version": "3.0.8",
               "status": "unaffected"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "GHSA-ms-0006",
+      "source": {
+        "name": "OSV",
+        "url": "https://osv.dev/vulnerability/GHSA-ms-0006"
+      },
+      "ratings": [
+        {
+          "source": {
+            "name": "OSV",
+            "url": "https://osv.dev/vulnerability/GHSA-ms-0006"
+          },
+          "severity": "low"
+        }
+      ],
+      "description": "GHSA-ms-0006 summary",
+      "recommendation": "No fix available. This package is reported as malicious; remove or replace it.",
+      "affects": [
+        {
+          "ref": "pkg:npm/ms@2.1.3",
+          "versions": [
+            {
+              "version": "2.1.3",
+              "status": "affected"
             }
           ]
         }

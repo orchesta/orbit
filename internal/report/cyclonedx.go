@@ -172,11 +172,13 @@ func cdxComponentOf(p *sbomPackage) cdxComponent {
 	return c
 }
 
-// cdxRecommendation is the advice for finding x on package p. A known
-// malicious package is to be removed or replaced, as in the SARIF message,
-// naming the clean release a non-MAL advisory gives, if any; otherwise the
-// advice is the upgrade to the fixed version, or none without one.
-func cdxRecommendation(x Finding, p *sbomPackage) string {
+// cdxRecommendation is the advice for finding x on package p, as in the
+// SARIF message. A known malicious package is to be removed or replaced,
+// naming the clean release a non-MAL advisory gives, if any. Otherwise the
+// advice is the upgrade to the fixed version, or none without one; when
+// the package has a malicious finding (malicious), the advice for its other
+// advisories, with or without a fix, ends in removalHint.
+func cdxRecommendation(x Finding, p *sbomPackage, malicious bool) string {
 	fix := fixedIn(x.Vulnerability)
 	if fix != "" {
 		fix = nativeVersion(p.Ecosystem, fix)
@@ -186,8 +188,12 @@ func cdxRecommendation(x Finding, p *sbomPackage) string {
 		return "Remove or replace " + p.Name + ": it is a known malicious package (" + maliciousID(x.Vulnerability) + ") (fixed in " + fix + ")."
 	case x.Malicious:
 		return "Remove or replace " + p.Name + ": it is a known malicious package (" + maliciousID(x.Vulnerability) + ")."
+	case fix != "" && malicious:
+		return "Upgrade " + p.Name + " to " + fix + removalHint
 	case fix != "":
 		return "Upgrade " + p.Name + " to " + fix + "."
+	case malicious:
+		return "No fix available" + removalHint
 	}
 	return ""
 }
@@ -197,7 +203,9 @@ func cdxRecommendation(x Finding, p *sbomPackage) string {
 // dependency graph that lists only the project's direct dependencies, since
 // the analyzers do not record which package pulled in a transitive one, and
 // one vulnerability per advisory and package, in finding order. A known
-// malicious package is recommended for removal, not an upgrade. Ignored
+// malicious package is recommended for removal, not an upgrade, in all of its
+// advisories. affects lists the installed version only when it is a concrete
+// version, and the fixed one. Ignored
 // findings are kept as accepted risks: analysis.state "exploitable" with
 // response "will_not_fix" and the ignore reason as detail, never
 // "not_affected", which would claim the component is unaffected. KEV, EPSS,
@@ -232,6 +240,15 @@ func WriteCycloneDX(w io.Writer, f []Finding, s Summary, tool ToolInfo, opts SBO
 	slices.Sort(root.DependsOn)
 	bom.Dependencies = []cdxDependency{root}
 
+	// A package with a malicious finding in any manifest is to be removed,
+	// whatever its other advisories say.
+	malicious := map[*sbomPackage]bool{}
+	for _, x := range f {
+		if p := byDep[x.Dependency.ID]; p != nil && x.Malicious {
+			malicious[p] = true
+		}
+	}
+
 	// One entry per (advisory, package): the same package found in two
 	// manifests is one component. It is ignored only if every finding is.
 	index := map[string]int{}
@@ -253,7 +270,7 @@ func WriteCycloneDX(w io.Writer, f []Finding, s Summary, tool ToolInfo, opts SBO
 			Ratings:        []cdxRating{{Source: osvSource(v.OSVID), Severity: cdxSeverity(v.Severity)}},
 			Description:    v.Summary,
 			Detail:         v.Details,
-			Recommendation: cdxRecommendation(x, p),
+			Recommendation: cdxRecommendation(x, p, malicious[p]),
 			Affects:        []cdxAffects{{Ref: p.Ref}},
 		}
 		for _, a := range v.Aliases {
@@ -264,7 +281,8 @@ func WriteCycloneDX(w io.Writer, f []Finding, s Summary, tool ToolInfo, opts SBO
 				cv.Advisories = append(cv.Advisories, cdxAdvisory{URL: r})
 			}
 		}
-		if cur := nativeVersion(p.Ecosystem, p.Version); cur != "" {
+		// A declared range is not a version: only a concrete one is affected.
+		if cur := nativeVersion(p.Ecosystem, p.Version); exactNativeVersion(p.Ecosystem, cur) {
 			cv.Affects[0].Versions = append(cv.Affects[0].Versions, cdxAffectedVersion{Version: cur, Status: "affected"})
 		}
 		if fix := fixedIn(v); fix != "" {

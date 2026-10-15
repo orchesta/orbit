@@ -23,7 +23,8 @@ var sbomOpts = SBOMOptions{
 // scoped npm name, a dev dependency, a transitive dependency, an unresolved
 // range, valid and invalid licenses, an ignored finding, a known malicious
 // package (reported under a CVE with the MAL- ID as an alias, and fixed in a
-// later release) and a reference that is not a URL.
+// later release) with two other advisories, one fixed and one not, and a
+// reference that is not a URL.
 func sbomFixture() *engine.Result {
 	dep := func(n, v, eco, mf string, direct, dev, resolved bool, lic string) *entity.Dependency {
 		return &entity.Dependency{ID: uuid.New(), Name: n, CurrentVersion: v, Ecosystem: entity.Ecosystem(eco),
@@ -49,6 +50,8 @@ func sbomFixture() *engine.Result {
 			vuln(django, "GHSA-django-0002", entity.SeverityLow, strp("3.0.8"), nil, nil),
 			vuln(toml, "GO-2026-0003", entity.SeverityUnknown, nil, nil, nil),
 			vuln(ms, "CVE-2026-0004", entity.SeverityCritical, strp("2.1.4"), []string{"MAL-2026-0004"}, nil),
+			vuln(ms, "GHSA-ms-0005", entity.SeverityMedium, strp("2.1.5"), nil, nil),
+			vuln(ms, "GHSA-ms-0006", entity.SeverityLow, nil, nil, nil),
 		},
 	}
 }
@@ -111,8 +114,8 @@ func TestCycloneDXGolden(t *testing.T) {
 	if got := doc.Dependencies[0].DependsOn; doc.Dependencies[0].Ref != "root" || len(got) != 5 {
 		t.Errorf("root dependsOn = %v, want the 5 direct packages", got)
 	}
-	if len(doc.Vulnerabilities) != 4 {
-		t.Fatalf("vulnerabilities = %d, want 4 (one per advisory and package)", len(doc.Vulnerabilities))
+	if len(doc.Vulnerabilities) != 6 {
+		t.Fatalf("vulnerabilities = %d, want 6 (one per advisory and package)", len(doc.Vulnerabilities))
 	}
 	for _, v := range doc.Vulnerabilities {
 		if !refs[v.Affects[0].Ref] {
@@ -132,27 +135,135 @@ func TestCycloneDXGolden(t *testing.T) {
 		v.Recommendation != "Remove or replace ms: it is a known malicious package (MAL-2026-0004) (fixed in 2.1.4)." {
 		t.Errorf("malicious vulnerability = %s, recommendation %q", v.ID, v.Recommendation)
 	}
+	// The other advisories of a malicious package say so, as in SARIF.
+	for _, v := range doc.Vulnerabilities {
+		want := map[string]string{
+			"GHSA-ms-0005": "Upgrade ms to 2.1.5. This package is reported as malicious; remove or replace it.",
+			"GHSA-ms-0006": "No fix available. This package is reported as malicious; remove or replace it.",
+		}[v.ID]
+		if want != "" && v.Recommendation != want {
+			t.Errorf("%s: recommendation = %q, want %q", v.ID, v.Recommendation, want)
+		}
+	}
 }
 
 func TestCycloneDXRecommendation(t *testing.T) {
 	ms := &sbomPackage{Ecosystem: entity.EcosystemNpm, Name: "ms", Version: "2.1.3"}
 	toml := &sbomPackage{Ecosystem: entity.EcosystemGo, Name: "github.com/BurntSushi/toml", Version: "1.6.0"}
 	for _, c := range []struct {
-		x    Finding
-		p    *sbomPackage
-		want string
+		x         Finding
+		p         *sbomPackage
+		malicious bool // the package has a malicious finding
+		want      string
 	}{
-		{Finding{Malicious: true, Vulnerability: &entity.Vulnerability{OSVID: "MAL-2026-0005"}}, ms,
+		{Finding{Malicious: true, Vulnerability: &entity.Vulnerability{OSVID: "MAL-2026-0005"}}, ms, true,
 			"Remove or replace ms: it is a known malicious package (MAL-2026-0005)."},
 		{Finding{Malicious: true, Vulnerability: &entity.Vulnerability{OSVID: "CVE-2026-0006",
-			Aliases: []string{"GHSA-x", "MAL-2026-0006"}, FixedVersion: strp("2.1.4")}}, ms,
+			Aliases: []string{"GHSA-x", "MAL-2026-0006"}, FixedVersion: strp("2.1.4")}}, ms, true,
 			"Remove or replace ms: it is a known malicious package (MAL-2026-0006) (fixed in 2.1.4)."},
-		{Finding{Vulnerability: &entity.Vulnerability{OSVID: "GO-2026-0007", FixedVersion: strp("1.6.1")}}, toml,
+		{Finding{Vulnerability: &entity.Vulnerability{OSVID: "GHSA-ms-0009", FixedVersion: strp("2.1.5")}}, ms, true,
+			"Upgrade ms to 2.1.5" + removalHint},
+		{Finding{Vulnerability: &entity.Vulnerability{OSVID: "GHSA-ms-0010"}}, ms, true,
+			"No fix available" + removalHint},
+		{Finding{Vulnerability: &entity.Vulnerability{OSVID: "GO-2026-0007", FixedVersion: strp("1.6.1")}}, toml, false,
 			"Upgrade github.com/BurntSushi/toml to v1.6.1."},
-		{Finding{Vulnerability: &entity.Vulnerability{OSVID: "GO-2026-0008"}}, toml, ""},
+		{Finding{Vulnerability: &entity.Vulnerability{OSVID: "GO-2026-0008"}}, toml, false, ""},
 	} {
-		if got := cdxRecommendation(c.x, c.p); got != c.want {
+		if got := cdxRecommendation(c.x, c.p, c.malicious); got != c.want {
 			t.Errorf("%s: recommendation = %q, want %q", c.x.Vulnerability.OSVID, got, c.want)
+		}
+	}
+}
+
+// writeCDX writes findings f for deps and decodes the vulnerabilities.
+func writeCDX(t *testing.T, deps []*entity.Dependency, f []Finding) []cdxVulnerability {
+	t.Helper()
+	var b bytes.Buffer
+	if err := WriteCycloneDX(&b, f, Summary{Deps: deps}, testTool, sbomOpts); err != nil {
+		t.Fatal(err)
+	}
+	validateSchema(t, "bom-1.6.schema.json", b.Bytes())
+	var doc struct {
+		Vulnerabilities []cdxVulnerability `json:"vulnerabilities"`
+	}
+	if err := json.Unmarshal(b.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	return doc.Vulnerabilities
+}
+
+// One component found in two manifests is ignored only if every finding
+// of the advisory on it is, whatever the finding order.
+func TestCycloneDXIgnoredOnlyIfEveryFindingIs(t *testing.T) {
+	a := &entity.Dependency{ID: uuid.New(), Name: "lodash", CurrentVersion: "4.17.15", Ecosystem: entity.EcosystemNpm,
+		ManifestFile: "a/package-lock.json", IsDirect: true, IsResolved: true}
+	b := &entity.Dependency{ID: uuid.New(), Name: "lodash", CurrentVersion: "4.17.15", Ecosystem: entity.EcosystemNpm,
+		ManifestFile: "b/package-lock.json", IsDirect: true, IsResolved: true}
+	va := &entity.Vulnerability{OSVID: "GHSA-lodash-0001", DependencyID: a.ID, Severity: entity.SeverityHigh}
+	vb := &entity.Vulnerability{OSVID: "GHSA-lodash-0001", DependencyID: b.ID, Severity: entity.SeverityHigh}
+	ignoredA := Finding{Dependency: a, Vulnerability: va, Ignored: true, IgnoreReason: "only in a"}
+	ignoredB := Finding{Dependency: b, Vulnerability: vb, Ignored: true, IgnoreReason: "only in b"}
+	for name, c := range map[string]struct {
+		f       []Finding
+		ignored bool
+	}{
+		"ignored first":  {[]Finding{ignoredA, {Dependency: b, Vulnerability: vb}}, false},
+		"ignored second": {[]Finding{{Dependency: a, Vulnerability: va}, ignoredB}, false},
+		"both ignored":   {[]Finding{ignoredA, ignoredB}, true},
+	} {
+		vs := writeCDX(t, []*entity.Dependency{a, b}, c.f)
+		if len(vs) != 1 {
+			t.Fatalf("%s: vulnerabilities = %d, want 1", name, len(vs))
+		}
+		if got := vs[0].Analysis != nil; got != c.ignored {
+			t.Errorf("%s: analysis = %+v, want ignored %v", name, vs[0].Analysis, c.ignored)
+		}
+	}
+}
+
+// Only a concrete installed version is listed as affected: a declared
+// range is not a version.
+func TestCycloneDXAffectsOnlyExactVersions(t *testing.T) {
+	for _, c := range []struct {
+		eco     entity.Ecosystem
+		name    string
+		version string
+		want    []cdxAffectedVersion
+	}{
+		{entity.EcosystemNuGet, "Newtonsoft.Json", "[13.0,14.0)", []cdxAffectedVersion{{"13.0.2", "unaffected"}}},
+		{entity.EcosystemNpm, "left-pad", "^1.0.0", []cdxAffectedVersion{{"13.0.2", "unaffected"}}},
+		{entity.EcosystemNpm, "left-pad", "1.3.0", []cdxAffectedVersion{{"1.3.0", "affected"}, {"13.0.2", "unaffected"}}},
+		{entity.EcosystemGo, "golang.org/x/mod", "0.42.0", []cdxAffectedVersion{{"v0.42.0", "affected"}, {"v13.0.2", "unaffected"}}},
+		{entity.EcosystemGo, "golang.org/x/mod", "v0.42.0", []cdxAffectedVersion{{"v0.42.0", "affected"}, {"v13.0.2", "unaffected"}}},
+	} {
+		d := &entity.Dependency{ID: uuid.New(), Name: c.name, CurrentVersion: c.version, Ecosystem: c.eco, IsDirect: true}
+		v := &entity.Vulnerability{OSVID: "GHSA-x", DependencyID: d.ID, FixedVersion: strp("13.0.2")}
+		vs := writeCDX(t, []*entity.Dependency{d}, []Finding{{Dependency: d, Vulnerability: v}})
+		if got := vs[0].Affects[0].Versions; !slices.Equal(got, c.want) {
+			t.Errorf("%s %s: versions = %+v, want %+v", c.name, c.version, got, c.want)
+		}
+	}
+}
+
+func TestWebURL(t *testing.T) {
+	for s, want := range map[string]bool{
+		"https://github.com/advisories/GHSA-x": true,
+		"http://example.com/a?b=c#d":           true,
+		"not a url":                            false,
+		"ftp://example.com/x":                  false,
+		"https://":                             false,
+		"/relative/path":                       false,
+		`https://a.com/a\b`:                    false,
+		"https://a.com/<x>":                    false,
+		`https://a.com/"x"`:                    false,
+		"https://a.com/{x}":                    false,
+		"https://a.com/a|b":                    false,
+		"https://a.com/a^b":                    false,
+		"https://a.com/a`b":                    false,
+		"https://a.com/a b":                    false,
+	} {
+		if got := webURL(s); got != want {
+			t.Errorf("webURL(%q) = %v, want %v", s, got, want)
 		}
 	}
 }

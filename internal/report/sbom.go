@@ -84,10 +84,11 @@ func sbomPackages(deps []*entity.Dependency) ([]*sbomPackage, map[uuid.UUID]*sbo
 	return pkgs, byDep
 }
 
-// webURL reports whether s is an absolute http(s) URL without spaces, the
+// webURL reports whether s is an absolute http(s) URL without whitespace or
+// the characters an IRI reference (RFC 3987) may not hold unencoded, the
 // only references written as CycloneDX advisories.
 func webURL(s string) bool {
-	if strings.ContainsAny(s, " \t\r\n") {
+	if strings.ContainsAny(s, " \t\r\n\\<>\"{}|^`") {
 		return false
 	}
 	u, err := url.Parse(s)

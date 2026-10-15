@@ -71,6 +71,15 @@ func exactVersion(v string) bool {
 	return true
 }
 
+// exactNativeVersion is exactVersion for v as eco writes it (see
+// nativeVersion): Go's "v" prefix is not part of the check.
+func exactNativeVersion(eco entity.Ecosystem, v string) bool {
+	if eco == entity.EcosystemGo && strings.HasPrefix(v, "v") {
+		v = v[1:]
+	}
+	return exactVersion(v)
+}
+
 // asciiLower lower-cases ASCII letters only, so non-ASCII bytes (which are
 // percent-encoded) keep distinct names apart.
 func asciiLower(s string) string {
@@ -148,11 +157,7 @@ func buildPURL(eco entity.Ecosystem, name, version string, anyVersion bool) stri
 	}
 	b.WriteString(purlEscape(base))
 	v := nativeVersion(eco, version)
-	exact := exactVersion(v)
-	if eco == entity.EcosystemGo && strings.HasPrefix(v, "v") {
-		exact = exactVersion(v[1:])
-	}
-	if v != "" && (anyVersion || exact) {
+	if v != "" && (anyVersion || exactNativeVersion(eco, v)) {
 		b.WriteByte('@')
 		b.WriteString(purlEscape(v))
 	}
