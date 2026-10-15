@@ -55,6 +55,15 @@ type Summary struct {
 	Baseline bool
 	New      int
 
+	// DeniedLicenses is the license policy (canonical SPDX identifiers,
+	// sorted); nil when there is none. See ApplyLicensePolicy. The policy
+	// result is LicenseFailed, never Failed: the CLI exits 1 when either is
+	// set, and ApplyBaseline leaves the license fields alone.
+	DeniedLicenses    []string
+	LicenseViolations []LicenseViolation // sorted by package, version, manifest, ecosystem
+	LicenseFailed     bool               // a violation that is not ignored
+	ShowLicenses      bool               // the table shows a LICENSE column (--licenses)
+
 	// Deps lists every dependency (sorted), including those without findings.
 	// The JSON report needs it because WriteJSON only receives findings.
 	Deps []*entity.Dependency
@@ -67,12 +76,16 @@ type Summary struct {
 // ToolInfo identifies the producing tool in JSON and SARIF output.
 type ToolInfo struct{ Name, Version, InformationURI string }
 
-// IgnoreEntry suppresses one advisory, optionally limited to a package.
+// IgnoreEntry suppresses one advisory, optionally limited to a package, or
+// accepts one license for one package.
 type IgnoreEntry struct {
-	ID      string    // advisory ID or alias (CVE)
-	Package string    // optional; empty matches any package
+	ID      string    // advisory ID or alias (CVE); "license:<License> package=<Package>" for a license entry
+	Package string    // optional for advisories; required for a license entry
 	Reason  string    // shown in reports
 	Expires time.Time // zero means never
+	// License is the canonical SPDX identifier a license entry accepts
+	// for Package; "" for an advisory entry.
+	License string
 }
 
 // IgnoreList is the set of suppressions, normally from ParseIgnoreFile.
@@ -102,14 +115,15 @@ func (l *IgnoreList) matchIndex(id string, aliases []string, pkg string, eco ent
 	return -1
 }
 
-// matchAll returns the indexes of all active matching entries, in order.
+// matchAll returns the indexes of all active matching advisory entries, in
+// order. License entries never match an advisory.
 func (l *IgnoreList) matchAll(id string, aliases []string, pkg string, eco entity.Ecosystem, now time.Time) []int {
 	if l == nil {
 		return nil
 	}
 	var out []int
 	for i, e := range l.Entries {
-		if !e.Expires.IsZero() && !now.Before(e.Expires) {
+		if e.License != "" || (!e.Expires.IsZero() && !now.Before(e.Expires)) {
 			continue
 		}
 		if e.Package != "" && !samePackage(eco, e.Package, pkg) {
@@ -224,8 +238,10 @@ func Build(res *engine.Result, ignores *IgnoreList, threshold entity.Severity, n
 // ecosystem) and summarizes. A merged finding is ignored when any of its
 // IDs matches an entry; every matching entry counts as used. A malicious
 // finding is never ignored: each entry that matches it is reported in a
-// warning instead. Every finding is new (see ApplyBaseline). The report
-// fails when a finding gates (see gates).
+// warning instead. License entries of ignores never match a finding and
+// are not warned about here: ApplyLicensePolicy handles them. Every finding
+// is new (see ApplyBaseline). The report fails when a finding gates (see
+// gates).
 func BuildWithOptions(res *engine.Result, ignores *IgnoreList, opts BuildOptions, now time.Time) ([]Finding, Summary) {
 	byID := make(map[uuid.UUID]*entity.Dependency, len(res.Dependencies))
 	for _, d := range res.Dependencies {
@@ -312,7 +328,7 @@ func BuildWithOptions(res *engine.Result, ignores *IgnoreList, opts BuildOptions
 	if unmatched > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d findings could not be matched to a dependency", unmatched))
 	}
-	warnings = append(warnings, ignores.ignoreWarnings(used, now)...)
+	warnings = append(warnings, ignores.ignoreWarnings(used, now, false)...)
 	warnings = append(warnings, notApplied...)
 	sort.Strings(warnings)
 
