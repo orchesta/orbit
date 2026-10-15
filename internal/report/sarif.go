@@ -93,6 +93,24 @@ func sarifLevel(s entity.Severity) string {
 	return "note"
 }
 
+// maliciousSecuritySeverity rates a known malicious package above every
+// scored advisory; GitHub code scanning shows 9.0 and above as critical.
+const maliciousSecuritySeverity = "10.0"
+
+// maliciousRank orders a malicious finding above every severity when a
+// rule's security-severity is chosen.
+const maliciousRank = 5
+
+// affectedText is "<pkg>@<version> is affected by <id>", or for a malicious
+// package "<pkg>@<version> is a known malicious package (<MAL- id>)".
+func affectedText(x Finding) string {
+	d, v := x.Dependency, x.Vulnerability
+	if x.Malicious {
+		return d.Name + "@" + d.CurrentVersion + " is a known malicious package (" + maliciousID(v) + ")"
+	}
+	return d.Name + "@" + d.CurrentVersion + " is affected by " + v.OSVID
+}
+
 // SARIFOptions says how manifest paths, which are relative to the scanned
 // directory, become artifact URIs.
 type SARIFOptions struct {
@@ -104,26 +122,34 @@ type SARIFOptions struct {
 	RootURI string
 }
 
-// WriteSARIF writes a SARIF 2.1.0 log with one rule per distinct advisory.
+// WriteSARIF writes a SARIF 2.1.0 log with one rule per distinct advisory. A
+// rule with a malicious finding is tagged "malicious" and rated 10.0.
 func WriteSARIF(w io.Writer, f []Finding, _ Summary, tool ToolInfo, opts SARIFOptions) error {
 	rules := []sarifRule{}
 	ruleIdx := map[string]int{}
-	ruleSev := map[string]entity.Severity{}
+	ruleRank := map[string]int{}
 	results := []sarifResult{}
 	for _, x := range f {
 		v, d := x.Vulnerability, x.Dependency
+		rank, score, level := severityRank(v.Severity), securitySeverity(v.Severity), sarifLevel(v.Severity)
+		if x.Malicious {
+			rank, score, level = maliciousRank, maliciousSecuritySeverity, "error"
+		}
 		i, ok := ruleIdx[v.OSVID]
 		if !ok {
 			i = len(rules)
 			ruleIdx[v.OSVID] = i
-			ruleSev[v.OSVID] = v.Severity
+			ruleRank[v.OSVID] = rank
 			rules = append(rules, sarifRule{
 				ID:         v.OSVID,
-				Properties: map[string]any{"security-severity": securitySeverity(v.Severity)},
+				Properties: map[string]any{"security-severity": score},
 			})
-		} else if severityRank(v.Severity) > severityRank(ruleSev[v.OSVID]) {
-			ruleSev[v.OSVID] = v.Severity
-			rules[i].Properties["security-severity"] = securitySeverity(v.Severity)
+		} else if rank > ruleRank[v.OSVID] {
+			ruleRank[v.OSVID] = rank
+			rules[i].Properties["security-severity"] = score
+		}
+		if x.Malicious {
+			rules[i].Properties["tags"] = []string{"security", "malicious"}
 		}
 		// The first non-empty text in finding order wins.
 		if rules[i].ShortDescription.Text == "" {
@@ -132,14 +158,20 @@ func WriteSARIF(w io.Writer, f []Finding, _ Summary, tool ToolInfo, opts SARIFOp
 		if rules[i].HelpURI == "" && len(v.References) > 0 {
 			rules[i].HelpURI = v.References[0]
 		}
-		msg := d.Name + "@" + d.CurrentVersion + " is affected by " + v.OSVID
-		if fv := fixedIn(v); fv != "" {
+		msg := affectedText(x)
+		switch fv := fixedIn(v); {
+		case x.Malicious && fv != "":
+			// fv comes from a member that is not a MAL- advisory (highestFix).
+			msg += "; remove or replace it (fixed in " + fv + ")"
+		case x.Malicious:
+			msg += "; remove or replace it"
+		case fv != "":
 			msg += " (fixed in " + fv + ")"
-		} else {
+		default:
 			msg += " (no fix available)"
 		}
 		var r sarifResult
-		r.RuleID, r.Level, r.Message = v.OSVID, sarifLevel(v.Severity), sarifText{msg}
+		r.RuleID, r.Level, r.Message = v.OSVID, level, sarifText{msg}
 		r.Locations = make([]sarifLocation, 1)
 		r.Locations[0].PhysicalLocation.ArtifactLocation = opts.artifactLocation(d.ManifestFile)
 		sum := sha256.Sum256([]byte(strings.Join([]string{v.OSVID, string(d.Ecosystem), d.Name, d.CurrentVersion, d.ManifestFile}, "|")))

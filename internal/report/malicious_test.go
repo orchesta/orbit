@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/xml"
 	"slices"
 	"strings"
 	"testing"
@@ -232,5 +233,92 @@ func TestJSONReportsMalicious(t *testing.T) {
 	}
 	if !strings.Contains(b.String(), `"malicious": false`) {
 		t.Error(`"malicious" must be present on every finding, also when false`)
+	}
+}
+
+func TestSARIFMarksMaliciousRules(t *testing.T) {
+	f, s := Build(maliciousResult(), nil, entity.SeverityHigh, fixedNow)
+	var b bytes.Buffer
+	if err := WriteSARIF(&b, f, s, testTool, SARIFOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Runs []struct {
+			Tool struct {
+				Driver struct {
+					Rules []struct {
+						ID         string `json:"id"`
+						Properties struct {
+							SecuritySeverity string   `json:"security-severity"`
+							Tags             []string `json:"tags"`
+						} `json:"properties"`
+					} `json:"rules"`
+				} `json:"driver"`
+			} `json:"tool"`
+			Results []struct {
+				RuleID  string                `json:"ruleId"`
+				Level   string                `json:"level"`
+				Message struct{ Text string } `json:"message"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(b.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	type rule struct{ id, sev, tags string }
+	var got []rule
+	for _, r := range doc.Runs[0].Tool.Driver.Rules {
+		got = append(got, rule{r.ID, r.Properties.SecuritySeverity, strings.Join(r.Properties.Tags, ",")})
+	}
+	want := []rule{
+		{"CVE-2025-59144", "10.0", "security,malicious"},
+		{"MAL-2025-46969", "10.0", "security,malicious"},
+		{"GHSA-crit-0003", "9.5", ""},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("rules = %v, want %v", got, want)
+	}
+	res := doc.Runs[0].Results
+	// The merged debug finding keeps the GitHub advisory's fix (see highestFix).
+	if res[0].Level != "error" || res[0].Message.Text != "debug@4.4.2 is a known malicious package (MAL-2025-46974); remove or replace it (fixed in 4.4.3)" {
+		t.Errorf("result 0 = %+v", res[0])
+	}
+	if res[1].Message.Text != "chalk@5.6.1 is a known malicious package (MAL-2025-46969); remove or replace it" {
+		t.Errorf("result 1 = %+v", res[1])
+	}
+	if res[2].Message.Text != "lodash@4.17.15 is affected by GHSA-crit-0003 (no fix available)" {
+		t.Errorf("ordinary result message changed: %q", res[2].Message.Text)
+	}
+}
+
+// The GitHub advisory alone is rated high; with --fail-on critical it must
+// still be a JUnit failure, typed malicious.
+func TestJUnitMaliciousFailureType(t *testing.T) {
+	f, s := Build(debugGitHubOnly(), nil, entity.SeverityCritical, fixedNow)
+	var b bytes.Buffer
+	if err := WriteJUnit(&b, f, s); err != nil {
+		t.Fatal(err)
+	}
+	var suite struct {
+		Failures int `xml:"failures,attr"`
+		Cases    []struct {
+			Failure *struct {
+				Message string `xml:"message,attr"`
+				Type    string `xml:"type,attr"`
+				Body    string `xml:",chardata"`
+			} `xml:"failure"`
+		} `xml:"testcase"`
+	}
+	if err := xml.Unmarshal(b.Bytes(), &suite); err != nil {
+		t.Fatal(err)
+	}
+	if suite.Failures != 1 || len(suite.Cases) != 1 || suite.Cases[0].Failure == nil {
+		t.Fatalf("want one failure:\n%s", b.String())
+	}
+	fl := suite.Cases[0].Failure
+	if fl.Type != "malicious" ||
+		fl.Message != "high: debug@4.4.2 contains malware after npm account takeover" ||
+		fl.Body != "debug@4.4.2 is a known malicious package (MAL-2025-46974) (fixed in 4.4.3)" {
+		t.Fatalf("failure = %+v", fl)
 	}
 }

@@ -32,6 +32,7 @@ The backend is Go, the UI is React, and the database is PostgreSQL. Orbit is an 
 - Vulnerability data from osv.dev. Outdated-version checks against npm, PyPI, NuGet and the Go module proxy.
 - Server: imports repositories from GitHub, GitLab and Azure DevOps (Services and Server), scans them on a cron schedule per repository with a bounded worker pool, and shows a dashboard, a vulnerability list and scan history.
 - CLI: `orbit scan` with `table`, `json`, `sarif` and `junit` output, a severity threshold, documented exit codes, and an `.orbitignore` file for accepted findings with optional expiry dates.
+- Flags known malicious packages (OpenSSF Malicious Packages, `MAL-` advisories on osv.dev) separately. They fail `orbit scan` at every `--fail-on` level except `none`.
 - Ready-made CI templates for GitHub Actions, GitLab CI and Azure Pipelines (Azure DevOps Services and Server 2020+).
 - Access tokens are encrypted at rest (AES-256-GCM). First-run setup is protected by a setup token. Failed logins are rate-limited.
 
@@ -149,7 +150,7 @@ threshold high: FAILED
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--path` | `.` | Directory to scan |
-| `--fail-on` | `high` | `critical`, `high`, `medium`, `low`, `unknown` or `none` |
+| `--fail-on` | `high` | `critical`, `high`, `medium`, `low`, `unknown` or `none`; a known malicious package fails at every value except `none` |
 | `--format` | `table` | `table`, `json`, `sarif` or `junit` |
 | `--out` | `-` (stdout) | Report file |
 | `--ignore-file` | `<path>/.orbitignore` if it exists | Accepted findings; `""` disables it |
@@ -161,8 +162,8 @@ threshold high: FAILED
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Clean, or every finding is below `--fail-on` or ignored |
-| 1 | At least one finding that is not ignored is at or above `--fail-on` |
+| 0 | Clean, or every finding is below `--fail-on` or ignored, and none is a malicious package (or `--fail-on none`) |
+| 1 | At least one finding that is not ignored is at or above `--fail-on`, or is a malicious package (at every level except `none`) |
 | 2 | The scan could not complete: osv.dev unreachable, timeout, bad flag, missing or invalid ignore file |
 
 On exit 2 nothing is written to stdout and an existing `--out` file is deleted, so a stale report is never uploaded. An osv.dev failure never counts as "no vulnerabilities".
@@ -181,8 +182,28 @@ CVE-2024-1234        package=lodash      Accepted until the upgrade, see JIRA-12
 - Matching is case-insensitive and covers the ID a finding is reported under and its aliases, so either the CVE or the GHSA ID works.
 - `expires=YYYY-MM-DD` keeps an entry active until the end of that day (UTC); after that the finding counts again and a warning is printed.
 - `package=<name>` limits an entry to one package.
+- Entries do not apply to malicious packages (see below). A matching entry produces a `not applied` warning instead.
 - A malformed line is an error (exit 2) that names the line. Entries that never matched produce an `unused ignore entry` warning.
 - Ignored findings still appear in the reports, marked as ignored.
+
+### Malicious packages
+
+osv.dev also serves the [OpenSSF Malicious Packages](https://github.com/ossf/malicious-packages) database. Its advisories have IDs that start with `MAL-` and usually carry no severity score. Orbit treats a finding as malicious when its ID or one of its aliases starts with `MAL-`:
+
+- It is rated `critical` when the advisory has no score of its own.
+- It fails the scan at every `--fail-on` level except `none`, whatever its severity.
+- `.orbitignore` entries do not apply to it.
+- Reports list it first and mark it: `(malicious)` in the table and `N malicious` in the summary line, `"malicious": true` on the JSON finding and a `malicious` count in the JSON summary, the `malicious` tag and `security-severity` 10.0 in SARIF, and the failure type `malicious` in JUnit.
+
+```
+SEVERITY              ID              PACKAGE      FIXED  MANIFEST
+CRITICAL (malicious)  MAL-2025-46969  chalk@5.6.1  -      package-lock.json
+
+1 dependencies, 1 vulnerable (1 critical), 1 malicious
+threshold high: FAILED
+```
+
+A malicious package version was published with harmful code on purpose. Upgrading may not be enough: remove it, and treat machines and CI runners that installed it as compromised.
 
 ## Quick start: CI
 
@@ -442,6 +463,7 @@ The release binaries are mainly for the CLI. The server serves the UI from `./ui
 Orbit reports known vulnerabilities for the versions it can see. Please keep these limits in mind when you read its results:
 
 - It finds only advisories that are published in osv.dev. A clean result means no known advisory matched, not that the dependencies are free of problems.
+- Malicious packages are found only when they are in the OpenSSF Malicious Packages data on osv.dev, matched by package name and version. A private package with the same name as a public malicious one is reported too, and `.orbitignore` cannot suppress that finding.
 - It does not analyse whether vulnerable code is actually reached by your application.
 - Without a lockfile, versions are estimated from manifest ranges and can be wrong in either direction.
 - Supported ecosystems are Go, npm, Python and NuGet. Other ecosystems (for example Maven, Gradle, Cargo or Composer) are not scanned.
