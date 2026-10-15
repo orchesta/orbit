@@ -261,4 +261,51 @@ describe('RepoDetail', () => {
     expect(await screen.findByText('KEV')).toHaveAttribute('title', expect.stringContaining('2025'));
     expect(screen.getByText('84.9%')).toBeInTheDocument();
   });
+
+  describe('licenses', () => {
+    const licensed = [
+      { id: 'd1', name: 'express', ecosystem: 'npm', current_version: '4.18.2', is_direct: true, is_resolved: true, license: 'MIT' },
+      { id: 'd2', name: 'qs', ecosystem: 'npm', current_version: '6.11.0', is_direct: false, is_resolved: true, license: 'BSD-3-Clause' },
+      { id: 'd3', name: 'ms', ecosystem: 'npm', current_version: '2.1.3', is_direct: false, is_resolved: true, license: 'MIT' },
+      { id: 'd4', name: 'private', ecosystem: 'npm', current_version: '1.0.0', is_direct: true, is_resolved: true, license: '' },
+    ];
+    const setup = (data) => {
+      mockFetch({
+        'GET /repositories/r1': { body: { data: repo } },
+        'GET /repositories/r1/scans': { body: { data: [done] } },
+        'GET /scans/s1/dependencies': { body: { data } },
+        'GET /scans/s1/vulnerabilities': { body: { data: [] } },
+      });
+      renderWithProviders(<RepoDetail />, at);
+    };
+
+    it('shows a license column and a breakdown', async () => {
+      setup(licensed);
+      await screen.findByText('express');
+      const row = (name) => screen.getByText(name).closest('tr');
+      expect(within(row('express')).getByTestId('dep-license')).toHaveTextContent('MIT');
+      expect(within(row('private')).getByTestId('dep-license')).toHaveTextContent('-');
+      const breakdown = screen.getByRole('region', { name: 'License breakdown' });
+      const items = within(breakdown).getAllByRole('listitem').map((li) => li.textContent);
+      expect(items).toEqual(['MIT2', 'BSD-3-Clause1', 'Unknown1']);
+    });
+
+    it('hides the breakdown when no license is known', async () => {
+      setup([{ id: 'd1', name: 'express', ecosystem: 'npm', current_version: '4.18.2', is_direct: true, is_resolved: true }]);
+      await screen.findByText('express');
+      expect(screen.queryByRole('region', { name: 'License breakdown' })).not.toBeInTheDocument();
+      expect(screen.getByTestId('dep-license')).toHaveTextContent('-');
+    });
+
+    it('sums licenses beyond the first eight into Other', async () => {
+      const many = Array.from({ length: 10 }, (_, i) => ({
+        id: `d${i}`, name: `pkg${i}`, ecosystem: 'npm', current_version: '1.0.0', is_direct: true, is_resolved: true, license: `LicenseRef-L${i}`,
+      }));
+      setup(many);
+      await screen.findByText('pkg0');
+      const items = within(screen.getByRole('region', { name: 'License breakdown' })).getAllByRole('listitem');
+      expect(items).toHaveLength(9);
+      expect(items[8]).toHaveTextContent('Other2');
+    });
+  });
 });

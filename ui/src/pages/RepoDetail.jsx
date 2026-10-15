@@ -7,6 +7,7 @@ import Spinner from '../components/Spinner';
 import ErrorState from '../components/ErrorState';
 import MaliciousBadge from '../components/MaliciousBadge';
 import ExploitSignals from '../components/ExploitSignals';
+import { licenseBreakdown } from '../licenses';
 
 const isActive = (scan) => scan?.status === 'pending' || scan?.status === 'running';
 
@@ -16,6 +17,10 @@ const approximateVersionHint = (ecosystem) =>
   ecosystem === 'Go'
     ? 'Version from go.mod (minimum version selection)'
     : 'Version taken from a manifest range; add a lockfile for exact results';
+
+// LICENSE_BREAKDOWN_LIMIT is how many licenses the breakdown names before
+// it sums the rest into "Other".
+const LICENSE_BREAKDOWN_LIMIT = 8;
 
 export default function RepoDetail() {
   const { id } = useParams();
@@ -182,6 +187,7 @@ export default function RepoDetail() {
               <EmptyState icon="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" message={noScanMsg('No dependencies found')} />
             ) : (
               <>
+                <LicenseBreakdown deps={deps} />
                 <div className="flex items-center justify-end gap-2 px-6 py-3 border-b border-gray-200 text-sm text-gray-500">
                   <label htmlFor="dep-filter">Dependency type</label>
                   <select
@@ -202,6 +208,7 @@ export default function RepoDetail() {
                       <th className="px-6 py-3 font-medium">Ecosystem</th>
                       <th className="px-6 py-3 font-medium">Current</th>
                       <th className="px-6 py-3 font-medium">Latest</th>
+                      <th className="px-6 py-3 font-medium">License</th>
                       <th className="px-6 py-3 font-medium text-center">Status</th>
                     </tr>
                   </thead>
@@ -227,6 +234,7 @@ export default function RepoDetail() {
                           )}
                         </td>
                         <td className="px-6 py-4 text-gray-500 font-mono text-xs">{dep.latest_version || '-'}</td>
+                        <td className="px-6 py-4 text-gray-500 text-xs" data-testid="dep-license">{dep.license || '-'}</td>
                         <td className="px-6 py-4 text-center">
                           {dep.is_outdated ? (
                             <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium capitalize 
@@ -353,6 +361,42 @@ export default function RepoDetail() {
         )}
       </div>
     </div>
+  );
+}
+
+// LicenseBreakdown summarises the licenses of the shown scan. It is hidden
+// when no dependency has a known license (older scans, or lookups off).
+function LicenseBreakdown({ deps }) {
+  const rows = licenseBreakdown(deps);
+  if (!rows.some((r) => r.license)) return null;
+  const known = rows.filter((r) => r.license);
+  const shown = known.slice(0, LICENSE_BREAKDOWN_LIMIT);
+  const other = known.slice(LICENSE_BREAKDOWN_LIMIT).reduce((n, r) => n + r.count, 0);
+  const unknown = rows.find((r) => !r.license);
+  return (
+    <section aria-label="License breakdown" className="px-6 py-3 border-b border-gray-200 text-sm">
+      <h3 className="text-xs font-medium uppercase tracking-wide text-gray-500 mb-2">Licenses</h3>
+      <ul className="flex flex-wrap gap-2">
+        {shown.map((r) => (
+          <li key={r.license} className="inline-flex items-center gap-1.5 rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-700">
+            <span className="font-medium">{r.license}</span>
+            <span className="text-gray-500">{r.count}</span>
+          </li>
+        ))}
+        {other > 0 && (
+          <li className="inline-flex items-center gap-1.5 rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-700">
+            <span className="font-medium">Other</span>
+            <span className="text-gray-500">{other}</span>
+          </li>
+        )}
+        {unknown && (
+          <li className="inline-flex items-center gap-1.5 rounded bg-gray-50 px-2 py-0.5 text-xs text-gray-500" title="No SPDX license in the lockfile or from deps.dev">
+            <span className="font-medium">Unknown</span>
+            <span>{unknown.count}</span>
+          </li>
+        )}
+      </ul>
+    </section>
   );
 }
 
