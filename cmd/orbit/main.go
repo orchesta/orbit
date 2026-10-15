@@ -24,6 +24,7 @@ import (
 	"github.com/orchesta/orbit/internal/infrastructure/auth"
 	"github.com/orchesta/orbit/internal/infrastructure/config"
 	"github.com/orchesta/orbit/internal/infrastructure/crypto"
+	"github.com/orchesta/orbit/internal/infrastructure/exploit"
 	"github.com/orchesta/orbit/internal/infrastructure/git/azuredevops"
 	"github.com/orchesta/orbit/internal/infrastructure/git/github"
 	"github.com/orchesta/orbit/internal/infrastructure/git/gitlab"
@@ -177,10 +178,15 @@ func runServer() {
 
 	// Initialize use cases
 	repoUseCase := repo.NewUseCase(repoRepo, gitHostRepo)
-	scanEngine := engine.New(registry, vulnuc.NewLookup(osvClient, logger), engine.Options{
-		CheckLatest: true,
-		Logger:      logger,
-	})
+	engineOpts := engine.Options{CheckLatest: true, Logger: logger}
+	if cfg.Exploit.Enabled {
+		// One enricher for every scan: the KEV catalog is downloaded once and
+		// refreshed every 12 hours, EPSS scores are cached for 12 hours.
+		engineOpts.Exploit = exploit.NewEnricher(exploit.Config{KEVURL: cfg.Exploit.KEVURL, EPSSURL: cfg.Exploit.EPSSURL, Logger: logger})
+	} else {
+		logger.Info("exploit data (CISA KEV, FIRST EPSS) is disabled")
+	}
+	scanEngine := engine.New(registry, vulnuc.NewLookup(osvClient, logger), engineOpts)
 	scanUseCase := scan.NewUseCase(
 		repoRepo, scanRepo, depRepo, vulnRepo, scanEngine,
 		gitProviderFactory, gitHostRepo,

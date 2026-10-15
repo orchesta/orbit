@@ -22,6 +22,7 @@ type Config struct {
 	Crypto   CryptoConfig   `mapstructure:"crypto"`
 	Log      LogConfig      `mapstructure:"log"`
 	Scanner  ScannerConfig  `mapstructure:"scanner"`
+	Exploit  ExploitConfig  `mapstructure:"exploit"`
 }
 
 // AuthConfig holds authentication configuration.
@@ -88,6 +89,14 @@ type ScannerConfig struct {
 	RetainScans        int `mapstructure:"retain_scans"`         // finished scans kept per repository
 }
 
+// ExploitConfig controls the exploit signals (CISA KEV, FIRST EPSS) added
+// to findings. Empty URLs mean the public CISA feed and FIRST API.
+type ExploitConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	KEVURL  string `mapstructure:"kev_url"`
+	EPSSURL string `mapstructure:"epss_url"`
+}
+
 // Load reads configuration from file and environment variables.
 func Load() (*Config, error) {
 	v := viper.New()
@@ -112,6 +121,9 @@ func Load() (*Config, error) {
 	v.SetDefault("scanner.scan_timeout", 900)
 	v.SetDefault("scanner.retain_scans", 10)
 	v.SetDefault("server.shutdown_timeout", 25)
+	v.SetDefault("exploit.enabled", true)
+	v.SetDefault("exploit.kev_url", "")
+	v.SetDefault("exploit.epss_url", "")
 
 	// Config file
 	// No SetConfigType: with it, viper also accepts an extensionless file
@@ -183,6 +195,18 @@ func (c *Config) Validate() error {
 	}
 	if c.Scanner.CloneTimeout < 0 {
 		return fmt.Errorf("ORBIT_SCANNER_CLONE_TIMEOUT must not be negative")
+	}
+	for _, u := range []struct{ env, value string }{
+		{"ORBIT_EXPLOIT_KEV_URL", c.Exploit.KEVURL},
+		{"ORBIT_EXPLOIT_EPSS_URL", c.Exploit.EPSSURL},
+	} {
+		if u.value == "" {
+			continue
+		}
+		parsed, err := url.Parse(u.value)
+		if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
+			return fmt.Errorf("%s must be an http or https URL", u.env)
+		}
 	}
 	return nil
 }

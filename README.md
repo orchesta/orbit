@@ -307,12 +307,14 @@ The server reads `orbit.yaml` (or `orbit.yml` and other formats viper supports) 
 | `ORBIT_SCANNER_MAX_CONCURRENT_SCANS` | `3` | Size of the background scan worker pool |
 | `ORBIT_SCANNER_SCAN_TIMEOUT` | `900` | Seconds a whole scan may take |
 | `ORBIT_SCANNER_RETAIN_SCANS` | `10` | Finished scans kept per repository; `0` keeps all |
+| `ORBIT_EXPLOIT_ENABLED` | `true` | Adds CISA KEV and FIRST EPSS data to findings. `false` sends nothing to www.cisa.gov or api.first.org |
+| `ORBIT_EXPLOIT_KEV_URL` / `ORBIT_EXPLOIT_EPSS_URL` | empty (public services) | Mirrors of the KEV JSON feed and the EPSS API, for restricted networks |
 
 Compose-only variables, set in `deploy/docker/.env`: `ORBIT_DATABASE_PASSWORD` (also used for the PostgreSQL container), `ORBIT_SERVER_TRUST_PROXY_HEADERS`, `ORBIT_SERVER_CORS_ALLOWED_ORIGINS`, `ORBIT_TMP_SIZE` (size of the `/tmp` tmpfs that holds clones, default `1g`) and `COMPOSE_PROJECT_NAME`.
 
 `orbit.yaml` also contains `log.level`, `log.format` and `scanner.default_schedule`. The current server does not apply them: it always logs JSON at `info` level, and new repositories get the schedule `0 */6 * * *` unless one is given when they are added.
 
-The CLI reads no configuration file and is configured with flags. It honours `NO_COLOR`, and its HTTP client uses Go's default transport, so the standard `HTTPS_PROXY`/`NO_PROXY` variables apply.
+The CLI reads no configuration file and is configured with flags; it always uses the public KEV and EPSS services unless --no-exploit-data is given. It honours `NO_COLOR`, and its HTTP client uses Go's default transport, so the standard `HTTPS_PROXY`/`NO_PROXY` variables apply.
 
 ## REST API
 
